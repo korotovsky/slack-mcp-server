@@ -6,6 +6,22 @@ Model Context Protocol (MCP) server for Slack Workspaces. This integration suppo
 
 ![ezgif-316311ee04f444](https://github.com/user-attachments/assets/35dc9895-e695-4e56-acdc-1a46d6520ba0)
 
+## Tools
+
+1. `conversationsHistory`
+  - Get messages from the channel by channelID
+  - Required inputs:
+    - `channel_id` (string): ID of the channel in format Cxxxxxxxxxx
+    - `limit` (number, default: 28): Limit of messages to fetch
+  - Returns: List of messages with timestamps, user IDs, and text content
+
+2. `channelsList`
+  - Get list of channels
+  - Required inputs:
+    - `channelTypes` (array): Possible channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'.
+    - `sort` (string): Type of sorting. Allowed values: 'popularity' - sort by number of members/participants in each channel.
+  - Returns: List of channels
+
 ## Setup Guide
 
 ### 1. Authentication Setup
@@ -176,12 +192,6 @@ Complete steps from 2.2 and run `docker compose up -d` to launch MCP server or w
 | `SLACK_MCP_PROXY`              | No         | `nil`       | Proxy URL for the MCP server to use                                           |
 | `SLACK_MCP_SERVER_CA`          | No         | `nil`       | Path to the CA certificate of the trust store                                 |
 | `SLACK_MCP_SERVER_CA_INSECURE` | No         | `false`     | Trust all insecure requests (NOT RECOMMENDED)                                 |
-
-## Available Tools
-
-| Tool                   | Description                   |
-|------------------------|-------------------------------|
-| `conversationsHistory` | Get messages from the channel |
 
 ### Debugging Tools
 

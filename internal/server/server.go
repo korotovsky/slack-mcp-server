@@ -37,16 +37,16 @@ func NewMCPServer(provider *provider.ApiProvider) *MCPServer {
 	channelsHandler := handler.NewChannelsHandler(provider)
 
 	s.AddTool(mcp.NewTool("channelsList",
-		mcp.WithDescription("Get messages from the channel"),
-		mcp.WithString("sort",
-			mcp.Description("Type of sorting. Allowed values: 'popularity' - sort by number of members/participants in each channel."),
-		),
+		mcp.WithDescription("Get list of channels"),
 		mcp.WithArray("channelTypes",
 			mcp.Required(),
 			mcp.Description("Possible channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'."),
 			mcp.Items(map[string]any{
 				"type": "string",
 			}),
+		),
+		mcp.WithString("sort",
+			mcp.Description("Type of sorting. Allowed values: 'popularity' - sort by number of members/participants in each channel."),
 		),
 	), channelsHandler.ChannelsHandler)
 
