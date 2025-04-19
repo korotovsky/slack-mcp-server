@@ -38,9 +38,9 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		sortType = "popularity"
 	}
 
-	types, ok := request.Params.Arguments["channelTypes"].([]interface{})
+	types, ok := request.Params.Arguments["channel_types"].([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("channelTypes should be an array")
+		return nil, fmt.Errorf("channel_types should be an array")
 	}
 	channelTypes := []string{}
 	for i, v := range types {

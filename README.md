@@ -8,17 +8,18 @@ Model Context Protocol (MCP) server for Slack Workspaces. This integration suppo
 
 ## Tools
 
-1. `conversationsHistory`
+1. `conversations_history`
   - Get messages from the channel by channelID
   - Required inputs:
-    - `channel_id` (string): ID of the channel in format Cxxxxxxxxxx
-    - `limit` (number, default: 28): Limit of messages to fetch
+    - `channel_id` (string): ID of the channel in format Cxxxxxxxxxx.
+    - `cursor` (string): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
+    - `limit` (number, default: 28): Limit of messages to fetch.
   - Returns: List of messages with timestamps, user IDs, and text content
 
-2. `channelsList`
+2. `channels_list`
   - Get list of channels
   - Required inputs:
-    - `channelTypes` (array): Possible channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'.
+    - `channel_types` (array): Possible channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'.
     - `sort` (string): Type of sorting. Allowed values: 'popularity' - sort by number of members/participants in each channel.
   - Returns: List of channels
 

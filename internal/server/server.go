@@ -22,23 +22,26 @@ func NewMCPServer(provider *provider.ApiProvider) *MCPServer {
 
 	conversationsHandler := handler.NewConversationsHandler(provider)
 
-	s.AddTool(mcp.NewTool("conversationsHistory",
-		mcp.WithDescription("Get messages from the channel by channelID"),
-		mcp.WithString("channelID",
+	s.AddTool(mcp.NewTool("conversations_history",
+		mcp.WithDescription("Get messages from the channel by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
+		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx"),
 		),
+		mcp.WithString("cursor",
+			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
+		),
 		mcp.WithString("limit",
-			mcp.DefaultString("28"),
-			mcp.Description("Limit of messages to fetch"),
+			mcp.DefaultString("1d"),
+			mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
 		),
 	), conversationsHandler.ConversationsHistoryHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider)
 
-	s.AddTool(mcp.NewTool("channelsList",
+	s.AddTool(mcp.NewTool("channels_list",
 		mcp.WithDescription("Get list of channels"),
-		mcp.WithArray("channelTypes",
+		mcp.WithArray("channel_types",
 			mcp.Required(),
 			mcp.Description("Possible channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'."),
 			mcp.Items(map[string]any{
