@@ -55,29 +55,8 @@ Token value is printed right after the executed command (it starts with
 
 Choose one of these installation methods:
 
-#### 2.1. Docker
-
-For detailed information about all environment variables, see [Environment Variables](https://github.com/korotovsky/slack-mcp-server?tab=readme-ov-file#environment-variables).
-
-```bash
-export SLACK_MCP_XOXC_TOKEN=xoxc-...
-export SLACK_MCP_XOXD_TOKEN=xoxd-...
-
-docker pull ghcr.io/korotovsky/slack-mcp-server:latest
-docker run -i --rm \
-  -e SLACK_MCP_XOXC_TOKEN \
-  -e SLACK_MCP_XOXD_TOKEN \
-  slack-mcp-server --transport stdio
-```
-
-#### 2.2. Docker Compose
-
-```bash
-wget -O docker-compose.yml https://github.com/korotovsky/slack-mcp-server/releases/latest/download/docker-compose.yml
-wget -O .env https://github.com/korotovsky/slack-mcp-server/releases/latest/download/.env.dist
-nano .env # Edit .env file with your tokens from step 1 of the setup guide
-docker-compose up -d
-```
+- [npx](#Using-npx)
+- [Docker](#Using-Docker)
 
 #### 2.2.1 TLS and Exposing to the Internet
 
@@ -97,9 +76,34 @@ and then use the endpoint `https://903d-xxx-xxxx-xxxx-10b4.ngrok-free.app` for y
 
 You can configure the MCP server using command line arguments and environment variables.
 
-Add the following to your `claude_desktop_config.json`:
+#### Using npx
 
-#### Option 1 with `stdio` transport:
+If you have npm installed, this is the fastest way to get started with `kubernetes-mcp-server` on Claude Desktop.
+
+Open your `claude_desktop_config.json` and add the mcp server to the list of `mcpServers`:
+``` json
+{
+  "mcpServers": {
+    "slack": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "slack-mcp-server@latest",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXC_TOKEN": "xoxc-...",
+        "SLACK_MCP_XOXD_TOKEN": "xoxd-..."
+      }
+    }
+  }
+}
+```
+
+<details>
+<summary>Or, stdio transport with docker.</summary>
+
 ```json
 {
   "mcpServers": {
@@ -127,9 +131,12 @@ Add the following to your `claude_desktop_config.json`:
 }
 ```
 
-#### Option 2 with `sse` transport:
+Please see [Docker](#Using-Docker) for more information.
+</details>
 
-Complete steps from 2.2 and run `docker compose up -d` to launch MCP server or with your preferred method and then configure it:
+#### Using npx with `sse` transport:
+
+In case you would like to run it in `sse` mode, then you  should use `mcp-remote` wrapper for Claude Desktop and deploy/expose MCP server somewhere e.g. with `ngrok` or `docker-compose`.
 
 ```json
 {
@@ -151,9 +158,8 @@ Complete steps from 2.2 and run `docker compose up -d` to launch MCP server or w
 }
 ```
 
-#### Option 3 with `sse` transport on Windows:
-
-Complete steps from 2.2 and run `docker compose up -d` to launch MCP server or with your preferred method and then configure it:
+<details>
+<summary>Or, sse transport for Windows.</summary>
 
 ```json
 {
@@ -173,6 +179,31 @@ Complete steps from 2.2 and run `docker compose up -d` to launch MCP server or w
     }
   }
 }
+```
+</details>
+
+#### Using Docker
+
+For detailed information about all environment variables, see [Environment Variables](https://github.com/korotovsky/slack-mcp-server?tab=readme-ov-file#environment-variables).
+
+```bash
+export SLACK_MCP_XOXC_TOKEN=xoxc-...
+export SLACK_MCP_XOXD_TOKEN=xoxd-...
+
+docker pull ghcr.io/korotovsky/slack-mcp-server:latest
+docker run -i --rm \
+  -e SLACK_MCP_XOXC_TOKEN \
+  -e SLACK_MCP_XOXD_TOKEN \
+  slack-mcp-server --transport stdio
+```
+
+Or, the docker-compose way:
+
+```bash
+wget -O docker-compose.yml https://github.com/korotovsky/slack-mcp-server/releases/latest/download/docker-compose.yml
+wget -O .env https://github.com/korotovsky/slack-mcp-server/releases/latest/download/.env.dist
+nano .env # Edit .env file with your tokens from step 1 of the setup guide
+docker-compose up -d
 ```
 
 #### Console Arguments
