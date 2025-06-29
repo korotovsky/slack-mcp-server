@@ -26,8 +26,10 @@ func main() {
 		p,
 	)
 
-	go newUsersWatcher(p)()
-	go newChannelsWatcher(p)()
+	go func() {
+		newUsersWatcher(p)()
+		newChannelsWatcher(p)()
+	}()
 
 	switch transport {
 	case "stdio":

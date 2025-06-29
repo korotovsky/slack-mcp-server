@@ -51,7 +51,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		return nil, err
 	}
 
-	api, err := ch.apiProvider.Provide()
+	api, err := ch.apiProvider.ProvideGeneric()
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		return nil, errors.New("thread_ts must be a string")
 	}
 
-	api, err := ch.apiProvider.Provide()
+	api, err := ch.apiProvider.ProvideGeneric()
 	if err != nil {
 		return nil, err
 	}

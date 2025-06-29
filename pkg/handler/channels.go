@@ -2,15 +2,14 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/slack-go/slack"
 )
 
 type Channel struct {
@@ -65,86 +64,29 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		return nil, fmt.Errorf("limit must be less than 1000, got %d", limit)
 	}
 
-	api, err := ch.apiProvider.Provide()
-	if err != nil {
-		return nil, err
-	}
-
-	var channelList []Channel
-
-	params := &slack.GetConversationsParameters{
-		Types:           channelTypes,
-		Limit:           limit,
-		ExcludeArchived: true,
-		Cursor:          cursor,
-	}
 	var (
-		total   int
-		nextcur string
+		nextcur     string
+		channelList []Channel
 	)
-	for {
-		var chans []slack.Channel
 
-		chans, nextcur, err = api.GetConversationsContext(ctx, params)
-		if err != nil {
-			break
-		}
+	channels := filterChannelsByTypes(ch.apiProvider.ProvideChannelsMaps().Channels, channelTypes)
 
-		usersMap := ch.apiProvider.ProvideUsersMap()
+	var chans []provider.Channel
 
-		if l := len(chans); l > 0 {
-			for _, channel := range chans {
-				channelName := "#" + channel.Name
-				purpose := channel.Purpose.Value
-				numMembers := channel.NumMembers
-				if channel.IsIM {
-					numMembers = 2
-					user, ok := usersMap[channel.User]
-					if ok {
-						channelName = "@" + user.Name
-						purpose = "DM " + user.RealName
-					} else {
-						channelName = "@" + channel.User
-						purpose = "DM with " + channel.User
-					}
-				} else if channel.IsMpIM && channel.IsPrivate && channel.NumMembers > 0 {
-					numMembers = channel.NumMembers
-					userNames := make([]string, 0, channel.NumMembers)
-					for _, userID := range channel.Members {
-						if user, ok := usersMap[userID]; ok {
-							userNames = append(userNames, user.RealName)
-						} else {
-							userNames = append(userNames, userID)
-						}
-					}
+	chans, nextcur = paginateChannels(
+		channels,
+		cursor,
+		limit,
+	)
 
-					channelName = "@" + channel.NameNormalized
-					purpose = "Group DM with " + strings.Join(userNames, ", ")
-				}
-
-				channelList = append(channelList, Channel{
-					ID:          channel.ID,
-					Name:        channelName,
-					Topic:       channel.Topic.Value,
-					Purpose:     purpose,
-					MemberCount: numMembers,
-				})
-			}
-
-			total += l
-			params.Limit -= l
-		}
-
-		if total >= limit {
-			log.Printf("channels fetch limit reached %v", total)
-			break
-		}
-
-		if nextcur == "" {
-			log.Printf("channels fetch exhausted")
-			break
-		}
-		params.Cursor = nextcur
+	for _, channel := range chans {
+		channelList = append(channelList, Channel{
+			ID:          channel.ID,
+			Name:        channel.Name,
+			Topic:       channel.Topic,
+			Purpose:     channel.Purpose,
+			MemberCount: channel.MemberCount,
+		})
 	}
 
 	switch sortType {
@@ -166,4 +108,62 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	}
 
 	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+func filterChannelsByTypes(channels map[string]provider.Channel, types []string) []provider.Channel {
+	var result []provider.Channel
+	typeSet := make(map[string]bool)
+
+	for _, t := range types {
+		typeSet[t] = true
+	}
+
+	for _, ch := range channels {
+		if typeSet["public_channel"] && !ch.IsPrivate && !ch.IsIM && !ch.IsMpIM {
+			result = append(result, ch)
+		}
+		if typeSet["private_channel"] && ch.IsPrivate && !ch.IsIM && !ch.IsMpIM {
+			result = append(result, ch)
+		}
+		if typeSet["im"] && ch.IsIM {
+			result = append(result, ch)
+		}
+		if typeSet["mpim"] && ch.IsMpIM {
+			result = append(result, ch)
+		}
+	}
+	return result
+}
+
+func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string) {
+	sort.Slice(channels, func(i, j int) bool {
+		return channels[i].ID < channels[j].ID
+	})
+
+	startIndex := 0
+	if cursor != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(cursor); err == nil {
+			lastID := string(decoded)
+			for i, ch := range channels {
+				if ch.ID > lastID {
+					startIndex = i
+					break
+				}
+			}
+		}
+	}
+
+	endIndex := startIndex + limit
+	if endIndex > len(channels) {
+		endIndex = len(channels)
+	}
+
+	paged := channels[startIndex:endIndex]
+
+	var nextCursor string
+	if endIndex < len(channels) {
+		nextCursor = base64.StdEncoding.EncodeToString([]byte(channels[endIndex-1].ID))
+	}
+
+	return paged, nextCursor
 }
