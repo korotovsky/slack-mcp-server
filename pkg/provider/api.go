@@ -24,6 +24,11 @@ var defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537
 var AllChanTypes = []string{"mpim", "im", "public_channel", "private_channel"}
 var PubChanType = "public_channel"
 
+type UsersCache struct {
+	Users    map[string]slack.User `json:"users"`
+	UsersInv map[string]string     `json:"users_inv"`
+}
+
 type ChannelsCache struct {
 	Channels    map[string]Channel `json:"channels"`
 	ChannelsInv map[string]string  `json:"channels_inv"`
@@ -39,6 +44,7 @@ type ApiProvider struct {
 	clientEnterprise *edge.Client
 
 	users      map[string]slack.User
+	usersInv   map[string]string
 	usersCache string
 
 	channels      map[string]Channel
@@ -125,6 +131,7 @@ func newWithXOXP(authProvider auth.ValueAuth) *ApiProvider {
 		},
 
 		users:      make(map[string]slack.User),
+		usersInv:   map[string]string{},
 		usersCache: usersCache,
 
 		channels:      make(map[string]Channel),
@@ -175,6 +182,7 @@ func newWithXOXC(authProvider auth.ValueAuth) *ApiProvider {
 		},
 
 		users:      make(map[string]slack.User),
+		usersInv:   map[string]string{},
 		usersCache: usersCache,
 
 		channels:      make(map[string]Channel),
@@ -232,6 +240,7 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 
 	for _, user := range users {
 		ap.users[user.ID] = user
+		ap.usersInv[user.Name] = user.ID
 	}
 
 	if data, err := json.MarshalIndent(users, "", "  "); err != nil {
@@ -326,7 +335,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 					channel.IsIM,
 					channel.IsMpIM,
 					channel.IsPrivate,
-					ap.ProvideUsersMap(),
+					ap.ProvideUsersMap().Users,
 				)
 				chans = append(chans, ch)
 			}
@@ -356,7 +365,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 					channel.IsIM,
 					channel.IsMpIM,
 					channel.IsPrivate,
-					ap.ProvideUsersMap(),
+					ap.ProvideUsersMap().Users,
 				)
 				chans = append(chans, ch)
 			}
@@ -399,8 +408,11 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	return res
 }
 
-func (ap *ApiProvider) ProvideUsersMap() map[string]slack.User {
-	return ap.users
+func (ap *ApiProvider) ProvideUsersMap() *UsersCache {
+	return &UsersCache{
+		Users:    ap.users,
+		UsersInv: ap.usersInv,
+	}
 }
 
 func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
