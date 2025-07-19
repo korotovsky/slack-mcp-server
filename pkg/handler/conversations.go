@@ -95,7 +95,7 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 		return nil, err
 	}
 
-	_, ar, err := ch.apiProvider.ProvideGeneric()
+	ar, err := ch.apiProvider.Slack().AuthTest()
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +137,6 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, err
 	}
 
-	api, _, err := ch.apiProvider.ProvideGeneric()
-	if err != nil {
-		return nil, err
-	}
-
 	var options []slack.MsgOption
 
 	if params.threadTs != "" {
@@ -166,7 +161,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
 	}
 
-	respChannel, respTimestamp, err := api.PostMessageContext(ctx, params.channel, options...)
+	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
 
 	if err != nil {
 		return nil, err
@@ -180,7 +175,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		Inclusive: true,
 	}
 
-	history, err := api.GetConversationHistoryContext(ctx, &historyParams)
+	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		return nil, err
 	}
@@ -196,11 +191,6 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		return nil, err
 	}
 
-	api, _, err := ch.apiProvider.ProvideGeneric()
-	if err != nil {
-		return nil, err
-	}
-
 	historyParams := slack.GetConversationHistoryParameters{
 		ChannelID: params.channel,
 		Limit:     params.limit,
@@ -210,7 +200,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		Inclusive: false,
 	}
 
-	history, err := api.GetConversationHistoryContext(ctx, &historyParams)
+	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		return nil, err
 	}
@@ -235,11 +225,6 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		return nil, errors.New("thread_ts must be a string")
 	}
 
-	api, _, err := ch.apiProvider.ProvideGeneric()
-	if err != nil {
-		return nil, err
-	}
-
 	repliesParams := slack.GetConversationRepliesParameters{
 		ChannelID: params.channel,
 		Timestamp: threadTs,
@@ -250,7 +235,7 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		Inclusive: false,
 	}
 
-	replies, hasMore, nextCursor, err := api.GetConversationRepliesContext(ctx, &repliesParams)
+	replies, hasMore, nextCursor, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &repliesParams)
 	if err != nil {
 		return nil, err
 	}
@@ -270,11 +255,6 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		return nil, err
 	}
 
-	api, _, err := ch.apiProvider.ProvideGeneric()
-	if err != nil {
-		return nil, err
-	}
-
 	searchParams := slack.SearchParameters{
 		Sort:          slack.DEFAULT_SEARCH_SORT,
 		SortDirection: slack.DEFAULT_SEARCH_SORT_DIR,
@@ -283,7 +263,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		Page:          params.page,
 	}
 
-	messagesRes, _, err := api.SearchContext(ctx, params.query, searchParams)
+	messagesRes, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
 	if err != nil {
 		return nil, err
 	}

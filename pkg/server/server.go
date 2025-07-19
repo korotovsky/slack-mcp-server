@@ -148,7 +148,7 @@ func NewMCPServer(provider *provider.ApiProvider) *MCPServer {
 		),
 	), channelsHandler.ChannelsHandler)
 
-	_, ar, err := provider.ProvideGeneric()
+	ar, err := provider.Slack().AuthTest()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to authenticate: %v", err))
 	}

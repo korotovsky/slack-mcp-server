@@ -82,18 +82,22 @@ type ClientDM struct {
 }
 
 type IM struct {
-	ID            string         `json:"id"`
-	Created       slack.JSONTime `json:"created"`
-	IsFrozen      bool           `json:"is_frozen"`
-	IsArchived    bool           `json:"is_archived"`
-	IsIM          bool           `json:"is_im"`
-	IsOrgShared   bool           `json:"is_org_shared"`
-	ContextTeamID string         `json:"context_team_id"`
-	Updated       slack.JSONTime `json:"updated"`
-	User          string         `json:"user"`
-	LastRead      fasttime.Time  `json:"last_read"`
-	Latest        fasttime.Time  `json:"latest"`
-	IsOpen        bool           `json:"is_open"`
+	ID               string         `json:"id"`
+	Created          slack.JSONTime `json:"created"`
+	IsFrozen         bool           `json:"is_frozen"`
+	IsArchived       bool           `json:"is_archived"`
+	IsIM             bool           `json:"is_im"`
+	IsOrgShared      bool           `json:"is_org_shared"`
+	ContextTeamID    string         `json:"context_team_id"`
+	Updated          slack.JSONTime `json:"updated"`
+	IsShared         bool           `json:"is_shared"`
+	IsExtShared      bool           `json:"is_ext_shared"`
+	User             string         `json:"user"`
+	LastRead         fasttime.Time  `json:"last_read"`
+	Latest           fasttime.Time  `json:"latest"`
+	IsOpen           bool           `json:"is_open"`
+	SharedTeamIds    []string       `json:"shared_team_ids"`
+	ConnectedTeamIds []string       `json:"connected_team_ids"`
 }
 
 func (c IM) SlackChannel() slack.Channel {

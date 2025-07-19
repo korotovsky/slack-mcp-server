@@ -16,7 +16,6 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
-	slack2 "github.com/rusq/slack"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 )
@@ -42,15 +41,51 @@ type ChannelsCache struct {
 	ChannelsInv map[string]string  `json:"channels_inv"`
 }
 
+type Channel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Topic       string `json:"topic"`
+	Purpose     string `json:"purpose"`
+	MemberCount int    `json:"memberCount"`
+	IsMpIM      bool   `json:"mpim"`
+	IsIM        bool   `json:"im"`
+	IsPrivate   bool   `json:"private"`
+}
+
+type SlackAPI interface {
+	// Standard slack-go API methods
+	AuthTest() (*slack.AuthTestResponse, error)
+	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
+	GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error)
+	GetUsersInfo(users ...string) (*[]slack.User, error)
+	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
+
+	// Useed to get messages
+	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
+	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
+	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
+
+	// Useed to get channels list from both Slack and Enterprise Grid versions
+	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
+
+	// Edge API methods
+	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+}
+
+type MCPSlackClient struct {
+	slackClient *slack.Client
+	edgeClient  *edge.Client
+
+	authResponse *slack.AuthTestResponse
+	authProvider auth.Provider
+
+	isEnterprise bool
+	teamEndpoint string
+}
+
 type ApiProvider struct {
 	transport string
-	boot      func(ap *ApiProvider) *slack.Client
-
-	authProvider *auth.ValueAuth
-	authResponse *slack2.AuthTestResponse
-
-	clientGeneric    *slack.Client
-	clientEnterprise *edge.Client
+	client    SlackAPI
 
 	users      map[string]slack.User
 	usersInv   map[string]string
@@ -63,15 +98,160 @@ type ApiProvider struct {
 	channelsReady bool
 }
 
-type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Topic       string `json:"topic"`
-	Purpose     string `json:"purpose"`
-	MemberCount int    `json:"memberCount"`
-	IsMpIM      bool   `json:"mpim"`
-	IsIM        bool   `json:"im"`
-	IsPrivate   bool   `json:"private"`
+func NewMCPSlackClient(authProvider auth.Provider) (*MCPSlackClient, error) {
+	httpClient := provideHTTPClient(authProvider.Cookies())
+
+	slackClient := slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(httpClient),
+	)
+
+	authResp, err := slackClient.AuthTest()
+	if err != nil {
+		return nil, err
+	}
+
+	authResponse := &slack.AuthTestResponse{
+		URL:          authResp.URL,
+		Team:         authResp.Team,
+		User:         authResp.User,
+		TeamID:       authResp.TeamID,
+		UserID:       authResp.UserID,
+		EnterpriseID: authResp.EnterpriseID,
+		BotID:        authResp.BotID,
+	}
+
+	slackClient = slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(httpClient),
+		slack.OptionAPIURL(authResp.URL+"api/"),
+	)
+
+	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
+		edge.OptionHTTPClient(httpClient),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	isEnterprise := authResp.EnterpriseID != ""
+
+	return &MCPSlackClient{
+		slackClient:  slackClient,
+		edgeClient:   edgeClient,
+		authResponse: authResponse,
+		authProvider: authProvider,
+		isEnterprise: isEnterprise,
+		teamEndpoint: authResp.URL,
+	}, nil
+}
+
+func (c *MCPSlackClient) AuthTest() (*slack.AuthTestResponse, error) {
+	if c.authResponse != nil {
+		return c.authResponse, nil
+	}
+
+	return c.slackClient.AuthTest()
+}
+
+func (c *MCPSlackClient) AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error) {
+	return c.slackClient.AuthTestContext(ctx)
+}
+
+func (c *MCPSlackClient) GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error) {
+	return c.slackClient.GetUsersContext(ctx, options...)
+}
+
+func (c *MCPSlackClient) GetUsersInfo(users ...string) (*[]slack.User, error) {
+	return c.slackClient.GetUsersInfo(users...)
+}
+
+func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
+	if c.isEnterprise {
+		edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
+		if err != nil {
+			return nil, "", err
+		}
+
+		var channels []slack.Channel
+		for _, ec := range edgeChannels {
+			if params != nil && params.ExcludeArchived && ec.IsArchived {
+				continue
+			}
+
+			channels = append(channels, slack.Channel{
+				IsGeneral: ec.IsGeneral,
+				GroupConversation: slack.GroupConversation{
+					Conversation: slack.Conversation{
+						ID:                 ec.ID,
+						IsIM:               ec.IsIM,
+						IsMpIM:             ec.IsMpIM,
+						IsPrivate:          ec.IsPrivate,
+						Created:            slack.JSONTime(ec.Created.Time().UnixMilli()),
+						Unlinked:           ec.Unlinked,
+						NameNormalized:     ec.NameNormalized,
+						IsShared:           ec.IsShared,
+						IsExtShared:        ec.IsExtShared,
+						IsOrgShared:        ec.IsOrgShared,
+						IsPendingExtShared: ec.IsPendingExtShared,
+						NumMembers:         ec.NumMembers,
+					},
+					Name:       ec.Name,
+					IsArchived: ec.IsArchived,
+					Members:    ec.Members,
+					Topic: slack.Topic{
+						Value: ec.Topic.Value,
+					},
+					Purpose: slack.Purpose{
+						Value: ec.Purpose.Value,
+					},
+				},
+			})
+		}
+
+		return channels, "", nil
+	}
+
+	return c.slackClient.GetConversationsContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
+	return c.slackClient.GetConversationHistoryContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error) {
+	return c.slackClient.GetConversationRepliesContext(ctx, params)
+}
+
+func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error) {
+	return c.slackClient.SearchContext(ctx, query, params)
+}
+
+func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
+	return c.slackClient.PostMessageContext(ctx, channelID, options...)
+}
+
+func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
+	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) IsEnterprise() bool {
+	return c.isEnterprise
+}
+
+func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
+	return c.authResponse
+}
+
+func (c *MCPSlackClient) Raw() struct {
+	Slack *slack.Client
+	Edge  *edge.Client
+} {
+	return struct {
+		Slack *slack.Client
+		Edge  *edge.Client
+	}{
+		Slack: c.slackClient,
+		Edge:  c.edgeClient,
+	}
 }
 
 func New(transport string) *ApiProvider {
@@ -118,29 +298,14 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth) *ApiProvider {
 		channelsCache = ".channels_cache.json"
 	}
 
+	client, err := NewMCPSlackClient(authProvider)
+	if err != nil {
+		panic(err)
+	}
+
 	return &ApiProvider{
 		transport: transport,
-		boot: func(ap *ApiProvider) *slack.Client {
-			api := slack.New(authProvider.SlackToken())
-			res, err := api.AuthTest()
-			if err != nil {
-				panic(err)
-			} else {
-				ap.authProvider = &authProvider
-				ap.authResponse = &slack2.AuthTestResponse{
-					URL:          res.URL,
-					Team:         res.Team,
-					User:         res.User,
-					TeamID:       res.TeamID,
-					UserID:       res.UserID,
-					EnterpriseID: res.EnterpriseID,
-					BotID:        res.BotID,
-				}
-				log.Printf("Authenticated as: %s\n", res)
-			}
-
-			return api
-		},
+		client:    client,
 
 		users:      make(map[string]slack.User),
 		usersInv:   map[string]string{},
@@ -163,36 +328,14 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth) *ApiProvider {
 		channelsCache = ".channels_cache_v2.json"
 	}
 
+	client, err := NewMCPSlackClient(authProvider)
+	if err != nil {
+		panic(err)
+	}
+
 	return &ApiProvider{
 		transport: transport,
-		boot: func(ap *ApiProvider) *slack.Client {
-			api := slack.New(authProvider.SlackToken(),
-				withHTTPClientOption(authProvider.Cookies()),
-			)
-			res, err := api.AuthTest()
-			if err != nil {
-				panic(err)
-			} else {
-				ap.authProvider = &authProvider
-				ap.authResponse = &slack2.AuthTestResponse{
-					URL:          res.URL,
-					Team:         res.Team,
-					User:         res.User,
-					TeamID:       res.TeamID,
-					UserID:       res.UserID,
-					EnterpriseID: res.EnterpriseID,
-					BotID:        res.BotID,
-				}
-				log.Printf("Authenticated as: %s\n", res)
-			}
-
-			api = slack.New(authProvider.SlackToken(),
-				withHTTPClientOption(authProvider.Cookies()),
-				withTeamEndpointOption(res.URL),
-			)
-
-			return api
-		},
+		client:    client,
 
 		users:      make(map[string]slack.User),
 		usersInv:   map[string]string{},
@@ -204,33 +347,13 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth) *ApiProvider {
 	}
 }
 
-func (ap *ApiProvider) ProvideGeneric() (*slack.Client, *slack2.AuthTestResponse, error) {
-	if ap.clientGeneric == nil {
-		ap.clientGeneric = ap.boot(ap)
-	}
-
-	return ap.clientGeneric, ap.authResponse, nil
-}
-
-func (ap *ApiProvider) ProvideEnterprise() (*edge.Client, *slack2.AuthTestResponse, error) {
-	if ap.clientEnterprise == nil {
-		ap.clientEnterprise, _ = edge.NewWithInfo(ap.authResponse, ap.authProvider,
-			withHTTPClientEdgeOption(ap.authProvider.Cookies()),
-		)
-	}
-
-	return ap.clientEnterprise, ap.authResponse, nil
-}
-
-func (ap *ApiProvider) AuthResponse() (*slack2.AuthTestResponse, error) {
-	if ap.authResponse == nil {
-		return nil, errors.New("not authenticated")
-	}
-
-	return ap.authResponse, nil
-}
-
 func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
+	var (
+		list         []slack.User
+		usersCounter = 0
+		optionLimit  = slack.GetUsersOptionLimit(1000)
+	)
+
 	if data, err := ioutil.ReadFile(ap.usersCache); err == nil {
 		var cachedUsers []slack.User
 		if err := json.Unmarshal(data, &cachedUsers); err != nil {
@@ -246,37 +369,47 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 		}
 	}
 
-	optionLimit := slack.GetUsersOptionLimit(1000)
-
-	client, _, err := ap.ProvideGeneric()
-	if err != nil {
-		return err
-	}
-
-	users, err := client.GetUsersContext(ctx,
+	users, err := ap.client.GetUsersContext(ctx,
 		optionLimit,
 	)
 	if err != nil {
 		log.Printf("Failed to fetch users: %v", err)
 		return err
+	} else {
+		list = append(list, users...)
 	}
 
 	for _, user := range users {
 		ap.users[user.ID] = user
 		ap.usersInv[user.Name] = user.ID
+		usersCounter++
 	}
 
-	if data, err := json.MarshalIndent(users, "", "  "); err != nil {
+	users, err = ap.GetSlackConnect(ctx)
+	if err != nil {
+		log.Printf("Failed to fetch users from Slack Connect: %v", err)
+		return err
+	} else {
+		list = append(list, users...)
+	}
+
+	for _, user := range users {
+		ap.users[user.ID] = user
+		ap.usersInv[user.Name] = user.ID
+		usersCounter++
+	}
+
+	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		log.Printf("Failed to marshal users for cache: %v", err)
 	} else {
 		if err := ioutil.WriteFile(ap.usersCache, data, 0644); err != nil {
 			log.Printf("Failed to write cache file %q: %v", ap.usersCache, err)
 		} else {
-			log.Printf("Wrote %d users to cache %q", len(users), ap.usersCache)
+			log.Printf("Wrote %d users to cache %q", usersCounter, ap.usersCache)
 		}
 	}
 
-	log.Printf("Cached %d users into %q", len(users), ap.usersCache)
+	log.Printf("Cached %d users into %q", usersCounter, ap.usersCache)
 	ap.usersReady = true
 
 	return nil
@@ -316,6 +449,41 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 	return nil
 }
 
+func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error) {
+	boot, err := ap.client.ClientUserBoot(ctx)
+	if err != nil {
+		log.Printf("Failed to fetch client user boot: %v", err)
+		return nil, err
+	}
+
+	var collectedIDs []string
+	for _, im := range boot.IMs {
+		if !im.IsShared && !im.IsExtShared {
+			continue
+		}
+
+		_, ok := ap.users[im.User]
+		if !ok {
+			collectedIDs = append(collectedIDs, im.User)
+		}
+	}
+
+	res := make([]slack.User, 0, len(collectedIDs))
+	if len(collectedIDs) > 0 {
+		usersInfo, err := ap.client.GetUsersInfo(strings.Join(collectedIDs, ","))
+		if err != nil {
+			log.Printf("Failed to fetch users info for shared IMs: %v", err)
+			return nil, err
+		}
+
+		for _, u := range *usersInfo {
+			res = append(res, u)
+		}
+	}
+
+	return res, nil
+}
+
 func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) []Channel {
 	if len(channelTypes) == 0 {
 		channelTypes = AllChanTypes
@@ -328,81 +496,42 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	}
 
 	var (
-		chans1 []slack.Channel
-		chans2 []slack2.Channel
-		chans  []Channel
+		channels []slack.Channel
+		chans    []Channel
 
 		nextcur string
+		err     error
 	)
-
-	clientGeneric, _, err := ap.ProvideGeneric()
-	if err != nil {
-		return nil
-	}
-
-	clientE, _, err := ap.ProvideEnterprise()
-	if err != nil {
-		return nil
-	}
 
 	lim := limiter.Tier2boost.Limiter()
 	for {
-		if ap.authResponse.EnterpriseID == "" {
-			chans1, nextcur, err = clientGeneric.GetConversationsContext(ctx, params)
-			if err != nil {
-				log.Printf("Failed to fetch channels: %v", err)
-				break
-			}
-			for _, channel := range chans1 {
-				ch := mapChannel(
-					channel.ID,
-					channel.Name,
-					channel.NameNormalized,
-					channel.Topic.Value,
-					channel.Purpose.Value,
-					channel.User,
-					channel.Members,
-					channel.NumMembers,
-					channel.IsIM,
-					channel.IsMpIM,
-					channel.IsPrivate,
-					ap.ProvideUsersMap().Users,
-				)
-				chans = append(chans, ch)
-			}
-			if err := lim.Wait(ctx); err != nil {
-				return nil
-			}
-		} else {
-			chans2, _, err = clientE.GetConversationsContext(ctx, nil)
-			if err != nil {
-				log.Printf("Failed to fetch channels: %v", err)
-				break
-			}
-			for _, channel := range chans2 {
-				if params.ExcludeArchived && channel.IsArchived {
-					continue
-				}
+		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
+		if err != nil {
+			log.Printf("Failed to fetch channels: %v", err)
+			break
+		}
 
-				ch := mapChannel(
-					channel.ID,
-					channel.Name,
-					channel.NameNormalized,
-					channel.Topic.Value,
-					channel.Purpose.Value,
-					channel.User,
-					channel.Members,
-					channel.NumMembers,
-					channel.IsIM,
-					channel.IsMpIM,
-					channel.IsPrivate,
-					ap.ProvideUsersMap().Users,
-				)
-				chans = append(chans, ch)
-			}
-			if err := lim.Wait(ctx); err != nil {
-				return nil
-			}
+		chans = make([]Channel, 0, len(channels))
+		for _, channel := range channels {
+			ch := mapChannel(
+				channel.ID,
+				channel.Name,
+				channel.NameNormalized,
+				channel.Topic.Value,
+				channel.Purpose.Value,
+				channel.User,
+				channel.Members,
+				channel.NumMembers,
+				channel.IsIM,
+				channel.IsMpIM,
+				channel.IsPrivate,
+				ap.ProvideUsersMap().Users,
+			)
+			chans = append(chans, ch)
+		}
+
+		if err := lim.Wait(ctx); err != nil {
+			return nil
 		}
 
 		for _, ch := range chans {
@@ -411,7 +540,6 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		}
 
 		if nextcur == "" {
-			log.Printf("channels fetch exhausted")
 			break
 		}
 
@@ -467,22 +595,8 @@ func (ap *ApiProvider) ServerTransport() string {
 	return ap.transport
 }
 
-func withHTTPClientOption(cookies []*http.Cookie) func(c *slack.Client) {
-	return func(c *slack.Client) {
-		slack.OptionHTTPClient(provideHTTPClient(cookies))(c)
-	}
-}
-
-func withHTTPClientEdgeOption(cookies []*http.Cookie) func(c *edge.Client) {
-	return func(c *edge.Client) {
-		edge.OptionHTTPClient(provideHTTPClient(cookies))(c)
-	}
-}
-
-func withTeamEndpointOption(url string) slack.Option {
-	return func(c *slack.Client) {
-		slack.OptionAPIURL(url + "api/")(c)
-	}
+func (ap *ApiProvider) Slack() SlackAPI {
+	return ap.client
 }
 
 func provideHTTPClient(cookies []*http.Cookie) *http.Client {

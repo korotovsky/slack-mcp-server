@@ -19,10 +19,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rusq/slack"
 	"github.com/rusq/slackauth"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/rusq/tagops"
+	"github.com/slack-go/slack"
 )
 
 type httpClient interface {
@@ -133,7 +133,15 @@ func New(ctx context.Context, prov auth.Provider, opt ...Option) (*Client, error
 	if err != nil {
 		return nil, err
 	}
-	return NewWithInfo(info, prov, opt...)
+	return NewWithInfo(&slack.AuthTestResponse{
+		URL:          info.URL,
+		Team:         info.Team,
+		User:         info.User,
+		TeamID:       info.TeamID,
+		UserID:       info.UserID,
+		EnterpriseID: info.EnterpriseID,
+		BotID:        info.BotID,
+	}, prov, opt...)
 }
 
 func (cl *Client) Raw() httpClient {

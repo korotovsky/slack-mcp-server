@@ -52,7 +52,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, err
 	}
 
-	_, ar, err := ch.apiProvider.ProvideGeneric()
+	ar, err := ch.apiProvider.Slack().AuthTest()
 	if err != nil {
 		return nil, err
 	}
