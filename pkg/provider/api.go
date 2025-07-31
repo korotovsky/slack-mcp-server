@@ -128,10 +128,10 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	token := authProvider.SlackToken()
 	isXOXPToken := strings.HasPrefix(token, "xoxp-")
 	isEnterprise := authResp.EnterpriseID != ""
-	
+
 	// Only use Edge API if we're in Enterprise Grid AND not using an xoxp token
 	useEdgeAPI := isEnterprise && !isXOXPToken
-	
+
 	// Log token type and API selection for debugging
 	logger.Debug("Token type detection",
 		zap.Bool("isXOXPToken", isXOXPToken),
