@@ -77,6 +77,7 @@ type MCPSlackClient struct {
 	authProvider auth.Provider
 
 	isEnterprise bool
+	useEdgeAPI   bool // Controls whether to use Enterprise Grid APIs
 	teamEndpoint string
 }
 
@@ -123,14 +124,32 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
 
-	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
-		edge.OptionHTTPClient(httpClient),
-	)
-	if err != nil {
-		return nil, err
-	}
-
+	// Detect token type and Enterprise Grid status
+	token := authProvider.SlackToken()
+	isXOXPToken := strings.HasPrefix(token, "xoxp-")
 	isEnterprise := authResp.EnterpriseID != ""
+	
+	// Only use Edge API if we're in Enterprise Grid AND not using an xoxp token
+	useEdgeAPI := isEnterprise && !isXOXPToken
+	
+	// Log token type and API selection for debugging
+	logger.Debug("Token type detection",
+		zap.Bool("isXOXPToken", isXOXPToken),
+		zap.Bool("isEnterprise", isEnterprise),
+		zap.Bool("useEdgeAPI", useEdgeAPI),
+		zap.String("tokenPrefix", token[:5]+"..."), // Log only the prefix for security
+	)
+
+	var edgeClient *edge.Client
+	if useEdgeAPI {
+		edgeClient, err = edge.NewWithInfo(authResponse, authProvider,
+			edge.OptionHTTPClient(httpClient),
+		)
+		if err != nil {
+			logger.Warn("Failed to create edge client, falling back to standard API", zap.Error(err))
+			useEdgeAPI = false
+		}
+	}
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
@@ -138,6 +157,7 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
+		useEdgeAPI:   useEdgeAPI,
 		teamEndpoint: authResp.URL,
 	}, nil
 }
@@ -179,7 +199,7 @@ func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, t
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
-	if c.isEnterprise {
+	if c.useEdgeAPI && c.edgeClient != nil {
 		edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
 		if err != nil {
 			return nil, "", err
@@ -244,6 +264,12 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
+	if !c.useEdgeAPI || c.edgeClient == nil {
+		// Return empty response for xoxp tokens as they don't support Enterprise Grid APIs
+		return &edge.ClientUserBootResponse{
+			IMs: []edge.IM{},
+		}, nil
+	}
 	return c.edgeClient.ClientUserBoot(ctx)
 }
 
