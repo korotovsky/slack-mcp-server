@@ -14,6 +14,7 @@ import (
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 const usersNotReadyMsg = "users cache is not ready yet, sync process is still running... please wait"
@@ -95,6 +96,9 @@ type ApiProvider struct {
 	channelsInv   map[string]string
 	channelsCache string
 	channelsReady bool
+
+	// Shared rate limiter for all API calls
+	rateLimiter *rate.Limiter
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -364,6 +368,8 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		rateLimiter: limiter.Tier2.Limiter(),
 	}
 }
 
@@ -404,6 +410,8 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		rateLimiter: limiter.Tier2.Limiter(),
 	}
 }
 
@@ -431,6 +439,12 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 			ap.usersReady = true
 			return nil
 		}
+	}
+
+	// Apply rate limiting before API call
+	if err := ap.rateLimiter.Wait(ctx); err != nil {
+		ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+		return err
 	}
 
 	users, err := ap.client.GetUsersContext(ctx,
@@ -524,6 +538,12 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 }
 
 func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error) {
+	// Apply rate limiting before API call
+	if err := ap.rateLimiter.Wait(ctx); err != nil {
+		ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+		return nil, err
+	}
+
 	boot, err := ap.client.ClientUserBoot(ctx)
 	if err != nil {
 		ap.logger.Error("Failed to fetch client user boot", zap.Error(err))
@@ -544,6 +564,12 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 
 	res := make([]slack.User, 0, len(collectedIDs))
 	if len(collectedIDs) > 0 {
+		// Apply rate limiting before API call
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+			return nil, err
+		}
+
 		usersInfo, err := ap.client.GetUsersInfo(strings.Join(collectedIDs, ","))
 		if err != nil {
 			ap.logger.Error("Failed to fetch users info for shared IMs", zap.Error(err))
@@ -577,8 +603,13 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		err     error
 	)
 
-	lim := limiter.Tier2boost.Limiter()
 	for {
+		// Wait for rate limiter BEFORE making the API call
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+			return nil
+		}
+
 		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
 		if err != nil {
 			ap.logger.Error("Failed to fetch channels", zap.Error(err))
@@ -602,10 +633,6 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 				ap.ProvideUsersMap().Users,
 			)
 			chans = append(chans, ch)
-		}
-
-		if err := lim.Wait(ctx); err != nil {
-			return nil
 		}
 
 		for _, ch := range chans {
