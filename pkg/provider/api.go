@@ -14,6 +14,7 @@ import (
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 const usersNotReadyMsg = "users cache is not ready yet, sync process is still running... please wait"
@@ -77,6 +78,7 @@ type MCPSlackClient struct {
 	authProvider auth.Provider
 
 	isEnterprise bool
+	useEdgeAPI   bool // Controls whether to use Enterprise Grid APIs
 	teamEndpoint string
 }
 
@@ -94,6 +96,9 @@ type ApiProvider struct {
 	channelsInv   map[string]string
 	channelsCache string
 	channelsReady bool
+
+	// Shared rate limiter for all API calls
+	rateLimiter *rate.Limiter
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -123,14 +128,32 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
 
-	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
-		edge.OptionHTTPClient(httpClient),
-	)
-	if err != nil {
-		return nil, err
-	}
-
+	// Detect token type and Enterprise Grid status
+	token := authProvider.SlackToken()
+	isXOXPToken := strings.HasPrefix(token, "xoxp-")
 	isEnterprise := authResp.EnterpriseID != ""
+
+	// Only use Edge API if we're in Enterprise Grid AND not using an xoxp token
+	useEdgeAPI := isEnterprise && !isXOXPToken
+
+	// Log token type and API selection for debugging
+	logger.Debug("Token type detection",
+		zap.Bool("isXOXPToken", isXOXPToken),
+		zap.Bool("isEnterprise", isEnterprise),
+		zap.Bool("useEdgeAPI", useEdgeAPI),
+		zap.String("tokenPrefix", token[:5]+"..."), // Log only the prefix for security
+	)
+
+	var edgeClient *edge.Client
+	if useEdgeAPI {
+		edgeClient, err = edge.NewWithInfo(authResponse, authProvider,
+			edge.OptionHTTPClient(httpClient),
+		)
+		if err != nil {
+			logger.Warn("Failed to create edge client, falling back to standard API", zap.Error(err))
+			useEdgeAPI = false
+		}
+	}
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
@@ -138,6 +161,7 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
+		useEdgeAPI:   useEdgeAPI,
 		teamEndpoint: authResp.URL,
 	}, nil
 }
@@ -179,7 +203,7 @@ func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, t
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
-	if c.isEnterprise {
+	if c.useEdgeAPI && c.edgeClient != nil {
 		edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
 		if err != nil {
 			return nil, "", err
@@ -244,6 +268,12 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
+	if !c.useEdgeAPI || c.edgeClient == nil {
+		// Return empty response for xoxp tokens as they don't support Enterprise Grid APIs
+		return &edge.ClientUserBootResponse{
+			IMs: []edge.IM{},
+		}, nil
+	}
 	return c.edgeClient.ClientUserBoot(ctx)
 }
 
@@ -338,6 +368,8 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		rateLimiter: limiter.Tier2.Limiter(),
 	}
 }
 
@@ -378,6 +410,8 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		rateLimiter: limiter.Tier2.Limiter(),
 	}
 }
 
@@ -405,6 +439,12 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 			ap.usersReady = true
 			return nil
 		}
+	}
+
+	// Apply rate limiting before API call
+	if err := ap.rateLimiter.Wait(ctx); err != nil {
+		ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+		return err
 	}
 
 	users, err := ap.client.GetUsersContext(ctx,
@@ -498,6 +538,12 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 }
 
 func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error) {
+	// Apply rate limiting before API call
+	if err := ap.rateLimiter.Wait(ctx); err != nil {
+		ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+		return nil, err
+	}
+
 	boot, err := ap.client.ClientUserBoot(ctx)
 	if err != nil {
 		ap.logger.Error("Failed to fetch client user boot", zap.Error(err))
@@ -518,6 +564,12 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 
 	res := make([]slack.User, 0, len(collectedIDs))
 	if len(collectedIDs) > 0 {
+		// Apply rate limiting before API call
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+			return nil, err
+		}
+
 		usersInfo, err := ap.client.GetUsersInfo(strings.Join(collectedIDs, ","))
 		if err != nil {
 			ap.logger.Error("Failed to fetch users info for shared IMs", zap.Error(err))
@@ -551,8 +603,13 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		err     error
 	)
 
-	lim := limiter.Tier2boost.Limiter()
 	for {
+		// Wait for rate limiter BEFORE making the API call
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+			return nil
+		}
+
 		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
 		if err != nil {
 			ap.logger.Error("Failed to fetch channels", zap.Error(err))
@@ -576,10 +633,6 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 				ap.ProvideUsersMap().Users,
 			)
 			chans = append(chans, ch)
-		}
-
-		if err := lim.Wait(ctx); err != nil {
-			return nil
 		}
 
 		for _, ch := range chans {
