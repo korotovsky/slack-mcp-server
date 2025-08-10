@@ -311,6 +311,12 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsSearchHandler called", zap.Any("params", request.Params))
 
+	// Check if search_query is a Slack permalink URL
+	searchQuery := strings.TrimSpace(request.GetString("search_query", ""))
+	if isSlackPermalink(searchQuery) {
+		return ch.handleSlackPermalink(ctx, searchQuery)
+	}
+
 	params, err := ch.parseParamsToolSearch(request)
 	if err != nil {
 		ch.logger.Error("Failed to parse search params", zap.Error(err))
@@ -974,4 +980,114 @@ func buildQuery(freeText []string, filters map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+// isSlackPermalink checks if a string is a Slack permalink URL
+func isSlackPermalink(s string) bool {
+	return strings.Contains(s, "slack.com/archives/")
+}
+
+// parseSlackPermalink extracts channel ID, message timestamp, and thread timestamp from a Slack permalink
+func parseSlackPermalink(permalink string) (channelID, messageTs, threadTs string, err error) {
+	u, err := url.Parse(permalink)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Extract path components
+	// URL format: https://domain.slack.com/archives/C1234567890/p1234567890123456
+	// or: https://domain.slack.com/archives/C1234567890/p1234567890123456?thread_ts=1234567890.123456
+	parts := strings.Split(u.Path, "/")
+	if len(parts) < 4 || parts[1] != "archives" {
+		return "", "", "", fmt.Errorf("invalid Slack permalink format")
+	}
+
+	channelID = parts[2]
+	if !strings.HasPrefix(channelID, "C") && !strings.HasPrefix(channelID, "D") && !strings.HasPrefix(channelID, "G") {
+		return "", "", "", fmt.Errorf("invalid channel ID in URL: %s", channelID)
+	}
+
+	// Parse message timestamp from path (p1234567890123456 -> 1234567890.123456)
+	if len(parts) > 3 && strings.HasPrefix(parts[3], "p") {
+		msgID := parts[3][1:] // Remove 'p' prefix
+		if len(msgID) >= 16 {
+			// Convert p1234567890123456 to 1234567890.123456
+			messageTs = msgID[:10] + "." + msgID[10:]
+		}
+	}
+
+	// Check for thread_ts in query parameters
+	threadTs = u.Query().Get("thread_ts")
+	if threadTs == "" && messageTs != "" {
+		// If no thread_ts in query, check if this message is itself a thread parent
+		// We'll need to determine this when fetching the message
+		threadTs = messageTs
+	}
+
+	return channelID, messageTs, threadTs, nil
+}
+
+// handleSlackPermalink fetches messages from a Slack permalink URL
+func (ch *ConversationsHandler) handleSlackPermalink(ctx context.Context, permalink string) (*mcp.CallToolResult, error) {
+	channelID, messageTs, threadTs, err := parseSlackPermalink(permalink)
+	if err != nil {
+		ch.logger.Error("Failed to parse Slack permalink", zap.String("url", permalink), zap.Error(err))
+		return nil, fmt.Errorf("invalid Slack permalink: %v", err)
+	}
+
+	ch.logger.Debug("Parsed Slack permalink",
+		zap.String("channel", channelID),
+		zap.String("message_ts", messageTs),
+		zap.String("thread_ts", threadTs),
+	)
+
+	// If thread_ts is provided, fetch the entire thread
+	if threadTs != "" {
+		repliesParams := slack.GetConversationRepliesParameters{
+			ChannelID: channelID,
+			Timestamp: threadTs,
+			Limit:     100,
+			Inclusive: true,
+		}
+		replies, _, _, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &repliesParams)
+		if err != nil {
+			// If thread fetch fails, try fetching as a single message
+			ch.logger.Debug("Thread fetch failed, trying single message", zap.Error(err))
+			return ch.fetchSingleMessage(ctx, channelID, messageTs)
+		}
+		
+		messages := ch.convertMessagesFromHistory(replies, channelID, false)
+		return marshalMessagesToCSV(messages)
+	}
+
+	// Otherwise, fetch single message
+	return ch.fetchSingleMessage(ctx, channelID, messageTs)
+}
+
+// fetchSingleMessage fetches a single message by channel and timestamp
+func (ch *ConversationsHandler) fetchSingleMessage(ctx context.Context, channelID, messageTs string) (*mcp.CallToolResult, error) {
+	if messageTs == "" {
+		return nil, fmt.Errorf("message timestamp is required")
+	}
+
+	historyParams := slack.GetConversationHistoryParameters{
+		ChannelID: channelID,
+		Limit:     1,
+		Oldest:    messageTs,
+		Latest:    messageTs,
+		Inclusive: true,
+	}
+	
+	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+	if err != nil {
+		ch.logger.Error("Failed to fetch message", zap.Error(err))
+		return nil, fmt.Errorf("failed to fetch message: %v", err)
+	}
+
+	if len(history.Messages) == 0 {
+		return nil, fmt.Errorf("message not found")
+	}
+
+	messages := ch.convertMessagesFromHistory(history.Messages, channelID, false)
+	return marshalMessagesToCSV(messages)
 }
