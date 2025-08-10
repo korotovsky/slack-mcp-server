@@ -590,3 +590,148 @@ func TestUnitLimitByExpression_Invalid(t *testing.T) {
 		})
 	}
 }
+
+func TestUnitIsSlackPermalink(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "Valid Slack permalink",
+			input:    "https://example.slack.com/archives/C1234567890/p1234567890123456",
+			expected: true,
+		},
+		{
+			name:     "Valid Slack permalink with thread",
+			input:    "https://example.slack.com/archives/C1234567890/p1234567890123456?thread_ts=1234567890.123456",
+			expected: true,
+		},
+		{
+			name:     "Valid Slack permalink with additional params",
+			input:    "https://example.slack.com/archives/C1234567890/p1234567890123456?thread_ts=1234567890.123456&cid=C1234567890",
+			expected: true,
+		},
+		{
+			name:     "Not a Slack URL",
+			input:    "https://example.com/some/path",
+			expected: false,
+		},
+		{
+			name:     "Plain text query",
+			input:    "search for something",
+			expected: false,
+		},
+		{
+			name:     "Empty string",
+			input:    "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isSlackPermalink(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestUnitParseSlackPermalink(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		wantChannelID string
+		wantMessageTs string
+		wantThreadTs  string
+		wantErr       bool
+	}{
+		{
+			name:          "Valid permalink with message only",
+			input:         "https://example.slack.com/archives/C1234567890/p1234567890123456",
+			wantChannelID: "C1234567890",
+			wantMessageTs: "1234567890.123456",
+			wantThreadTs:  "1234567890.123456",
+			wantErr:       false,
+		},
+		{
+			name:          "Valid permalink with thread_ts",
+			input:         "https://example.slack.com/archives/C1234567890/p1234567890123456?thread_ts=9876543210.654321",
+			wantChannelID: "C1234567890",
+			wantMessageTs: "1234567890.123456",
+			wantThreadTs:  "9876543210.654321",
+			wantErr:       false,
+		},
+		{
+			name:          "Valid permalink with DM channel",
+			input:         "https://example.slack.com/archives/D1234567890/p1234567890123456",
+			wantChannelID: "D1234567890",
+			wantMessageTs: "1234567890.123456",
+			wantThreadTs:  "1234567890.123456",
+			wantErr:       false,
+		},
+		{
+			name:          "Valid permalink with group channel",
+			input:         "https://example.slack.com/archives/G1234567890/p1234567890123456",
+			wantChannelID: "G1234567890",
+			wantMessageTs: "1234567890.123456",
+			wantThreadTs:  "1234567890.123456",
+			wantErr:       false,
+		},
+		{
+			name:          "Invalid URL format",
+			input:         "not-a-url",
+			wantChannelID: "",
+			wantMessageTs: "",
+			wantThreadTs:  "",
+			wantErr:       true,
+		},
+		{
+			name:          "Wrong path format",
+			input:         "https://example.slack.com/messages/C1234567890",
+			wantChannelID: "",
+			wantMessageTs: "",
+			wantThreadTs:  "",
+			wantErr:       true,
+		},
+		{
+			name:          "Invalid channel ID",
+			input:         "https://example.slack.com/archives/X1234567890/p1234567890123456",
+			wantChannelID: "",
+			wantMessageTs: "",
+			wantThreadTs:  "",
+			wantErr:       true,
+		},
+		{
+			name:          "Missing message ID",
+			input:         "https://example.slack.com/archives/C1234567890/",
+			wantChannelID: "C1234567890",
+			wantMessageTs: "",
+			wantThreadTs:  "",
+			wantErr:       false,
+		},
+		{
+			name:          "Short message ID",
+			input:         "https://example.slack.com/archives/C1234567890/p123",
+			wantChannelID: "C1234567890",
+			wantMessageTs: "",
+			wantThreadTs:  "",
+			wantErr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channelID, messageTs, threadTs, err := parseSlackPermalink(tt.input)
+			
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantChannelID, channelID)
+				assert.Equal(t, tt.wantMessageTs, messageTs)
+				assert.Equal(t, tt.wantThreadTs, threadTs)
+			}
+		})
+	}
+}
