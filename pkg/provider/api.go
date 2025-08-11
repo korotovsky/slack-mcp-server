@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -67,6 +68,20 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Files API (used for canvas listing/details)
+	GetFilesContext(ctx context.Context, params slack.GetFilesParameters) ([]slack.File, *slack.Paging, error)
+	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
+	//DeleteFileContext(ctx context.Context, fileID string) error
+	//UploadFileContext(ctx context.Context, params slack.FileUploadParameters) (*slack.File, error)
+	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
+
+	// Canvas API
+	CreateCanvas(title string, documentContent slack.DocumentContent) (string, error)
+	EditCanvas(params slack.EditCanvasParams) error
+	DeleteCanvas(canvasID string) error
+	SetCanvasAccess(params slack.SetCanvasAccessParams) error
+	LookupCanvasSections(params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error)
 }
 
 type MCPSlackClient struct {
@@ -245,6 +260,38 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) GetFilesContext(ctx context.Context, params slack.GetFilesParameters) ([]slack.File, *slack.Paging, error) {
+	return c.slackClient.GetFilesContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
+	return c.slackClient.GetFileInfoContext(ctx, fileID, count, page)
+}
+
+func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
+	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
+}
+
+func (c *MCPSlackClient) CreateCanvas(title string, documentContent slack.DocumentContent) (string, error) {
+	return c.slackClient.CreateCanvas(title, documentContent)
+}
+
+func (c *MCPSlackClient) EditCanvas(params slack.EditCanvasParams) error {
+	return c.slackClient.EditCanvas(params)
+}
+
+func (c *MCPSlackClient) DeleteCanvas(canvasID string) error {
+	return c.slackClient.DeleteCanvas(canvasID)
+}
+
+func (c *MCPSlackClient) SetCanvasAccess(params slack.SetCanvasAccessParams) error {
+	return c.slackClient.SetCanvasAccess(params)
+}
+
+func (c *MCPSlackClient) LookupCanvasSections(params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error) {
+	return c.slackClient.LookupCanvasSections(params)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {

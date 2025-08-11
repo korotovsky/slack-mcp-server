@@ -155,6 +155,40 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), channelsHandler.ChannelsHandler)
 
+	canvasesHandler := handler.NewCanvasesHandler(provider, logger)
+
+	s.AddTool(mcp.NewTool("canvases_history",
+		mcp.WithDescription("Get all canvases or a single canvas when canvas_id is provided. Returns CSV."),
+		mcp.WithString("canvas_id",
+			mcp.Description("Optional canvas ID to fetch a single canvas."),
+		),
+	), canvasesHandler.CanvasesHistoryHandler)
+
+	s.AddTool(mcp.NewTool("canvases_upsert",
+		mcp.WithDescription("Create or edit a canvas with Markdown content."),
+		mcp.WithString("content_markdown",
+			mcp.Required(),
+			mcp.Description("Canvas content in Markdown."),
+		),
+		mcp.WithString("canvas_id",
+			mcp.Description("Existing canvas ID to update (omit to create)."),
+		),
+		mcp.WithString("title",
+			mcp.Description("Canvas title (used when creating)."),
+		),
+		mcp.WithString("channel_id",
+			mcp.Description("Channel to associate the canvas with (optional)."),
+		),
+	), canvasesHandler.CanvasesUpsertHandler)
+
+	s.AddTool(mcp.NewTool("canvases_remove",
+		mcp.WithDescription("Delete a canvas by ID."),
+		mcp.WithString("canvas_id",
+			mcp.Required(),
+			mcp.Description("Canvas ID to remove."),
+		),
+	), canvasesHandler.CanvasesRemoveHandler)
+
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
 	)
