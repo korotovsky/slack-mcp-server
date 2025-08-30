@@ -47,6 +47,16 @@ Instead of using browser-based tokens (`xoxc`/`xoxd`), you can use a User OAuth 
 3. Install the app to your workspace
 4. Copy the "User OAuth Token" (starts with `xoxp-`)
 
-> **Note**: You only need **either** XOXP token **or** both XOXC/XOXD tokens. XOXP user tokens are more secure and don't require browser session extraction.
+#### Alternative: Using `SLACK_MCP_XOXB_TOKEN` (Bot User OAuth)
+
+Same as User OAuth above, but with these differences:
+- Use **Bot Token Scopes** (not User OAuth Scopes)
+- Remove: `im:write`, `mpim:write`, `search:read` scopes
+- Copy the "Bot User OAuth Token" (starts with `xoxb-`)
+- **Important**: Bot must be invited to channels/conversations to access messages
+
+**Limitations**: No search functionality, must be added to private channels/DMs, cannot access Slack Connect users
+
+> **Note**: You only need **one** of the following: XOXB token (Bot User OAuth), XOXP token (User OAuth), **or** both XOXC/XOXD tokens (session-based). Bot tokens are ideal for automated applications but have some limitations compared to user tokens.
 
 See next: [Installation](02-installation.md)
