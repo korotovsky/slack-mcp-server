@@ -9,11 +9,11 @@ Model Context Protocol (MCP) server for Slack Workspaces. The most powerful MCP 
 > If you appreciate the work our [contributors](https://github.com/korotovsky/slack-mcp-server/graphs/contributors) have put into this project, please consider giving the repository a star.
 
 This feature-rich Slack MCP Server has:
-- **Stealth and OAuth Modes**: Run the server without requiring additional permissions or bot installations (stealth mode), or use secure OAuth tokens for access without needing to refresh or extract tokens from the browser (OAuth mode).
+- **Stealth, OAuth, and Bot Modes**: Run the server without requiring additional permissions or bot installations (stealth mode), use secure OAuth tokens for access without needing to refresh or extract tokens from the browser (OAuth mode), or use Bot User OAuth tokens (xoxb) for bot applications with appropriate limitations.
 - **Enterprise Workspaces Support**: Possibility to integrate with Enterprise Slack setups.
 - **Channel and Thread Support with `#Name` `@Lookup`**: Fetch messages from channels and threads, including activity messages, and retrieve channels using their names (e.g., #general) as well as their IDs.
 - **Smart History**: Fetch messages with pagination by date (d1, 7d, 1m) or message count.
-- **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content.
+- **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content (requires user or session tokens, not available for bot tokens).
 - **Safe Message Posting**: The `conversations_add_message` tool is disabled by default for safety. Enable it via an environment variable, with optional channel restrictions.
 - **DM and Group DM support**: Retrieve direct messages and group direct messages.
 - **Embedded user information**: Embed user information in messages, for better context.
@@ -60,6 +60,8 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 
 ### 4. conversations_search_messages
 Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required.
+
+> **Note:** This tool requires user tokens (`xoxp`) or session tokens (`xoxc`/`xoxd`). Bot tokens (`xoxb`) cannot use search functionality due to Slack API limitations.
 - **Parameters:**
   - `search_query` (string, optional): Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored.
   - `filter_in_channel` (string, optional): Filter messages in a specific channel by its ID or name. Example: `C1234567890` or `#general`. If not provided, all channels will be searched.
@@ -120,6 +122,7 @@ Fetches a CSV directory of all users in the workspace.
 
 | Variable                          | Required? | Default                   | Description                                                                                                                                                                                                                                                                               |
 |-----------------------------------|-----------|---------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `SLACK_MCP_XOXB_TOKEN`            | Yes*      | `nil`                     | Bot User OAuth token (`xoxb-...`) — alternative to xoxc/xoxd or xoxp                                                                                                                                                                                                                      |
 | `SLACK_MCP_XOXC_TOKEN`            | Yes*      | `nil`                     | Slack browser token (`xoxc-...`)                                                                                                                                                                                                                                                          |
 | `SLACK_MCP_XOXD_TOKEN`            | Yes*      | `nil`                     | Slack browser cookie `d` (`xoxd-...`)                                                                                                                                                                                                                                                     |
 | `SLACK_MCP_XOXP_TOKEN`            | Yes*      | `nil`                     | User OAuth token (`xoxp-...`) — alternative to xoxc/xoxd                                                                                                                                                                                                                                  |
@@ -139,7 +142,13 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `.channels_cache_v2.json` | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup.                                                                                                                                                                          |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 
-*You need either `xoxp` **or** both `xoxc`/`xoxd` tokens for authentication.
+*You need one of the following for authentication: `xoxb` (Bot User OAuth), `xoxp` (User OAuth), **or** both `xoxc`/`xoxd` tokens (session-based).
+
+**Bot Token Limitations**: When using `SLACK_MCP_XOXB_TOKEN`, some features will be automatically disabled as bot tokens have API limitations:
+- Cannot access Slack Connect users (Edge API limitation)
+- Cannot use search functionality (`not_allowed_token_type` error from Slack API)
+- Must be explicitly added to private channels and direct messages to access them
+- Core functionality like channel listing and message history will work normally within the bot's permissions
 
 ### Limitations matrix & Cache
 

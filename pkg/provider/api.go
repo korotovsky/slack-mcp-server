@@ -68,6 +68,9 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Token type check
+	IsBotToken() bool
 }
 
 type MCPSlackClient struct {
@@ -79,6 +82,7 @@ type MCPSlackClient struct {
 
 	isEnterprise bool
 	isOAuth      bool
+	isBotToken   bool
 	teamEndpoint string
 }
 
@@ -127,14 +131,21 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
 
-	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
-		edge.OptionHTTPClient(httpClient),
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	isEnterprise := authResp.EnterpriseID != ""
+	token := authProvider.SlackToken()
+	isOAuth := strings.HasPrefix(token, "xoxp-")
+	isBotToken := strings.HasPrefix(token, "xoxb-")
+
+	// Edge client is not needed for bot tokens
+	var edgeClient *edge.Client
+	if !isBotToken {
+		edgeClient, err = edge.NewWithInfo(authResponse, authProvider,
+			edge.OptionHTTPClient(httpClient),
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
@@ -142,13 +153,14 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
-		isOAuth:      strings.HasPrefix(authProvider.SlackToken(), "xoxp-"),
+		isOAuth:      isOAuth,
+		isBotToken:   isBotToken,
 		teamEndpoint: authResp.URL,
 	}, nil
 }
 
 func (c *MCPSlackClient) AuthTest() (*slack.AuthTestResponse, error) {
-	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
+	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || os.Getenv("SLACK_MCP_XOXB_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
 		return &slack.AuthTestResponse{
 			URL:          "https://_.slack.com",
 			Team:         "Demo Team",
@@ -185,13 +197,16 @@ func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, t
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
 	// Please see https://github.com/korotovsky/slack-mcp-server/issues/73
-	// It seems that `conversations.list` works with `xoxp` tokens within Enterprise Grid setups
+	// It seems that `conversations.list` works with `xoxp` and `xoxb` tokens within Enterprise Grid setups
 	// and if `xoxc`/`xoxd` defined we fallback to edge client.
 	// In non Enterprise Grid setups we always use `conversations.list` api as it accepts both token types wtf.
 	if c.isEnterprise {
-		if c.isOAuth {
+		if c.isOAuth || c.isBotToken {
 			return c.slackClient.GetConversationsContext(ctx, params)
 		} else {
+			if c.edgeClient == nil {
+				return nil, "", errors.New("edge client not available")
+			}
 			edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
 			if err != nil {
 				return nil, "", err
@@ -257,11 +272,18 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
+	if c.edgeClient == nil {
+		return nil, errors.New("edge client not available for bot tokens")
+	}
 	return c.edgeClient.ClientUserBoot(ctx)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
 	return c.isEnterprise
+}
+
+func (c *MCPSlackClient) IsBotToken() bool {
+	return c.isBotToken
 }
 
 func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
@@ -277,7 +299,7 @@ func (c *MCPSlackClient) Raw() struct {
 		Edge  *edge.Client
 	}{
 		Slack: c.slackClient,
-		Edge:  c.edgeClient,
+		Edge:  c.edgeClient, // Can be nil for bot tokens
 	}
 }
 
@@ -287,7 +309,18 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		err          error
 	)
 
-	// Check for XOXP token first (User OAuth)
+	// Check for XOXB token first (Bot User OAuth)
+	xoxbToken := os.Getenv("SLACK_MCP_XOXB_TOKEN")
+	if xoxbToken != "" {
+		authProvider, err = auth.NewValueAuth(xoxbToken, "")
+		if err != nil {
+			logger.Fatal("Failed to create auth provider with XOXB token", zap.Error(err))
+		}
+
+		return newWithXOXB(transport, authProvider, logger)
+	}
+
+	// Check for XOXP token (User OAuth)
 	xoxpToken := os.Getenv("SLACK_MCP_XOXP_TOKEN")
 	if xoxpToken != "" {
 		authProvider, err = auth.NewValueAuth(xoxpToken, "")
@@ -303,7 +336,7 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
 
 	if xoxcToken == "" || xoxdToken == "" {
-		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN (User OAuth) or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN (session-based) environment variables must be provided")
+		logger.Fatal("Authentication required: Either SLACK_MCP_XOXB_TOKEN (Bot User OAuth), SLACK_MCP_XOXP_TOKEN (User OAuth), or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN (session-based) environment variables must be provided")
 	}
 
 	authProvider, err = auth.NewValueAuth(xoxcToken, xoxdToken)
@@ -312,6 +345,48 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 	}
 
 	return newWithXOXC(transport, authProvider, logger)
+}
+
+func newWithXOXB(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
+	var (
+		client *MCPSlackClient
+		err    error
+	)
+
+	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
+	if usersCache == "" {
+		usersCache = ".users_cache.json"
+	}
+
+	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
+	if channelsCache == "" {
+		channelsCache = ".channels_cache.json"
+	}
+
+	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || os.Getenv("SLACK_MCP_XOXB_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
+		logger.Info("Demo credentials are set, skip.")
+	} else {
+		client, err = NewMCPSlackClient(authProvider, logger)
+		if err != nil {
+			logger.Fatal("Failed to create MCP Slack client", zap.Error(err))
+		}
+	}
+
+	return &ApiProvider{
+		transport: transport,
+		client:    client,
+		logger:    logger,
+
+		rateLimiter: limiter.Tier2.Limiter(),
+
+		users:      make(map[string]slack.User),
+		usersInv:   map[string]string{},
+		usersCache: usersCache,
+
+		channels:      make(map[string]Channel),
+		channelsInv:   map[string]string{},
+		channelsCache: channelsCache,
+	}
 }
 
 func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
@@ -330,7 +405,7 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channelsCache = ".channels_cache.json"
 	}
 
-	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
+	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || os.Getenv("SLACK_MCP_XOXB_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
 		logger.Info("Demo credentials are set, skip.")
 	} else {
 		client, err = NewMCPSlackClient(authProvider, logger)
@@ -372,7 +447,7 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channelsCache = ".channels_cache_v2.json"
 	}
 
-	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
+	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || os.Getenv("SLACK_MCP_XOXB_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
 		logger.Info("Demo credentials are set, skip.")
 	} else {
 		client, err = NewMCPSlackClient(authProvider, logger)
@@ -422,6 +497,13 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 			ap.usersReady = true
 			return nil
 		}
+	}
+
+	// Check if client is nil (demo mode)
+	if ap.client == nil {
+		ap.logger.Warn("Client is nil, skipping user refresh")
+		ap.usersReady = true
+		return nil
 	}
 
 	users, err := ap.client.GetUsersContext(ctx,
@@ -493,6 +575,13 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 		}
 	}
 
+	// Check if client is nil (demo mode)
+	if ap.client == nil {
+		ap.logger.Warn("Client is nil, skipping channel refresh")
+		ap.channelsReady = true
+		return nil
+	}
+
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
@@ -515,6 +604,12 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 }
 
 func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error) {
+	// Bot tokens cannot use ClientUserBoot (Edge API)
+	if ap.client != nil && ap.client.IsBotToken() {
+		ap.logger.Info("Skipping Slack Connect users fetch for bot token")
+		return []slack.User{}, nil
+	}
+
 	boot, err := ap.client.ClientUserBoot(ctx)
 	if err != nil {
 		ap.logger.Error("Failed to fetch client user boot", zap.Error(err))
@@ -554,8 +649,26 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		channelTypes = AllChanTypes
 	}
 
+	// Check if client is nil (demo mode)
+	if ap.client == nil {
+		ap.logger.Warn("Client is nil, returning empty channel list")
+		return []Channel{}
+	}
+
+	// For bot tokens, only request channel types that bots have access to
+	channelTypesToRequest := AllChanTypes
+	if ap.client != nil {
+		if mcpClient, ok := ap.client.(*MCPSlackClient); ok && mcpClient.IsBotToken() {
+			// Bot tokens typically only have access to public and private channels they're members of
+			// They don't have access to im/mpim without specific scopes
+			channelTypesToRequest = []string{"public_channel", "private_channel"}
+			ap.logger.Debug("Using limited channel types for bot token",
+				zap.Strings("types", channelTypesToRequest))
+		}
+	}
+
 	params := &slack.GetConversationsParameters{
-		Types:           AllChanTypes,
+		Types:           channelTypesToRequest,
 		Limit:           999,
 		ExcludeArchived: true,
 	}
