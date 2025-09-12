@@ -66,6 +66,12 @@ type SlackAPI interface {
 	// Useed to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
+	// Reactions API methods
+	AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error
+	RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error
+	GetReactionsContext(ctx context.Context, item slack.ItemRef, params slack.GetReactionsParameters) ([]slack.ItemReaction, error)
+	ListReactionsContext(ctx context.Context, params slack.ListReactionsParameters) ([]slack.ReactedItem, *slack.Paging, error)
+
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 }
@@ -254,6 +260,22 @@ func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
+}
+
+func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
+	return c.slackClient.AddReactionContext(ctx, name, item)
+}
+
+func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
+	return c.slackClient.RemoveReactionContext(ctx, name, item)
+}
+
+func (c *MCPSlackClient) GetReactionsContext(ctx context.Context, item slack.ItemRef, params slack.GetReactionsParameters) ([]slack.ItemReaction, error) {
+	return c.slackClient.GetReactionsContext(ctx, item, params)
+}
+
+func (c *MCPSlackClient) ListReactionsContext(ctx context.Context, params slack.ListReactionsParameters) ([]slack.ReactedItem, *slack.Paging, error) {
+	return c.slackClient.ListReactionsContext(ctx, params)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {

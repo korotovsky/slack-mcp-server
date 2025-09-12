@@ -32,6 +32,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 	)
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+	reactionsHandler := handler.NewReactionsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("conversations_history",
 		mcp.WithDescription("Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
@@ -134,6 +135,65 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
 		),
 	), conversationsHandler.ConversationsSearchHandler)
+
+	s.AddTool(mcp.NewTool("reactions_add",
+		mcp.WithDescription("Add an emoji reaction to a message by channel_id and timestamp."),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("timestamp",
+			mcp.Required(),
+			mcp.Description("Unique timestamp of the message in format 1234567890.123456."),
+		),
+		mcp.WithString("emoji",
+			mcp.Required(),
+			mcp.Description("Name of the emoji to add as a reaction (without colons). Example: 'thumbsup', 'heart', 'smile'."),
+		),
+	), reactionsHandler.ReactionsAddHandler)
+
+	s.AddTool(mcp.NewTool("reactions_remove",
+		mcp.WithDescription("Remove an emoji reaction from a message by channel_id and timestamp."),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("timestamp",
+			mcp.Required(),
+			mcp.Description("Unique timestamp of the message in format 1234567890.123456."),
+		),
+		mcp.WithString("emoji",
+			mcp.Required(),
+			mcp.Description("Name of the emoji to remove as a reaction (without colons). Example: 'thumbsup', 'heart', 'smile'."),
+		),
+	), reactionsHandler.ReactionsRemoveHandler)
+
+	s.AddTool(mcp.NewTool("reactions_get",
+		mcp.WithDescription("Get all emoji reactions for a specific message by channel_id and timestamp."),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("timestamp",
+			mcp.Required(),
+			mcp.Description("Unique timestamp of the message in format 1234567890.123456."),
+		),
+	), reactionsHandler.ReactionsGetHandler)
+
+	s.AddTool(mcp.NewTool("reactions_list",
+		mcp.WithDescription("List all emoji reactions made by a specific user."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("ID of the user in format Uxxxxxxxxxx or their display name starting with @... aka @username."),
+		),
+		mcp.WithNumber("limit",
+			mcp.DefaultNumber(100),
+			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 1000."),
+		),
+		mcp.WithString("cursor",
+			mcp.Description("Cursor for pagination. Use the value returned from the previous request."),
+		),
+	), reactionsHandler.ReactionsListHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 

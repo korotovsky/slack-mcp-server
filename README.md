@@ -15,6 +15,7 @@ This feature-rich Slack MCP Server has:
 - **Smart History**: Fetch messages with pagination by date (d1, 7d, 1m) or message count.
 - **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content.
 - **Safe Message Posting**: The `conversations_add_message` tool is disabled by default for safety. Enable it via an environment variable, with optional channel restrictions.
+- **Emoji Reaction Management**: Add, remove, and retrieve emoji reactions on messages. View detailed reaction information and list user reactions with full emoji support.
 - **DM and Group DM support**: Retrieve direct messages and group direct messages.
 - **Embedded user information**: Embed user information in messages, for better context.
 - **Cache support**: Cache users and channels for faster access.
@@ -32,6 +33,8 @@ This feature-rich Slack MCP Server has:
 
 ### 1. conversations_history:
 Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty
+
+> **Note:** Message responses include emoji reaction data in the `reactions` field, showing reaction names, counts, and users who reacted.
 - **Parameters:**
   - `channel_id` (string, required):     - `channel_id` (string): ID of the channel in format Cxxxxxxxxxx or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
   - `include_activity_messages` (boolean, default: false): If true, the response will include activity messages such as `channel_join` or `channel_leave`. Default is boolean false.
@@ -40,6 +43,8 @@ Get messages from the channel (or DM) by channel_id, the last row/column in the 
 
 ### 2. conversations_replies:
 Get a thread of messages posted to a conversation by channelID and `thread_ts`, the last row/column in the response is used as `cursor` parameter for pagination if not empty.
+
+> **Note:** Message responses include emoji reaction data in the `reactions` field, showing reaction names, counts, and users who reacted.
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
   - `thread_ts` (string, required): Unique identifier of either a thread’s parent message or a message in the thread. ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies.
@@ -74,7 +79,38 @@ Search messages in a public channel, private channel, or direct message (DM, or 
   - `cursor` (string, default: ""): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
   - `limit` (number, default: 20): The maximum number of items to return. Must be an integer between 1 and 100.
 
-### 5. channels_list:
+### 5. reactions_add
+Add an emoji reaction to a message by channel_id and timestamp.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `timestamp` (string, required): Unique timestamp of the message in format `1234567890.123456`.
+  - `emoji` (string, required): Name of the emoji to add as a reaction (without colons). Example: `thumbsup`, `heart`, `smile`.
+
+### 6. reactions_remove
+Remove an emoji reaction from a message by channel_id and timestamp.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `timestamp` (string, required): Unique timestamp of the message in format `1234567890.123456`.
+  - `emoji` (string, required): Name of the emoji to remove as a reaction (without colons). Example: `thumbsup`, `heart`, `smile`.
+
+### 7. reactions_get
+Get all emoji reactions for a specific message by channel_id and timestamp.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `timestamp` (string, required): Unique timestamp of the message in format `1234567890.123456`.
+
+### 8. reactions_list
+List all emoji reactions made by a specific user.
+
+- **Parameters:**
+  - `user_id` (string, required): ID of the user in format `Uxxxxxxxxxx` or their display name starting with `@...` aka `@username`.
+  - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000.
+  - `cursor` (string, optional): Cursor for pagination. Use the value returned from the previous request.
+
+### 9. channels_list:
 Get list of channels
 - **Parameters:**
   - `channel_types` (string, required): Comma-separated channel types. Allowed values: `mpim`, `im`, `public_channel`, `private_channel`. Example: `public_channel,private_channel,im`
@@ -134,6 +170,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_SERVER_CA_INSECURE`    | No        | `false`                   | Trust all insecure requests (NOT RECOMMENDED)                                                                                                                                                                                                                                             |
 | `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` by setting it to true for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones, while an empty value disables posting by default. |
 | `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When the `conversations_add_message` tool is enabled, any new message sent will automatically be marked as read.                                                                                                                                                                          |
+| `SLACK_MCP_REACTIONS_TOOL`        | No        | `true`                    | Enable emoji reaction management via `reactions_add`, `reactions_remove`, `reactions_get`, and `reactions_list` tools. Set to true for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. |
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_USERS_CACHE`           | No        | `.users_cache.json`       | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup.                                                                                                                                                                                |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `.channels_cache_v2.json` | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup.                                                                                                                                                                          |
