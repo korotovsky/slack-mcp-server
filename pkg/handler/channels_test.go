@@ -120,6 +120,24 @@ func TestIntegrationChannelsList(t *testing.T) {
 				"channels", "#general", "#testcase-1", "#testcase-2", "#testcase-3",
 			},
 		},
+		{
+			name:             "Get members of a channel",
+			input:            "Get the list of members in the #general channel.",
+			expectedToolName: "channel_members_list",
+			expectedToolOutputMatchingRules: []matchingRule{
+				{
+					csvFieldName:    "userID",
+					csvFieldValueRE: `^U[A-Z0-9]{8,}$`, // User IDs start with U followed by alphanumeric chars
+				},
+				{
+					csvFieldName:    "userName",
+					csvFieldValueRE: `^[a-zA-Z0-9._-]+$`, // Valid Slack username pattern
+				},
+			},
+			expectedLLMOutputMatchingRules: []string{
+				"members", "general", "user",
+			},
+		},
 	}
 
 	for _, tc := range cases {

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,6 +23,14 @@ type Channel struct {
 	Purpose     string `json:"purpose"`
 	MemberCount int    `json:"memberCount"`
 	Cursor      string `json:"cursor"`
+}
+
+type ChannelMember struct {
+	UserID   string `json:"userID"`
+	UserName string `json:"userName"`
+	RealName string `json:"realName"`
+	IsBot    bool   `json:"isBot"`
+	Cursor   string `json:"cursor"`
 }
 
 type ChannelsHandler struct {
@@ -303,6 +312,197 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 
 	logger.Debug("Pagination complete",
 		zap.Int("total_channels", len(channels)),
+		zap.Int("start_index", startIndex),
+		zap.Int("end_index", endIndex),
+		zap.Int("page_size", len(paged)),
+		zap.Bool("has_more", nextCursor != ""),
+	)
+
+	return paged, nextCursor
+}
+
+// ChannelMembersHandler handles the channel_members_list tool
+func (ch *ChannelsHandler) ChannelMembersHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ChannelMembersHandler called")
+
+	// Skip cache readiness check for debugging - just check if we can get basic API access
+	// if ready, err := ch.apiProvider.IsReady(); !ready {
+	//	ch.logger.Error("API provider not ready", zap.Error(err))
+	//	return nil, err
+	// }
+
+	channelIDOrName := request.GetString("channel_id", "")
+	if channelIDOrName == "" {
+		ch.logger.Error("channel_id missing in channel members request")
+		return nil, errors.New("channel_id must be a string")
+	}
+
+	includeBots := request.GetBool("include_bots", false)
+	limit := request.GetInt("limit", 100)
+	cursor := request.GetString("cursor", "")
+
+	ch.logger.Debug("Request parameters",
+		zap.String("channel_id", channelIDOrName),
+		zap.Bool("include_bots", includeBots),
+		zap.Int("limit", limit),
+		zap.String("cursor", cursor),
+	)
+
+	// Resolve channel name to ID if needed
+	channelID, err := resolveChannelID(channelIDOrName, ch.apiProvider, ch.logger)
+	if err != nil {
+		ch.logger.Error("Failed to resolve channel ID", zap.String("channel", channelIDOrName), zap.Error(err))
+		return nil, err
+	}
+
+	// Validate limit
+	if limit < 1 || limit > 1000 {
+		ch.logger.Warn("Invalid limit, using default", zap.Int("requested", limit))
+		limit = 100
+	}
+
+	// Get channel members from Slack API
+	ch.logger.Info("Calling GetUsersInConversationContext", zap.String("channel_id", channelID))
+	memberIDs, err := ch.apiProvider.Slack().GetUsersInConversationContext(ctx, channelID)
+	if err != nil {
+		ch.logger.Error("Failed to get channel members", zap.String("channel_id", channelID), zap.Error(err))
+		return nil, fmt.Errorf("failed to get members for channel %q: %v", channelIDOrName, err)
+	}
+
+	ch.logger.Info("Retrieved channel members",
+		zap.String("channel_id", channelID),
+		zap.Int("count", len(memberIDs)),
+		zap.Strings("member_ids", memberIDs))
+
+	// Enrich user information and filter bots if needed
+	members, err := ch.enrichUserInfo(memberIDs, includeBots)
+	if err != nil {
+		ch.logger.Error("Failed to enrich user info", zap.Error(err))
+		return nil, err
+	}
+
+	// Apply pagination
+	pagedMembers, nextCursor := paginateMembers(members, cursor, limit)
+
+	ch.logger.Debug("Pagination results",
+		zap.Int("total_members", len(members)),
+		zap.Int("returned_count", len(pagedMembers)),
+		zap.Bool("has_next_page", nextCursor != ""),
+	)
+
+	// Add cursor to the last member if there's a next page
+	if len(pagedMembers) > 0 && nextCursor != "" {
+		pagedMembers[len(pagedMembers)-1].Cursor = nextCursor
+	}
+
+	// Convert to CSV
+	csvBytes, err := gocsv.MarshalBytes(&pagedMembers)
+	if err != nil {
+		ch.logger.Error("Failed to marshal members to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+// enrichUserInfo enriches user IDs with user information from cache
+func (ch *ChannelsHandler) enrichUserInfo(userIDs []string, includeBots bool) ([]ChannelMember, error) {
+	ch.logger.Info("Enriching user info",
+		zap.Int("input_user_count", len(userIDs)),
+		zap.Bool("include_bots", includeBots))
+
+	usersMaps := ch.apiProvider.ProvideUsersMap()
+	ch.logger.Info("User cache info", zap.Int("total_users_in_cache", len(usersMaps.Users)))
+
+	var members []ChannelMember
+
+	for _, userID := range userIDs {
+		user, exists := usersMaps.Users[userID]
+		if !exists {
+			ch.logger.Warn("User not found in cache", zap.String("user_id", userID))
+			// For debugging, include the user with the ID as username
+			members = append(members, ChannelMember{
+				UserID:   userID,
+				UserName: userID, // Use ID as username if cache is not available
+				RealName: userID,
+				IsBot:    false,
+			})
+			continue
+		}
+
+		// Filter bots if not requested
+		if user.IsBot && !includeBots {
+			ch.logger.Debug("Skipping bot user", zap.String("user_id", userID), zap.String("name", user.Name))
+			continue
+		}
+
+		members = append(members, ChannelMember{
+			UserID:   user.ID,
+			UserName: user.Name,
+			RealName: user.RealName,
+			IsBot:    user.IsBot,
+		})
+	}
+
+	ch.logger.Debug("User enrichment complete",
+		zap.Int("input_users", len(userIDs)),
+		zap.Int("output_members", len(members)),
+		zap.Bool("include_bots", includeBots),
+	)
+
+	return members, nil
+}
+
+// paginateMembers applies pagination to the members list
+func paginateMembers(members []ChannelMember, cursor string, limit int) ([]ChannelMember, string) {
+	logger := zap.L()
+
+	// Sort members by UserID for consistent pagination
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].UserID < members[j].UserID
+	})
+
+	startIndex := 0
+	if cursor != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(cursor); err == nil {
+			lastUserID := string(decoded)
+			for i, member := range members {
+				if member.UserID > lastUserID {
+					startIndex = i
+					break
+				}
+			}
+			logger.Debug("Decoded cursor",
+				zap.String("cursor", cursor),
+				zap.String("decoded_user_id", lastUserID),
+				zap.Int("start_index", startIndex),
+			)
+		} else {
+			logger.Warn("Failed to decode cursor",
+				zap.String("cursor", cursor),
+				zap.Error(err),
+			)
+		}
+	}
+
+	endIndex := startIndex + limit
+	if endIndex > len(members) {
+		endIndex = len(members)
+	}
+
+	paged := members[startIndex:endIndex]
+
+	var nextCursor string
+	if endIndex < len(members) {
+		nextCursor = base64.StdEncoding.EncodeToString([]byte(members[endIndex-1].UserID))
+		logger.Debug("Generated next cursor",
+			zap.String("last_user_id", members[endIndex-1].UserID),
+			zap.String("next_cursor", nextCursor),
+		)
+	}
+
+	logger.Debug("Member pagination complete",
+		zap.Int("total_members", len(members)),
 		zap.Int("start_index", startIndex),
 		zap.Int("end_index", endIndex),
 		zap.Int("page_size", len(paged)),

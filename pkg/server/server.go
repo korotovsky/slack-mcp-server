@@ -155,6 +155,25 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), channelsHandler.ChannelsHandler)
 
+	s.AddTool(mcp.NewTool("channel_members_list",
+		mcp.WithDescription("Get list of members in a channel by channel ID or name"),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("Channel ID (Cxxxxxxxxxx) or name (#general, @username_dm)"),
+		),
+		mcp.WithBoolean("include_bots",
+			mcp.DefaultBool(false),
+			mcp.Description("Include bot users in the response. Default is false."),
+		),
+		mcp.WithNumber("limit",
+			mcp.DefaultNumber(100),
+			mcp.Description("Maximum number of members to return (1-1000)"),
+		),
+		mcp.WithString("cursor",
+			mcp.Description("Cursor for pagination"),
+		),
+	), channelsHandler.ChannelMembersHandler)
+
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
 	)
