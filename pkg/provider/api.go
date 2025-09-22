@@ -12,9 +12,9 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
-	"github.com/rusq/slack"
+	rusqslack "github.com/rusq/slack"
 	"github.com/rusq/slackdump/v3/auth"
-	slackgo "github.com/slack-go/slack"
+	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -31,8 +31,8 @@ var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
 
 type UsersCache struct {
-	Users    map[string]slackgo.User `json:"users"`
-	UsersInv map[string]string       `json:"users_inv"`
+	Users    map[string]slack.User `json:"users"`
+	UsersInv map[string]string     `json:"users_inv"`
 }
 
 type ChannelsCache struct {
@@ -53,20 +53,20 @@ type Channel struct {
 
 type SlackAPI interface {
 	// Standard slack-go API methods
-	AuthTest() (*slackgo.AuthTestResponse, error)
-	AuthTestContext(ctx context.Context) (*slackgo.AuthTestResponse, error)
-	GetUsersContext(ctx context.Context, options ...slackgo.GetUsersOption) ([]slackgo.User, error)
-	GetUsersInfo(users ...string) (*[]slackgo.User, error)
-	PostMessageContext(ctx context.Context, channel string, options ...slackgo.MsgOption) (string, string, error)
+	AuthTest() (*slack.AuthTestResponse, error)
+	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
+	GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error)
+	GetUsersInfo(users ...string) (*[]slack.User, error)
+	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 
 	// Useed to get messages
-	GetConversationHistoryContext(ctx context.Context, params *slackgo.GetConversationHistoryParameters) (*slackgo.GetConversationHistoryResponse, error)
-	GetConversationRepliesContext(ctx context.Context, params *slackgo.GetConversationRepliesParameters) (msgs []slackgo.Message, hasMore bool, nextCursor string, err error)
-	SearchContext(ctx context.Context, query string, params slackgo.SearchParameters) (*slackgo.SearchMessages, *slackgo.SearchFiles, error)
+	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
+	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
+	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
 
 	// Useed to get channels list from both Slack and Enterprise Grid versions
-	GetConversationsContext(ctx context.Context, params *slackgo.GetConversationsParameters) ([]slackgo.Channel, string, error)
+	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
@@ -76,10 +76,10 @@ type SlackAPI interface {
 }
 
 type MCPSlackClient struct {
-	slackClient *slackgo.Client
+	slackClient *slack.Client
 	edgeClient  *edge.Client
 
-	authResponse *slackgo.AuthTestResponse
+	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
 
 	isEnterprise bool
@@ -94,7 +94,7 @@ type ApiProvider struct {
 
 	rateLimiter *rate.Limiter
 
-	users      map[string]slackgo.User
+	users      map[string]slack.User
 	usersInv   map[string]string
 	usersCache string
 	usersReady bool
@@ -108,8 +108,8 @@ type ApiProvider struct {
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
 	httpClient := transport.ProvideHTTPClient(authProvider.Cookies(), logger)
 
-	slackClient := slackgo.New(authProvider.SlackToken(),
-		slackgo.OptionHTTPClient(httpClient),
+	slackClient := slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(httpClient),
 	)
 
 	authResp, err := slackClient.AuthTest()
@@ -117,7 +117,7 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		return nil, err
 	}
 
-	authResponse := &slackgo.AuthTestResponse{
+	authResponse := &slack.AuthTestResponse{
 		URL:          authResp.URL,
 		Team:         authResp.Team,
 		User:         authResp.User,
@@ -127,9 +127,9 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		BotID:        authResp.BotID,
 	}
 
-	slackClient = slackgo.New(authProvider.SlackToken(),
-		slackgo.OptionHTTPClient(httpClient),
-		slackgo.OptionAPIURL(authResp.URL+"api/"),
+	slackClient = slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(httpClient),
+		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
 
 	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
@@ -152,10 +152,10 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	}, nil
 }
 
-func (c *MCPSlackClient) AuthTest() (*slackgo.AuthTestResponse, error) {
+func (c *MCPSlackClient) AuthTest() (*slack.AuthTestResponse, error) {
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
-		return &slackgo.AuthTestResponse{
-			URL:          "https://_.slackgo.com",
+		return &slack.AuthTestResponse{
+			URL:          "https://_.slack.com",
 			Team:         "Demo Team",
 			User:         "Username",
 			TeamID:       "TEAM123456",
@@ -172,15 +172,15 @@ func (c *MCPSlackClient) AuthTest() (*slackgo.AuthTestResponse, error) {
 	return c.slackClient.AuthTest()
 }
 
-func (c *MCPSlackClient) AuthTestContext(ctx context.Context) (*slackgo.AuthTestResponse, error) {
+func (c *MCPSlackClient) AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error) {
 	return c.slackClient.AuthTestContext(ctx)
 }
 
-func (c *MCPSlackClient) GetUsersContext(ctx context.Context, options ...slackgo.GetUsersOption) ([]slackgo.User, error) {
+func (c *MCPSlackClient) GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error) {
 	return c.slackClient.GetUsersContext(ctx, options...)
 }
 
-func (c *MCPSlackClient) GetUsersInfo(users ...string) (*[]slackgo.User, error) {
+func (c *MCPSlackClient) GetUsersInfo(users ...string) (*[]slack.User, error) {
 	return c.slackClient.GetUsersInfo(users...)
 }
 
@@ -188,7 +188,7 @@ func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, t
 	return c.slackClient.MarkConversationContext(ctx, channel, ts)
 }
 
-func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slackgo.GetConversationsParameters) ([]slackgo.Channel, string, error) {
+func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
 	// Please see https://github.com/korotovsky/slack-mcp-server/issues/73
 	// It seems that `conversations.list` works with `xoxp` tokens within Enterprise Grid setups
 	// and if `xoxc`/`xoxd` defined we fallback to edge client.
@@ -202,21 +202,21 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 				return nil, "", err
 			}
 
-			var channels []slackgo.Channel
+			var channels []slack.Channel
 			for _, ec := range edgeChannels {
 				if params != nil && params.ExcludeArchived && ec.IsArchived {
 					continue
 				}
 
-				channels = append(channels, slackgo.Channel{
+				channels = append(channels, slack.Channel{
 					IsGeneral: ec.IsGeneral,
-					GroupConversation: slackgo.GroupConversation{
-						Conversation: slackgo.Conversation{
+					GroupConversation: slack.GroupConversation{
+						Conversation: slack.Conversation{
 							ID:                 ec.ID,
 							IsIM:               ec.IsIM,
 							IsMpIM:             ec.IsMpIM,
 							IsPrivate:          ec.IsPrivate,
-							Created:            slackgo.JSONTime(ec.Created.Time().UnixMilli()),
+							Created:            slack.JSONTime(ec.Created.Time().UnixMilli()),
 							Unlinked:           ec.Unlinked,
 							NameNormalized:     ec.NameNormalized,
 							IsShared:           ec.IsShared,
@@ -228,10 +228,10 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 						Name:       ec.Name,
 						IsArchived: ec.IsArchived,
 						Members:    ec.Members,
-						Topic: slackgo.Topic{
+						Topic: slack.Topic{
 							Value: ec.Topic.Value,
 						},
-						Purpose: slackgo.Purpose{
+						Purpose: slack.Purpose{
 							Value: ec.Purpose.Value,
 						},
 					},
@@ -245,19 +245,19 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	return c.slackClient.GetConversationsContext(ctx, params)
 }
 
-func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slackgo.GetConversationHistoryParameters) (*slackgo.GetConversationHistoryResponse, error) {
+func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
 	return c.slackClient.GetConversationHistoryContext(ctx, params)
 }
 
-func (c *MCPSlackClient) GetConversationRepliesContext(ctx context.Context, params *slackgo.GetConversationRepliesParameters) (msgs []slackgo.Message, hasMore bool, nextCursor string, err error) {
+func (c *MCPSlackClient) GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error) {
 	return c.slackClient.GetConversationRepliesContext(ctx, params)
 }
 
-func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params slackgo.SearchParameters) (*slackgo.SearchMessages, *slackgo.SearchFiles, error) {
+func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error) {
 	return c.slackClient.SearchContext(ctx, query, params)
 }
 
-func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slackgo.MsgOption) (string, string, error) {
+func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
 }
 
@@ -267,7 +267,7 @@ func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBo
 
 func (c *MCPSlackClient) GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error) {
 	// Try standard Slack API first
-	members, _, err := c.slackClient.GetUsersInConversationContext(ctx, &slackgo.GetUsersInConversationParameters{
+	members, _, err := c.slackClient.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
 		ChannelID: channelID,
 	})
 	if err == nil {
@@ -275,7 +275,7 @@ func (c *MCPSlackClient) GetUsersInConversationContext(ctx context.Context, chan
 	}
 
 	// Fallback to edge client if standard API fails
-	memberIDs, _, fallbackErr := c.edgeClient.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+	memberIDs, _, fallbackErr := c.edgeClient.GetUsersInConversationContext(ctx, &rusqslack.GetUsersInConversationParameters{
 		ChannelID: channelID,
 	})
 	if fallbackErr != nil {
@@ -289,16 +289,16 @@ func (c *MCPSlackClient) IsEnterprise() bool {
 	return c.isEnterprise
 }
 
-func (c *MCPSlackClient) AuthResponse() *slackgo.AuthTestResponse {
+func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
 	return c.authResponse
 }
 
 func (c *MCPSlackClient) Raw() struct {
-	Slack *slackgo.Client
+	Slack *slack.Client
 	Edge  *edge.Client
 } {
 	return struct {
-		Slack *slackgo.Client
+		Slack *slack.Client
 		Edge  *edge.Client
 	}{
 		Slack: c.slackClient,
@@ -371,7 +371,7 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 		rateLimiter: limiter.Tier2.Limiter(),
 
-		users:      make(map[string]slackgo.User),
+		users:      make(map[string]slack.User),
 		usersInv:   map[string]string{},
 		usersCache: usersCache,
 
@@ -413,7 +413,7 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 		rateLimiter: limiter.Tier2.Limiter(),
 
-		users:      make(map[string]slackgo.User),
+		users:      make(map[string]slack.User),
 		usersInv:   map[string]string{},
 		usersCache: usersCache,
 
@@ -425,13 +425,13 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 	var (
-		list         []slackgo.User
+		list         []slack.User
 		usersCounter = 0
-		optionLimit  = slackgo.GetUsersOptionLimit(1000)
+		optionLimit  = slack.GetUsersOptionLimit(1000)
 	)
 
 	if data, err := ioutil.ReadFile(ap.usersCache); err == nil {
-		var cachedUsers []slackgo.User
+		var cachedUsers []slack.User
 		if err := json.Unmarshal(data, &cachedUsers); err != nil {
 			ap.logger.Warn("Failed to unmarshal users cache, will refetch",
 				zap.String("cache_file", ap.usersCache),
@@ -539,7 +539,7 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 	return nil
 }
 
-func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slackgo.User, error) {
+func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error) {
 	boot, err := ap.client.ClientUserBoot(ctx)
 	if err != nil {
 		ap.logger.Error("Failed to fetch client user boot", zap.Error(err))
@@ -558,7 +558,7 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slackgo.User, err
 		}
 	}
 
-	res := make([]slackgo.User, 0, len(collectedIDs))
+	res := make([]slack.User, 0, len(collectedIDs))
 	if len(collectedIDs) > 0 {
 		usersInfo, err := ap.client.GetUsersInfo(strings.Join(collectedIDs, ","))
 		if err != nil {
@@ -575,14 +575,14 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slackgo.User, err
 }
 
 func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) []Channel {
-	params := &slackgo.GetConversationsParameters{
+	params := &slack.GetConversationsParameters{
 		Types:           []string{channelType},
 		Limit:           999,
 		ExcludeArchived: true,
 	}
 
 	var (
-		channels []slackgo.Channel
+		channels []slack.Channel
 		chans    []Channel
 
 		nextcur string
@@ -707,7 +707,7 @@ func mapChannel(
 	members []string,
 	numMembers int,
 	isIM, isMpIM, isPrivate bool,
-	usersMap map[string]slackgo.User,
+	usersMap map[string]slack.User,
 ) Channel {
 	channelName := name
 	finalPurpose := purpose
