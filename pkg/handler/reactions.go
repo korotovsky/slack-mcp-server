@@ -17,31 +17,25 @@ import (
 )
 
 type ReactionResponse struct {
-	Channel   string `json:"channel"`
-	Timestamp string `json:"timestamp"`
-	Emoji     string `json:"emoji"`
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-}
-
-type ReactionDetail struct {
-	Name  string   `json:"name"`
-	Count int      `json:"count"`
-	Users []string `json:"users"`
+	Channel   string `csv:"channel"`
+	Timestamp string `csv:"timestamp"`
+	Emoji     string `csv:"emoji"`
+	Success   bool   `csv:"success"`
+	Message   string `csv:"message"`
 }
 
 type MessageReactions struct {
-	Channel   string           `json:"channel"`
-	Timestamp string           `json:"timestamp"`
-	Reactions []ReactionDetail `json:"reactions"`
+	Channel   string `csv:"channel"`
+	Timestamp string `csv:"timestamp"`
+	Reactions string `csv:"reactions"`
 }
 
 type UserReaction struct {
-	Channel   string `json:"channel"`
-	Timestamp string `json:"timestamp"`
-	Emoji     string `json:"emoji"`
-	Type      string `json:"type"` // "message" or "file"
-	Cursor    string `json:"cursor"`
+	Channel   string `csv:"channel"`
+	Timestamp string `csv:"timestamp"`
+	Emoji     string `csv:"emoji"`
+	Type      string `csv:"type"`
+	Cursor    string `csv:"cursor"`
 }
 
 type addReactionParams struct {
@@ -79,17 +73,14 @@ func NewReactionsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) 
 	}
 }
 
-// ReactionsAddHandler adds an emoji reaction to a message
 func (rh *ReactionsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rh.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
 
-	// Authentication
 	if authenticated, err := auth.IsAuthenticated(ctx, rh.apiProvider.ServerTransport(), rh.logger); !authenticated {
 		rh.logger.Error("Authentication failed for reactions add", zap.Error(err))
 		return nil, err
 	}
 
-	// Provider readiness
 	if ready, err := rh.apiProvider.IsReady(); !ready {
 		rh.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -101,7 +92,6 @@ func (rh *ReactionsHandler) ReactionsAddHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	// Add the reaction
 	err = rh.apiProvider.Slack().AddReactionContext(ctx, params.emoji, slack.ItemRef{
 		Channel:   params.channel,
 		Timestamp: params.timestamp,
@@ -129,17 +119,14 @@ func (rh *ReactionsHandler) ReactionsAddHandler(ctx context.Context, request mcp
 	return marshalReactionResponseToCSV([]ReactionResponse{response})
 }
 
-// ReactionsRemoveHandler removes an emoji reaction from a message
 func (rh *ReactionsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rh.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
 
-	// Authentication
 	if authenticated, err := auth.IsAuthenticated(ctx, rh.apiProvider.ServerTransport(), rh.logger); !authenticated {
 		rh.logger.Error("Authentication failed for reactions remove", zap.Error(err))
 		return nil, err
 	}
 
-	// Provider readiness
 	if ready, err := rh.apiProvider.IsReady(); !ready {
 		rh.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -151,7 +138,6 @@ func (rh *ReactionsHandler) ReactionsRemoveHandler(ctx context.Context, request 
 		return nil, err
 	}
 
-	// Remove the reaction
 	err = rh.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, slack.ItemRef{
 		Channel:   params.channel,
 		Timestamp: params.timestamp,
@@ -179,17 +165,14 @@ func (rh *ReactionsHandler) ReactionsRemoveHandler(ctx context.Context, request 
 	return marshalReactionResponseToCSV([]ReactionResponse{response})
 }
 
-// ReactionsGetHandler gets all reactions for a specific message
 func (rh *ReactionsHandler) ReactionsGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rh.logger.Debug("ReactionsGetHandler called", zap.Any("params", request.Params))
 
-	// Authentication
 	if authenticated, err := auth.IsAuthenticated(ctx, rh.apiProvider.ServerTransport(), rh.logger); !authenticated {
 		rh.logger.Error("Authentication failed for reactions get", zap.Error(err))
 		return nil, err
 	}
 
-	// Provider readiness
 	if ready, err := rh.apiProvider.IsReady(); !ready {
 		rh.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -201,7 +184,6 @@ func (rh *ReactionsHandler) ReactionsGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	// Get reactions
 	reactions, err := rh.apiProvider.Slack().GetReactionsContext(ctx, slack.ItemRef{
 		Channel:   params.channel,
 		Timestamp: params.timestamp,
@@ -212,36 +194,28 @@ func (rh *ReactionsHandler) ReactionsGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	// Convert to our format
-	var reactionDetails []ReactionDetail
+	var reactionStrings []string
 	for _, r := range reactions {
-		reactionDetails = append(reactionDetails, ReactionDetail{
-			Name:  r.Name,
-			Count: r.Count,
-			Users: r.Users,
-		})
+		reactionStrings = append(reactionStrings, fmt.Sprintf("%s:%d", r.Name, r.Count))
 	}
 
 	messageReactions := MessageReactions{
 		Channel:   params.channel,
 		Timestamp: params.timestamp,
-		Reactions: reactionDetails,
+		Reactions: strings.Join(reactionStrings, "|"),
 	}
 
 	return marshalMessageReactionsToCSV([]MessageReactions{messageReactions})
 }
 
-// ReactionsListHandler lists all reactions made by a specific user
 func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rh.logger.Debug("ReactionsListHandler called", zap.Any("params", request.Params))
 
-	// Authentication
 	if authenticated, err := auth.IsAuthenticated(ctx, rh.apiProvider.ServerTransport(), rh.logger); !authenticated {
 		rh.logger.Error("Authentication failed for reactions list", zap.Error(err))
 		return nil, err
 	}
 
-	// Provider readiness
 	if ready, err := rh.apiProvider.IsReady(); !ready {
 		rh.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -253,15 +227,13 @@ func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mc
 		return nil, err
 	}
 
-	// List reactions
 	listParams := slack.ListReactionsParameters{
 		User:  params.user,
 		Count: params.limit,
-		Page:  1, // We'll use cursor for pagination if needed
+		Page:  1,
 	}
 
 	if params.cursor != "" {
-		// Parse cursor to get page number
 		if page, err := strconv.Atoi(params.cursor); err == nil && page > 0 {
 			listParams.Page = page
 		}
@@ -273,7 +245,6 @@ func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mc
 		return nil, err
 	}
 
-	// Convert to our format
 	var userReactions []UserReaction
 	for _, item := range reactions {
 		itemType := "message"
@@ -282,7 +253,6 @@ func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mc
 		}
 
 		for _, reaction := range item.Reactions {
-			// Check if this user reacted
 			for _, user := range reaction.Users {
 				if user == params.user {
 					userReactions = append(userReactions, UserReaction{
@@ -297,7 +267,6 @@ func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mc
 		}
 	}
 
-	// Add cursor for pagination
 	if len(userReactions) > 0 && paging.Page < paging.Pages {
 		userReactions[len(userReactions)-1].Cursor = strconv.Itoa(paging.Page + 1)
 	}
@@ -337,7 +306,6 @@ func (rh *ReactionsHandler) parseReactionParams(request mcp.CallToolRequest) (*a
 		return nil, errors.New("emoji must be a string")
 	}
 
-	// Resolve channel name to ID if needed
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
 		if ready, err := rh.apiProvider.IsReady(); !ready {
 			rh.logger.Warn("Provider not ready for channel resolution", zap.Error(err))
@@ -351,12 +319,10 @@ func (rh *ReactionsHandler) parseReactionParams(request mcp.CallToolRequest) (*a
 		channel = channelsMaps.Channels[chn].ID
 	}
 
-	// Validate timestamp format
 	if !strings.Contains(timestamp, ".") {
 		return nil, errors.New("timestamp must be in format 1234567890.123456")
 	}
 
-	// Clean emoji name (remove colons if present)
 	emoji = strings.Trim(emoji, ":")
 
 	return &addReactionParams{
@@ -377,7 +343,6 @@ func (rh *ReactionsHandler) parseGetReactionsParams(request mcp.CallToolRequest)
 		return nil, errors.New("timestamp must be a string")
 	}
 
-	// Resolve channel name to ID if needed
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
 		if ready, err := rh.apiProvider.IsReady(); !ready {
 			rh.logger.Warn("Provider not ready for channel resolution", zap.Error(err))
@@ -391,7 +356,6 @@ func (rh *ReactionsHandler) parseGetReactionsParams(request mcp.CallToolRequest)
 		channel = channelsMaps.Channels[chn].ID
 	}
 
-	// Validate timestamp format
 	if !strings.Contains(timestamp, ".") {
 		return nil, errors.New("timestamp must be in format 1234567890.123456")
 	}
@@ -415,7 +379,6 @@ func (rh *ReactionsHandler) parseListReactionsParams(request mcp.CallToolRequest
 
 	cursor := request.GetString("cursor", "")
 
-	// Resolve user name to ID if needed
 	if strings.HasPrefix(user, "@") {
 		if ready, err := rh.apiProvider.IsReady(); !ready {
 			rh.logger.Warn("Provider not ready for user resolution", zap.Error(err))
@@ -436,7 +399,6 @@ func (rh *ReactionsHandler) parseListReactionsParams(request mcp.CallToolRequest
 	}, nil
 }
 
-// Check if reactions tool is enabled for channel
 func isReactionsToolEnabled(channel string) bool {
 	config := os.Getenv("SLACK_MCP_REACTIONS_TOOL")
 	if config == "" || config == "true" || config == "1" {
