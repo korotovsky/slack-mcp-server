@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
+	rusqslack "github.com/rusq/slack"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
@@ -68,6 +70,9 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Channel members
+	GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error)
 }
 
 type MCPSlackClient struct {
@@ -258,6 +263,26 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error) {
+	// Try standard Slack API first
+	members, _, err := c.slackClient.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+		ChannelID: channelID,
+	})
+	if err == nil {
+		return members, nil
+	}
+
+	// Fallback to edge client if standard API fails
+	memberIDs, _, fallbackErr := c.edgeClient.GetUsersInConversationContext(ctx, &rusqslack.GetUsersInConversationParameters{
+		ChannelID: channelID,
+	})
+	if fallbackErr != nil {
+		// Return both errors for debugging
+		return nil, fmt.Errorf("both API calls failed - standard: %v, edge: %v", err, fallbackErr)
+	}
+	return memberIDs, nil
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
