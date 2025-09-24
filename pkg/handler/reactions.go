@@ -274,6 +274,51 @@ func (rh *ReactionsHandler) ReactionsListHandler(ctx context.Context, request mc
 	return marshalUserReactionsToCSV(userReactions)
 }
 
+func (rh *ReactionsHandler) resolveChannelID(channel string) (string, error) {
+	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
+		return channel, nil
+	}
+
+	if ready, err := rh.apiProvider.IsReady(); !ready {
+		rh.logger.Warn("Provider not ready for channel resolution", zap.Error(err))
+		return "", fmt.Errorf("channel %q not found in cache", channel)
+	}
+
+	channelsMaps := rh.apiProvider.ProvideChannelsMaps()
+	chn, ok := channelsMaps.ChannelsInv[channel]
+	if !ok {
+		return "", fmt.Errorf("channel %q not found", channel)
+	}
+
+	return channelsMaps.Channels[chn].ID, nil
+}
+
+func (rh *ReactionsHandler) resolveUserID(user string) (string, error) {
+	if !strings.HasPrefix(user, "@") {
+		return user, nil
+	}
+
+	if ready, err := rh.apiProvider.IsReady(); !ready {
+		rh.logger.Warn("Provider not ready for user resolution", zap.Error(err))
+		return "", fmt.Errorf("user %q not found in cache", user)
+	}
+
+	usersMap := rh.apiProvider.ProvideUsersMap()
+	userID, ok := usersMap.UsersInv[strings.TrimPrefix(user, "@")]
+	if !ok {
+		return "", fmt.Errorf("user %q not found", user)
+	}
+
+	return userID, nil
+}
+
+func validateTimestamp(timestamp string) error {
+	if !strings.Contains(timestamp, ".") {
+		return errors.New("timestamp must be in format 1234567890.123456")
+	}
+	return nil
+}
+
 func (rh *ReactionsHandler) parseAddReactionParams(request mcp.CallToolRequest) (*addReactionParams, error) {
 	return rh.parseReactionParams(request)
 }
@@ -306,21 +351,13 @@ func (rh *ReactionsHandler) parseReactionParams(request mcp.CallToolRequest) (*a
 		return nil, errors.New("emoji must be a string")
 	}
 
-	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
-		if ready, err := rh.apiProvider.IsReady(); !ready {
-			rh.logger.Warn("Provider not ready for channel resolution", zap.Error(err))
-			return nil, fmt.Errorf("channel %q not found in cache", channel)
-		}
-		channelsMaps := rh.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			return nil, fmt.Errorf("channel %q not found", channel)
-		}
-		channel = channelsMaps.Channels[chn].ID
+	channel, err := rh.resolveChannelID(channel)
+	if err != nil {
+		return nil, err
 	}
 
-	if !strings.Contains(timestamp, ".") {
-		return nil, errors.New("timestamp must be in format 1234567890.123456")
+	if err := validateTimestamp(timestamp); err != nil {
+		return nil, err
 	}
 
 	emoji = strings.Trim(emoji, ":")
@@ -343,21 +380,13 @@ func (rh *ReactionsHandler) parseGetReactionsParams(request mcp.CallToolRequest)
 		return nil, errors.New("timestamp must be a string")
 	}
 
-	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
-		if ready, err := rh.apiProvider.IsReady(); !ready {
-			rh.logger.Warn("Provider not ready for channel resolution", zap.Error(err))
-			return nil, fmt.Errorf("channel %q not found in cache", channel)
-		}
-		channelsMaps := rh.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			return nil, fmt.Errorf("channel %q not found", channel)
-		}
-		channel = channelsMaps.Channels[chn].ID
+	channel, err := rh.resolveChannelID(channel)
+	if err != nil {
+		return nil, err
 	}
 
-	if !strings.Contains(timestamp, ".") {
-		return nil, errors.New("timestamp must be in format 1234567890.123456")
+	if err := validateTimestamp(timestamp); err != nil {
+		return nil, err
 	}
 
 	return &getReactionsParams{
@@ -379,17 +408,9 @@ func (rh *ReactionsHandler) parseListReactionsParams(request mcp.CallToolRequest
 
 	cursor := request.GetString("cursor", "")
 
-	if strings.HasPrefix(user, "@") {
-		if ready, err := rh.apiProvider.IsReady(); !ready {
-			rh.logger.Warn("Provider not ready for user resolution", zap.Error(err))
-			return nil, fmt.Errorf("user %q not found in cache", user)
-		}
-		usersMap := rh.apiProvider.ProvideUsersMap()
-		userID, ok := usersMap.UsersInv[strings.TrimPrefix(user, "@")]
-		if !ok {
-			return nil, fmt.Errorf("user %q not found", user)
-		}
-		user = userID
+	user, err := rh.resolveUserID(user)
+	if err != nil {
+		return nil, err
 	}
 
 	return &listReactionsParams{
