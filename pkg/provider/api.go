@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -266,23 +265,17 @@ func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBo
 }
 
 func (c *MCPSlackClient) GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error) {
-	// Try standard Slack API first
+	if c.isEnterprise && !c.isOAuth {
+		memberIDs, _, err := c.edgeClient.GetUsersInConversationContext(ctx, &rusqslack.GetUsersInConversationParameters{
+			ChannelID: channelID,
+		})
+		return memberIDs, err
+	}
+
 	members, _, err := c.slackClient.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
 		ChannelID: channelID,
 	})
-	if err == nil {
-		return members, nil
-	}
-
-	// Fallback to edge client if standard API fails
-	memberIDs, _, fallbackErr := c.edgeClient.GetUsersInConversationContext(ctx, &rusqslack.GetUsersInConversationParameters{
-		ChannelID: channelID,
-	})
-	if fallbackErr != nil {
-		// Return both errors for debugging
-		return nil, fmt.Errorf("both API calls failed - standard: %v, edge: %v", err, fallbackErr)
-	}
-	return memberIDs, nil
+	return members, err
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
