@@ -11,6 +11,7 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
+	rusqslack "github.com/rusq/slack"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
@@ -68,6 +69,9 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Channel members
+	GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error)
 }
 
 type MCPSlackClient struct {
@@ -258,6 +262,20 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) GetUsersInConversationContext(ctx context.Context, channelID string) ([]string, error) {
+	if c.isEnterprise && !c.isOAuth {
+		memberIDs, _, err := c.edgeClient.GetUsersInConversationContext(ctx, &rusqslack.GetUsersInConversationParameters{
+			ChannelID: channelID,
+		})
+		return memberIDs, err
+	}
+
+	members, _, err := c.slackClient.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+		ChannelID: channelID,
+	})
+	return members, err
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
