@@ -2,6 +2,7 @@
 .env
 .users_cache.json
 .channels_cache.json
+.channels_cache_v2.json
 /extension.dxt/server/slack-mcp-server-*
 /extension.dxt/server/index.js
 /build/slack-mcp-server-*

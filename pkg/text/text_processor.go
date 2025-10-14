@@ -275,7 +275,7 @@ func filterSpecialChars(text string) string {
 		cleaned = strings.Replace(cleaned, placeholder, url, 1)
 	}
 
-	spaceRegex := regexp.MustCompile(`\s+`)
+	spaceRegex := regexp.MustCompile(`[ \t]+`)
 	cleaned = spaceRegex.ReplaceAllString(cleaned, " ")
 
 	return strings.TrimSpace(cleaned)

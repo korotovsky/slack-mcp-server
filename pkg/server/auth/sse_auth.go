@@ -24,7 +24,14 @@ func withAuthKey(ctx context.Context, auth string) context.Context {
 // Authenticate checks if the request is authenticated based on the provided context.
 func validateToken(ctx context.Context, logger *zap.Logger) (bool, error) {
 	// no configured token means no authentication
-	keyA := os.Getenv("SLACK_MCP_SSE_API_KEY")
+	keyA := os.Getenv("SLACK_MCP_API_KEY")
+	if keyA == "" {
+		keyA = os.Getenv("SLACK_MCP_SSE_API_KEY")
+		if keyA != "" {
+			logger.Warn("SLACK_MCP_SSE_API_KEY is deprecated, please use SLACK_MCP_API_KEY")
+		}
+	}
+
 	if keyA == "" {
 		logger.Debug("No SSE API key configured, skipping authentication",
 			zap.String("context", "http"),
@@ -107,11 +114,11 @@ func IsAuthenticated(ctx context.Context, transport string, logger *zap.Logger) 
 	case "stdio":
 		return true, nil
 
-	case "sse":
+	case "sse", "http":
 		authenticated, err := validateToken(ctx, logger)
 
 		if err != nil {
-			logger.Error("SSE authentication error",
+			logger.Error("HTTP/SSE authentication error",
 				zap.String("context", "http"),
 				zap.Error(err),
 			)
@@ -119,7 +126,7 @@ func IsAuthenticated(ctx context.Context, transport string, logger *zap.Logger) 
 		}
 
 		if !authenticated {
-			logger.Warn("SSE unauthorized request",
+			logger.Warn("HTTP/SSE unauthorized request",
 				zap.String("context", "http"),
 			)
 			return false, fmt.Errorf("unauthorized request")

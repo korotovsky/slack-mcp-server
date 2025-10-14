@@ -334,8 +334,8 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
 
 	messages := ch.convertMessagesFromSearch(messagesRes.Matches)
-	if len(messages) > 0 && ((messagesRes.Pagination.PerPage * messagesRes.Pagination.PageCount) < messagesRes.Pagination.TotalCount) {
-		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.PageCount+1)
+	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
+		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
@@ -713,13 +713,14 @@ func (ch *ConversationsHandler) paramFormatChannel(raw string) (string, error) {
 	cms := ch.apiProvider.ProvideChannelsMaps()
 	if strings.HasPrefix(raw, "#") {
 		if id, ok := cms.ChannelsInv[raw]; ok {
-			return "#" + cms.Channels[id].Name, nil
+			return cms.Channels[id].Name, nil
 		}
 		return "", fmt.Errorf("channel %q not found", raw)
 	}
-	if strings.HasPrefix(raw, "C") {
+	// Handle both C (standard channels) and G (private groups/channels) prefixes
+	if strings.HasPrefix(raw, "C") || strings.HasPrefix(raw, "G") {
 		if chn, ok := cms.Channels[raw]; ok {
-			return "#" + chn.Name, nil
+			return chn.Name, nil
 		}
 		return "", fmt.Errorf("channel %q not found", raw)
 	}

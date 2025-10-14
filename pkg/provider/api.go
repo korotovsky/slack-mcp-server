@@ -58,12 +58,12 @@ type SlackAPI interface {
 	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 
-	// Useed to get messages
+	// Used to get messages
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
 
-	// Useed to get channels list from both Slack and Enterprise Grid versions
+	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
 	// Edge API methods
@@ -399,7 +399,7 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = ".channels_cache.json"
+		channelsCache = ".channels_cache_v2.json"
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || os.Getenv("SLACK_MCP_XOXB_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -641,6 +641,64 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 	return res, nil
 }
 
+func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) []Channel {
+	params := &slack.GetConversationsParameters{
+		Types:           []string{channelType},
+		Limit:           999,
+		ExcludeArchived: true,
+	}
+
+	var (
+		channels []slack.Channel
+		chans    []Channel
+
+		nextcur string
+		err     error
+	)
+
+	for {
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
+			return nil
+		}
+
+		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
+		ap.logger.Debug("Fetched channels for ",
+			zap.String("channelType", channelType),
+			zap.Int("count", len(channels)),
+		)
+		if err != nil {
+			ap.logger.Error("Failed to fetch channels", zap.Error(err))
+			break
+		}
+
+		for _, channel := range channels {
+			ch := mapChannel(
+				channel.ID,
+				channel.Name,
+				channel.NameNormalized,
+				channel.Topic.Value,
+				channel.Purpose.Value,
+				channel.User,
+				channel.Members,
+				channel.NumMembers,
+				channel.IsIM,
+				channel.IsMpIM,
+				channel.IsPrivate,
+				ap.ProvideUsersMap().Users,
+			)
+			chans = append(chans, ch)
+		}
+
+		if nextcur == "" {
+			break
+		}
+
+		params.Cursor = nextcur
+	}
+	return chans
+}
+
 func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) []Channel {
 	if len(channelTypes) == 0 {
 		channelTypes = AllChanTypes
@@ -664,61 +722,15 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		}
 	}
 
-	params := &slack.GetConversationsParameters{
-		Types:           channelTypesToRequest,
-		Limit:           999,
-		ExcludeArchived: true,
+	var chans []Channel
+	for _, t := range channelTypesToRequest {
+		var typeChannels = ap.GetChannelsType(ctx, t)
+		chans = append(chans, typeChannels...)
 	}
 
-	var (
-		channels []slack.Channel
-		chans    []Channel
-
-		nextcur string
-		err     error
-	)
-
-	for {
-		if err := ap.rateLimiter.Wait(ctx); err != nil {
-			ap.logger.Error("Rate limiter wait failed", zap.Error(err))
-			return nil
-		}
-
-		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
-		if err != nil {
-			ap.logger.Error("Failed to fetch channels", zap.Error(err))
-			break
-		}
-
-		chans = make([]Channel, 0, len(channels))
-		for _, channel := range channels {
-			ch := mapChannel(
-				channel.ID,
-				channel.Name,
-				channel.NameNormalized,
-				channel.Topic.Value,
-				channel.Purpose.Value,
-				channel.User,
-				channel.Members,
-				channel.NumMembers,
-				channel.IsIM,
-				channel.IsMpIM,
-				channel.IsPrivate,
-				ap.ProvideUsersMap().Users,
-			)
-			chans = append(chans, ch)
-		}
-
-		for _, ch := range chans {
-			ap.channels[ch.ID] = ch
-			ap.channelsInv[ch.Name] = ch.ID
-		}
-
-		if nextcur == "" {
-			break
-		}
-
-		params.Cursor = nextcur
+	for _, ch := range chans {
+		ap.channels[ch.ID] = ch
+		ap.channelsInv[ch.Name] = ch.ID
 	}
 
 	var res []Channel
