@@ -204,9 +204,6 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 		if c.isOAuth || c.isBotToken {
 			return c.slackClient.GetConversationsContext(ctx, params)
 		} else {
-			if c.edgeClient == nil {
-				return nil, "", errors.New("edge client not available")
-			}
 			edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
 			if err != nil {
 				return nil, "", err
