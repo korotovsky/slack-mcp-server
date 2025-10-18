@@ -81,6 +81,7 @@ type MCPSlackClient struct {
 
 	isEnterprise bool
 	isOAuth      bool
+	isBotToken   bool
 	teamEndpoint string
 }
 
@@ -137,6 +138,13 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	}
 
 	isEnterprise := authResp.EnterpriseID != ""
+	token := authProvider.SlackToken()
+
+	// Token type detection
+	// isOAuth: Official OAuth tokens (xoxp or xoxb) - uses Standard API
+	// isBotToken: Bot token - determines feature availability (e.g., search)
+	isOAuth := strings.HasPrefix(token, "xoxp-") || strings.HasPrefix(token, "xoxb-")
+	isBotToken := strings.HasPrefix(token, "xoxb-")
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
@@ -144,7 +152,8 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
-		isOAuth:      strings.HasPrefix(authProvider.SlackToken(), "xoxp-"),
+		isOAuth:      isOAuth,
+		isBotToken:   isBotToken,
 		teamEndpoint: authResp.URL,
 	}, nil
 }
@@ -270,6 +279,10 @@ func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
 	return c.authResponse
 }
 
+func (c *MCPSlackClient) IsBotToken() bool {
+	return c.isBotToken
+}
+
 func (c *MCPSlackClient) Raw() struct {
 	Slack *slack.Client
 	Edge  *edge.Client
@@ -289,8 +302,23 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		err          error
 	)
 
-	// Check for XOXP token first (User OAuth)
+	// Read all environment variables
 	xoxpToken := os.Getenv("SLACK_MCP_XOXP_TOKEN")
+	xoxbToken := os.Getenv("SLACK_MCP_XOXB_TOKEN")
+	xoxcToken := os.Getenv("SLACK_MCP_XOXC_TOKEN")
+	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
+
+	// Warn if both user and bot tokens are set
+	if xoxpToken != "" && xoxbToken != "" {
+		logger.Warn(
+			"Both SLACK_MCP_XOXP_TOKEN and SLACK_MCP_XOXB_TOKEN are set. "+
+				"Using User token (xoxp) for full features. "+
+				"Bot token will be ignored.",
+			zap.String("context", "console"),
+		)
+	}
+
+	// Priority 1: XOXP token (User OAuth)
 	if xoxpToken != "" {
 		authProvider, err = auth.NewValueAuth(xoxpToken, "")
 		if err != nil {
@@ -300,12 +328,24 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		return newWithXOXP(transport, authProvider, logger)
 	}
 
-	// Fall back to XOXC/XOXD tokens (session-based)
-	xoxcToken := os.Getenv("SLACK_MCP_XOXC_TOKEN")
-	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
+	// Priority 2: XOXB token (Bot)
+	if xoxbToken != "" {
+		authProvider, err = auth.NewValueAuth(xoxbToken, "")
+		if err != nil {
+			logger.Fatal("Failed to create auth provider with XOXB token", zap.Error(err))
+		}
 
+		logger.Info("Using Bot token authentication",
+			zap.String("context", "console"),
+			zap.String("token_type", "xoxb"),
+		)
+
+		return newWithXOXB(transport, authProvider, logger)
+	}
+
+	// Priority 3: XOXC/XOXD tokens (session-based)
 	if xoxcToken == "" || xoxdToken == "" {
-		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN (User OAuth) or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN (session-based) environment variables must be provided")
+		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided")
 	}
 
 	authProvider, err = auth.NewValueAuth(xoxcToken, xoxdToken)
@@ -356,6 +396,12 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
 	}
+}
+
+func newWithXOXB(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
+	// Bot tokens do not support demo mode, but otherwise share the same
+	// initialization logic as user OAuth tokens.
+	return newWithXOXP(transport, authProvider, logger)
 }
 
 func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
@@ -691,6 +737,11 @@ func (ap *ApiProvider) ServerTransport() string {
 
 func (ap *ApiProvider) Slack() SlackAPI {
 	return ap.client
+}
+
+func (ap *ApiProvider) IsBotToken() bool {
+	client, ok := ap.client.(*MCPSlackClient)
+	return ok && client != nil && client.IsBotToken()
 }
 
 func mapChannel(
