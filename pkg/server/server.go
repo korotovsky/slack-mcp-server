@@ -93,7 +93,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
 
-	s.AddTool(mcp.NewTool("conversations_search_messages",
+	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithString("search_query",
 			mcp.Description("Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored."),
@@ -133,7 +133,11 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.DefaultNumber(20),
 			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
 		),
-	), conversationsHandler.ConversationsSearchHandler)
+	)
+	// Only register search tool for non-bot tokens (bot tokens cannot use search.messages API)
+	if !provider.IsBotToken() {
+		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
+	}
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
