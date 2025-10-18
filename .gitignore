@@ -13,3 +13,8 @@
 /npm/slack-mcp-server/LICENSE
 /npm/slack-mcp-server/README.md
 docker-compose.release.yml
+.vscode/settings.json
+build/extension.dxt
+build
+cmd/.DS_Store
+.DS_Store

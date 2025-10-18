@@ -2,6 +2,103 @@
 
 You can configure the MCP server using command line arguments and environment variables.
 
+### Running Locally (Development)
+
+To run the MCP server locally for development:
+
+**Prerequisites:**
+- Go 1.24.4 or later
+- Make (optional, but recommended)
+
+**Steps:**
+
+1. Clone the repository and navigate to the project directory:
+   ```bash
+   git clone https://github.com/korotovsky/slack-mcp-server.git
+   cd slack-mcp-server
+   ```
+
+2. Build the project:
+   ```bash
+   make build
+   ```
+   Or without Make:
+   ```bash
+   go build -o ./build/slack-mcp-server ./cmd/slack-mcp-server
+   ```
+
+3. Run the MCP server:
+   ```bash
+   ./build/slack-mcp-server --transport stdio
+   ```
+   Or with environment variables directly:
+   ```bash
+   SLACK_MCP_XOXC_TOKEN=xoxc-... SLACK_MCP_XOXD_TOKEN=xoxd-... ./build/slack-mcp-server --transport stdio
+   ```
+
+**Using with MCP Inspector for Testing:**
+
+To test your local build with the MCP Inspector:
+```bash
+npx @modelcontextprotocol/inspector ./build/slack-mcp-server --transport stdio
+```
+
+**Other useful Make commands:**
+- `make help` - Display all available make targets
+- `make test` - Run unit tests
+- `make test-integration` - Run integration tests
+- `make format` - Format the code
+- `make clean` - Clean build artifacts
+
+**Configuring Claude Desktop or Cursor with Local Build:**
+
+To use your locally built binary with Claude Desktop or Cursor, add this to your `claude_desktop_config.json` or Cursor's MCP settings:
+
+**Option 1: Using XOXP Token**
+```json
+{
+  "mcpServers": {
+    "slack-local": {
+      "command": "/absolute/path/to/slack-mcp-server/build/slack-mcp-server",
+      "args": [
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXP_TOKEN": "xoxp-..."
+      }
+    }
+  }
+}
+```
+
+**Option 2: Using XOXC/XOXD Tokens**
+```json
+{
+  "mcpServers": {
+    "slack-local": {
+      "command": "/absolute/path/to/slack-mcp-server/build/slack-mcp-server",
+      "args": [
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXC_TOKEN": "xoxc-...",
+        "SLACK_MCP_XOXD_TOKEN": "xoxd-..."
+      }
+    }
+  }
+}
+```
+
+> [!NOTE]
+> Replace `/absolute/path/to/slack-mcp-server` with the actual absolute path to your local repository. For example: `/Users/yourname/code/slack-mcp-server`
+
+**Claude Desktop config location:**
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+
 ### Using DXT
 
 For [Claude Desktop](https://claude.ai/download) users, you can use the DXT extension to run the MCP server without needing to edit the `claude_desktop_config.json` file directly. Download the [latest version](https://github.com/korotovsky/slack-mcp-server/releases/latest/download/slack-mcp-server.dxt) of the DXT Extension from [releases](https://github.com/korotovsky/slack-mcp-server/releases) page.
