@@ -31,6 +31,7 @@
         "SLACK_MCP_XOXC_TOKEN": "${user_config.xoxc_token}",
         "SLACK_MCP_XOXD_TOKEN": "${user_config.xoxd_token}",
         "SLACK_MCP_XOXP_TOKEN": "${user_config.xoxp_token}",
+        "SLACK_MCP_XOXB_TOKEN": "${user_config.xoxb_token}",
         "SLACK_MCP_USER_AGENT": "${user_config.user_agent}",
         "SLACK_MCP_ADD_MESSAGE_TOOL": "${user_config.add_message_tool}",
         "SLACK_MCP_USERS_CACHE": "${HOME}/.users_cache.json",
@@ -51,8 +52,8 @@
   "user_config": {
     "auth_method": {
       "type": "string",
-      "title": "Authentication Method: xoxc/xoxd or xoxp",
-      "description": "Select the authentication method for the Slack MCP Server. You can choose between 'xoxc/xoxd' (browser based) or 'xoxp' (OAuth2).",
+      "title": "Authentication Method: xoxc/xoxd, xoxp, or xoxb",
+      "description": "Select the authentication method for the Slack MCP Server. You can choose between 'xoxc/xoxd' (browser based), 'xoxp' (User OAuth), or 'xoxb' (Bot OAuth).",
       "default": "",
       "required": true
     },
@@ -74,6 +75,13 @@
       "type": "string",
       "title": "Value for xoxp token",
       "description": "The xoxp token for Slack MCP Server. IMPORTANT: Use it only when you don't use xoxc/xoxd pair. This token is used to authenticate the server with Slack's API using OAuth2. Please see https://github.com/korotovsky/slack-mcp-server/blob/master/docs/01-authentication-setup.md#alternative-using-slack_mcp_xoxp_token-user-oauth info on how to obtain it.",
+      "sensitive": true,
+      "required": false
+    },
+    "xoxb_token": {
+      "type": "string",
+      "title": "Value for xoxb token (Bot)",
+      "description": "Bot OAuth token for channel-specific automation. Bot must be invited to channels for access. Note: Search functionality is not available with bot tokens.",
       "sensitive": true,
       "required": false
     },
