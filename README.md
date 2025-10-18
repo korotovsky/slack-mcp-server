@@ -82,6 +82,14 @@ Get list of channels
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
 
+### 6. channel_members_list:
+Get list of members in a channel by channel ID or name
+- **Parameters:**
+  - `channel_id` (string, required): Channel ID (Cxxxxxxxxxx) or name (#general, @username_dm)
+  - `include_bots` (boolean, default: false): Include bot users in the response. Default is false.
+  - `limit` (number, default: 100): Maximum number of members to return (1-1000)
+  - `cursor` (string, optional): Cursor for pagination
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
