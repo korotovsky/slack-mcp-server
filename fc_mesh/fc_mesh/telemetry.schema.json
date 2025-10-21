@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FortuneCat Telemetry Event (fc-mesh)",
+  "type": "object",
+  "required": ["ts", "trace_id", "app", "signal", "ok", "result_code"],
+  "properties": {
+    "ts": { "type": "string", "format": "date-time", "description": "ISO 8601 timestamp (Europe/Amsterdam preferred)" },
+    "trace_id": { "type": "string", "description": "uuid-v4 for end-to-end tracing" },
+    "app": { "type": "string", "description": "Origin app/service, e.g., slack-mcp" },
+    "signal": { "type": "string", "description": "Short event name, e.g., telemetry_init or post_message" },
+    "ok": { "type": "boolean", "description": "true if success path" },
+    "result_code": { "type": "integer", "enum": [200, 422], "description": "Deterministic success/error codes" },
+    "latency_ms": { "type": "number", "minimum": 0, "description": "Optional measured latency" },
+    "route": { "type": "string", "description": "Endpoint/handler name or path" },
+    "capsule": { "type": "string", "description": "Optional FortuneCat capsule tag" },
+    "module": { "type": "string", "description": "Optional module tag" },
+    "mandate": { "type": "string", "description": "Optional mandate tag" },
+    "metrics_json": { "type": "object", "additionalProperties": true, "description": "Free-form metrics payload" }
+  },
+  "examples": [
+    {
+      "ts": "2025-10-21T16:10:00+02:00",
+      "trace_id": "9d4f9f7b-7b0a-4b5f-9c5a-2a3f3d0a1d8e",
+      "app": "slack-mcp",
+      "signal": "telemetry_init",
+      "ok": true,
+      "result_code": 200,
+      "latency_ms": 12.3,
+      "route": "health",
+      "capsule": "ObservationOS",
+      "module": "fc-mesh",
+      "mandate": "Proof & Trust",
+      "metrics_json": { "build": "fc-mesh-001" }
+    }
+  ]
+}
