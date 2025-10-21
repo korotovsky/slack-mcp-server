@@ -1,0 +1,12 @@
+{
+  "ts": "2025-10-21T16:10:00+02:00",
+  "trace_id": "00000000-0000-4000-8000-000000000001",
+  "app": "slack-mcp",
+  "signal": "telemetry_init",
+  "ok": true,
+  "result_code": 200,
+  "route": "health",
+  "module": "fc-mesh",
+  "mandate": "Proof & Trust",
+  "metrics_json": { "build": "fc-mesh-001" }
+}
