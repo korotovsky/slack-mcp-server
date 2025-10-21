@@ -1,0 +1,33 @@
+name: fc-telemetry-ci
+
+on:
+  pull_request:
+  push:
+    branches: [ fc-mesh ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: python -m pip install --quiet jsonschema
+
+      - name: Validate sample_event.json against telemetry.schema.json
+        run: |
+          python - <<'PY'
+          import json
+          from jsonschema import validate, Draft202012Validator
+          schema = json.load(open("fc_mesh/telemetry.schema.json"))
+          sample = json.load(open("fc_mesh/sample_event.json"))
+          Draft202012Validator.check_schema(schema)
+          validate(instance=sample, schema=schema)
+          print("OK: sample_event.json validates against telemetry.schema.json")
+          PY
