@@ -39,14 +39,16 @@ type ChannelsCache struct {
 }
 
 type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Topic       string `json:"topic"`
-	Purpose     string `json:"purpose"`
-	MemberCount int    `json:"memberCount"`
-	IsMpIM      bool   `json:"mpim"`
-	IsIM        bool   `json:"im"`
-	IsPrivate   bool   `json:"private"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Topic       string   `json:"topic"`
+	Purpose     string   `json:"purpose"`
+	MemberCount int      `json:"memberCount"`
+	IsMpIM      bool     `json:"mpim"`
+	IsIM        bool     `json:"im"`
+	IsPrivate   bool     `json:"private"`
+	User        string   `json:"user,omitempty"` // User ID for IM channels
+	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
 
 type SlackAPI interface {
@@ -481,11 +483,26 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 				zap.String("cache_file", ap.channelsCache),
 				zap.Error(err))
 		} else {
+			// Re-map channels with current users cache to ensure DM names are populated
+			usersMap := ap.ProvideUsersMap().Users
 			for _, c := range cachedChannels {
-				ap.channels[c.ID] = c
-				ap.channelsInv[c.Name] = c.ID
+				// For IM channels, re-generate the name and purpose using current users cache
+				if c.IsIM {
+					// Re-map the channel to get updated user name if available
+					remappedChannel := mapChannel(
+						c.ID, "", "", c.Topic, c.Purpose, 
+						c.User, c.Members, c.MemberCount,
+						c.IsIM, c.IsMpIM, c.IsPrivate,
+						usersMap,
+					)
+					ap.channels[c.ID] = remappedChannel
+					ap.channelsInv[remappedChannel.Name] = c.ID
+				} else {
+					ap.channels[c.ID] = c
+					ap.channelsInv[c.Name] = c.ID
+				}
 			}
-			ap.logger.Info("Loaded channels from cache",
+			ap.logger.Info("Loaded channels from cache and re-mapped DM names",
 				zap.Int("count", len(cachedChannels)),
 				zap.String("cache_file", ap.channelsCache))
 			ap.channelsReady = true
@@ -688,14 +705,32 @@ func mapChannel(
 	finalTopic := topic
 	finalMemberCount := numMembers
 
+	var userID string
 	if isIM {
 		finalMemberCount = 2
-		if u, ok := usersMap[user]; ok {
+		userID = user // Store the user ID for later re-mapping
+		
+		// If user field is empty but we have members, try to extract from members
+		if userID == "" && len(members) > 0 {
+			// For IM channels, members should contain the other user's ID
+			// Try each member to find a valid user in the users map
+			for _, memberID := range members {
+				if _, ok := usersMap[memberID]; ok {
+					userID = memberID
+					break
+				}
+			}
+		}
+		
+		if u, ok := usersMap[userID]; ok {
 			channelName = "@" + u.Name
 			finalPurpose = "DM with " + u.RealName
+		} else if userID != "" {
+			channelName = "@" + userID
+			finalPurpose = "DM with " + userID
 		} else {
-			channelName = "@" + user
-			finalPurpose = "DM with " + user
+			channelName = "@"
+			finalPurpose = "DM with "
 		}
 		finalTopic = ""
 	} else if isMpIM {
@@ -726,5 +761,7 @@ func mapChannel(
 		IsIM:        isIM,
 		IsMpIM:      isMpIM,
 		IsPrivate:   isPrivate,
+		User:        userID,
+		Members:     members,
 	}
 }
