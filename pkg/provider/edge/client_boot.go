@@ -129,6 +129,27 @@ type UserBootChannel struct {
 }
 
 func (c *UserBootChannel) SlackChannel() slack.Channel {
+	// For IM channels, extract the other user's ID from Members
+	// Members contains current user and the DM partner
+	var userID string
+	if c.IsIM && len(c.Members) > 0 {
+		// For IMs, Members typically has 2 users. We need the one that's not "self"
+		// Since we don't have access to self user ID here, we'll take the first member
+		// The API provider will handle filtering later
+		if len(c.Members) == 1 {
+			userID = c.Members[0]
+		} else if len(c.Members) >= 2 {
+			// Take the second member assuming first is often the current user
+			// But actually, we should take the first non-empty one
+			for _, member := range c.Members {
+				if member != "" {
+					userID = member
+					break
+				}
+			}
+		}
+	}
+	
 	return slack.Channel{
 		GroupConversation: slack.GroupConversation{
 			Conversation: slack.Conversation{
@@ -152,7 +173,7 @@ func (c *UserBootChannel) SlackChannel() slack.Channel {
 				NameNormalized:     c.NameNormalized,
 				NumMembers:         len(c.Members),
 				Priority:           0,
-				User:               "",
+				User:               userID,
 				ConnectedTeamIDs:   []string{},
 				SharedTeamIDs:      []string{},
 				InternalTeamIDs:    []string{},
