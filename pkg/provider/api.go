@@ -66,6 +66,12 @@ type SlackAPI interface {
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
+	// Used to upload files
+	UploadFileV2Context(ctx context.Context, params slack.UploadFileV2Parameters) (*slack.FileSummary, error)
+
+	// Used to open/create DM channels
+	OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error)
+
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 }
@@ -254,6 +260,14 @@ func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
+}
+
+func (c *MCPSlackClient) UploadFileV2Context(ctx context.Context, params slack.UploadFileV2Parameters) (*slack.FileSummary, error) {
+	return c.slackClient.UploadFileV2Context(ctx, params)
+}
+
+func (c *MCPSlackClient) OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error) {
+	return c.slackClient.OpenConversationContext(ctx, params)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {

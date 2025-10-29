@@ -76,7 +76,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 	), conversationsHandler.ConversationsRepliesHandler)
 
 	s.AddTool(mcp.NewTool("conversations_add_message",
-		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
+		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts. Optionally attach a file by providing an attachment_url."),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
@@ -90,6 +90,12 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		mcp.WithString("content_type",
 			mcp.DefaultString("text/markdown"),
 			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+		),
+		mcp.WithString("attachment_url",
+			mcp.Description("Optional file path or URL to attach to the message. Supports local file paths (e.g., '/path/to/file.pdf'), file:// URLs, or HTTP/HTTPS URLs. The file will be uploaded to Slack. Example: '/Users/me/report.pdf' or 'https://example.com/file.pdf'"),
+		),
+		mcp.WithString("attachment_name",
+			mcp.Description("Optional custom filename for the attachment. If not provided, the filename will be extracted from the attachment_url. Example: 'report.pdf'"),
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
 
