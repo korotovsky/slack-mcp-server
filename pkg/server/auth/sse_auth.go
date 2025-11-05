@@ -21,6 +21,11 @@ func withAuthKey(ctx context.Context, auth string) context.Context {
 	return context.WithValue(ctx, authKey{}, auth)
 }
 
+// WithAuthKey is the exported version for use in OAuth middleware
+func WithAuthKey(ctx context.Context, auth string) context.Context {
+	return withAuthKey(ctx, auth)
+}
+
 // Authenticate checks if the request is authenticated based on the provided context.
 func validateToken(ctx context.Context, logger *zap.Logger) (bool, error) {
 	// no configured token means no authentication
