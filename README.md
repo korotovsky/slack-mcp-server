@@ -240,6 +240,7 @@ Fetches a CSV directory of all users in the workspace.
 - [Authentication Setup](docs/01-authentication-setup.md)
 - [Installation](docs/02-installation.md)
 - [Configuration and Usage](docs/03-configuration-and-usage.md)
+- [OAuth Multi-User Setup](docs/04-oauth-setup.md) (Optional - for multi-user support)
 
 ### Environment Variables (Quick Reference)
 
