@@ -103,18 +103,12 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 
 	// Return token to user
+	// Note: Only user token returned - bot posting is disabled
 	response := map[string]string{
 		"access_token": token.AccessToken,
 		"user_id":      token.UserID,
 		"team_id":      token.TeamID,
-		"message":      "Authentication successful! Use this access_token in your MCP client.",
-	}
-	
-	// Include bot token if available
-	if token.BotToken != "" {
-		response["bot_token"] = token.BotToken
-		response["bot_user_id"] = token.BotUserID
-		response["message"] = "Authentication successful! Both user and bot tokens received. Messages will post as bot when post_as_bot=true."
+		"message":      "Authentication successful! Use this access_token in your MCP client. You will post as yourself.",
 	}
 	
 	json.NewEncoder(w).Encode(response)
