@@ -214,22 +214,11 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
 	// Get Slack client (OAuth or legacy)
-	// Check if user wants to post as bot
-	postAsBot := request.GetBool("post_as_bot", false)
-	
+	// Note: Bot posting is disabled - users always post as themselves
 	var slackClient *slack.Client
 	if ch.oauthEnabled {
 		var err error
-		if postAsBot {
-			slackClient, err = ch.getBotSlackClient(ctx)
-			if err != nil {
-				ch.logger.Warn("Bot token not available, falling back to user token", zap.Error(err))
-				// Fallback to user token
-				slackClient, err = ch.getSlackClient(ctx)
-			}
-		} else {
-			slackClient, err = ch.getSlackClient(ctx)
-		}
+		slackClient, err = ch.getSlackClient(ctx)
 		if err != nil {
 			return nil, err
 		}

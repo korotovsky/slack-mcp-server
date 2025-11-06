@@ -40,6 +40,8 @@ mpim:history, mpim:read, mpim:write
 users:read, chat:write, search:read
 ```
 
+**Note**: Users will always post as themselves. Bot scopes are not needed.
+
 ### 1.3 Setup ngrok (REQUIRED)
 
 **Important**: Slack requires HTTPS for all redirect URIs, including localhost.

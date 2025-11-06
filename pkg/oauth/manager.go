@@ -33,6 +33,7 @@ func NewManager(clientID, clientSecret, redirectURI string, storage TokenStorage
 // GetAuthURL generates the Slack OAuth authorization URL
 func (m *Manager) GetAuthURL(state string) string {
 	// User token scopes for OAuth v2
+	// Note: Bot scopes removed - users always act as themselves
 	userScopes := []string{
 		"channels:history",
 		"channels:read",
@@ -49,26 +50,9 @@ func (m *Manager) GetAuthURL(state string) string {
 		"search:read",
 	}
 
-	// Bot token scopes for OAuth v2
-	botScopes := []string{
-		"channels:history",
-		"channels:read",
-		"groups:history",
-		"groups:read",
-		"im:history",
-		"im:read",
-		"im:write",
-		"mpim:history",
-		"mpim:read",
-		"mpim:write",
-		"users:read",
-		"chat:write", // Critical for posting as bot
-	}
-
 	params := url.Values{
 		"client_id":    {m.clientID},
-		"scope":        {strings.Join(botScopes, ",")},   // Bot scopes
-		"user_scope":   {strings.Join(userScopes, ",")}, // User scopes
+		"user_scope":   {strings.Join(userScopes, ",")}, // User scopes only
 		"redirect_uri": {m.redirectURI},
 		"state":        {state},
 	}
