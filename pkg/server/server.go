@@ -110,6 +110,9 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		mcp.WithString("filter_users_from",
 			mcp.Description("Filter messages from a specific user by their ID or display name. Example: 'U1234567890' or '@username'. If not provided, all users will be searched."),
 		),
+		mcp.WithString("filter_mentions_user",
+			mcp.Description("Filter messages that mention a specific user by their ID or display name. Example: 'U1234567890' or '@username'. Use '@me' to find messages mentioning you. If not provided, no mention filtering is applied."),
+		),
 		mcp.WithString("filter_date_before",
 			mcp.Description("Filter messages sent before a specific date in format 'YYYY-MM-DD'. Example: '2023-10-01', 'July', 'Yesterday' or 'Today'. If not provided, all dates will be searched."),
 		),
@@ -134,6 +137,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
 		),
 	), conversationsHandler.ConversationsSearchHandler)
+
+	s.AddTool(mcp.NewTool("users_conversations",
+		mcp.WithDescription("Get list of all conversations (channels, DMs, group DMs) that the authenticated user is a member of. Returns conversation metadata including type, member count, and topics."),
+	), conversationsHandler.UsersConversationsHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
