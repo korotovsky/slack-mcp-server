@@ -53,10 +53,42 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 > **Note:** Posting messages is disabled by default for safety. To enable, set the `SLACK_MCP_ADD_MESSAGE_TOOL` environment variable. If set to a comma-separated list of channel IDs, posting is enabled only for those specific channels. See the Environment Variables section below for details.
 
 - **Parameters:**
-  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
-  - `thread_ts` (string, optional): Unique identifier of either a thread’s parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` for public/private channels (e.g., `#general`). **For DMs, you must use the DM channel ID starting with `D` (e.g., `D1234567890`) - the `@username` format does not work for sending messages to DMs.**
+  - `thread_ts` (string, optional): Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
   - `payload` (string, required): Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
   - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'.
+
+#### Working with DMs and User Mentions
+
+**Finding DM Channel IDs:**
+
+To send a message to a DM, you need the DM channel ID (starts with `D`). You can find it by:
+1. Using `channels_list` with `channel_types: "im"` to list all DM channels
+2. Using `conversations_search_messages` to find recent messages from the user - the Channel field will show the DM channel ID
+
+**Mentioning Users in Messages:**
+
+To mention/tag a user in your message, use the format `<@USER_ID>` in your payload:
+```json
+{
+  "channel_id": "C1234567890",
+  "payload": "Hey <@U1234567890>, can you review this?",
+  "content_type": "text/plain"
+}
+```
+
+You can find user IDs by:
+1. Using the `slack:///users` resource to get a CSV of all users with their IDs
+2. Using `conversations_search_messages` to find messages from a user - the UserID field will show their ID
+
+**Example: Sending a DM with a mention:**
+```json
+{
+  "channel_id": "D1234567890",
+  "payload": "Hi <@U0987654321>, this is a direct message!",
+  "content_type": "text/plain"
+}
+```
 
 ### 4. conversations_search_messages
 Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required.
