@@ -63,7 +63,7 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 **Finding DM Channel IDs:**
 
 To send a message to a DM, you need the DM channel ID (starts with `D`). You can find it by:
-1. Using `channels_list` with `channel_types: "im"` to list all DM channels
+1. Using `channels_list` with `channel_types: "im"` to list all DM channels - the output includes `userId` and `userName` fields to identify who each DM is with
 2. Using `conversations_search_messages` to find recent messages from the user - the Channel field will show the DM channel ID
 
 **Mentioning Users in Messages:**
@@ -113,6 +113,11 @@ Get list of channels
   - `sort` (string, optional): Type of sorting. Allowed values: `popularity` - sort by number of members/participants in each channel.
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
+
+- **Output Fields:**
+  - For all channels: `id`, `name`, `topic`, `purpose`, `memberCount`
+  - For IM (direct message) channels: `userId` (the other user's ID), `userName` (the other user's display name)
+  - For MPIM (group DM) channels: `members` (comma-separated user IDs), `memberNames` (comma-separated display names)
 
 ## Resources
 
