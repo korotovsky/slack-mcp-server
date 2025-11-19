@@ -6,8 +6,8 @@ import (
 	"runtime/trace"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge/fasttime"
 	"github.com/rusq/slack"
+	"slack-mcp-server/pkg/provider/edge/fasttime"
 )
 
 // client.userBoot API.  It was too large to chuck into the client.* file.

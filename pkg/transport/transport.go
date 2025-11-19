@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	utls "github.com/refraction-networking/utls"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2"
+	"slack-mcp-server/pkg/text"
 )
 
 const defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

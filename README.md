@@ -30,6 +30,25 @@ This feature-rich Slack MCP Server has:
 
 ## Tools
 
+### Attachment Data Format
+
+When working with attachment tools, the response includes the following fields:
+- `id`: Unique file ID
+- `name`: Original filename
+- `title`: File title (if set)
+- `mimeType`: MIME type (e.g., `image/png`, `application/pdf`)
+- `fileType`: File extension (e.g., `png`, `pdf`)
+- `size`: File size in bytes
+- `url`: Public URL (if available)
+- `urlPrivate`: Private URL requiring authentication
+- `permalink`: Slack permalink to the file
+- `messageID`: Timestamp of the message containing the attachment
+- `channelID`: Channel where the attachment was posted
+- `userID`: ID of the user who uploaded the file
+- `userName`: Username of the uploader
+- `timestamp`: When the file was uploaded
+- `authToken`: Bearer token needed to access private URLs (format: `Bearer xoxc-...`)
+
 ### 1. conversations_history:
 Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty
 - **Parameters:**
@@ -74,7 +93,19 @@ Search messages in a public channel, private channel, or direct message (DM, or 
   - `cursor` (string, default: ""): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
   - `limit` (number, default: 20): The maximum number of items to return. Must be an integer between 1 and 100.
 
-### 5. channels_list:
+### 5. messages_with_attachments:
+Search for messages that contain file attachments in a specific channel
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format Cxxxxxxxxxx or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `limit` (number, default: 100): The maximum number of messages to return. Must be an integer between 1 and 100.
+  - `cursor` (string, optional): Cursor for pagination. Use the value returned from the previous request.
+
+### 6. get_attachment_details:
+Get detailed information about a specific file attachment including MIME type, URL, and auth token
+- **Parameters:**
+  - `file_id` (string, required): The ID of the file attachment to get details for.
+
+### 7. channels_list:
 Get list of channels
 - **Parameters:**
   - `channel_types` (string, required): Comma-separated channel types. Allowed values: `mpim`, `im`, `public_channel`, `private_channel`. Example: `public_channel,private_channel,im`

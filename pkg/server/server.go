@@ -6,14 +6,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/handler"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider"
-	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
-	"github.com/korotovsky/slack-mcp-server/pkg/text"
-	"github.com/korotovsky/slack-mcp-server/pkg/version"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"go.uber.org/zap"
+	"slack-mcp-server/pkg/handler"
+	"slack-mcp-server/pkg/provider"
+	"slack-mcp-server/pkg/server/auth"
+	"slack-mcp-server/pkg/text"
+	"slack-mcp-server/pkg/version"
 )
 
 type MCPServer struct {
@@ -136,6 +136,30 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 	), conversationsHandler.ConversationsSearchHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
+	attachmentsHandler := handler.NewAttachmentsHandler(provider, logger)
+
+	s.AddTool(mcp.NewTool("messages_with_attachments",
+		mcp.WithDescription("Search for messages that contain file attachments in a specific channel."),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithNumber("limit",
+			mcp.DefaultNumber(100),
+			mcp.Description("The maximum number of messages to return. Must be an integer between 1 and 100."),
+		),
+		mcp.WithString("cursor",
+			mcp.Description("Cursor for pagination. Use the value returned from the previous request."),
+		),
+	), attachmentsHandler.MessagesWithAttachmentsHandler)
+
+	s.AddTool(mcp.NewTool("get_attachment_details",
+		mcp.WithDescription("Get detailed information about a specific file attachment including MIME type, URL, and auth token."),
+		mcp.WithString("file_id",
+			mcp.Required(),
+			mcp.Description("The ID of the file attachment to get details for."),
+		),
+	), attachmentsHandler.GetAttachmentDetailsHandler)
 
 	s.AddTool(mcp.NewTool("channels_list",
 		mcp.WithDescription("Get list of channels"),
@@ -148,7 +172,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 		mcp.WithNumber("limit",
 			mcp.DefaultNumber(100),
-			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999)."), // context fix for cursor: https://github.com/korotovsky/slack-mcp-server/issues/7
+			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999)."), // context fix for cursor: https://slack-mcp-server/issues/7
 		),
 		mcp.WithString("cursor",
 			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),

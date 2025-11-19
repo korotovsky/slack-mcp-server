@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"slack-mcp-server/pkg/test/util"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"

@@ -9,15 +9,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/provider"
-	"github.com/korotovsky/slack-mcp-server/pkg/server"
 	"github.com/mattn/go-isatty"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"slack-mcp-server/pkg/provider"
+	"slack-mcp-server/pkg/server"
 )
 
 var defaultSseHost = "127.0.0.1"
-var defaultSsePort = 13080
+var defaultSsePort = 3001
 
 func main() {
 	var transport string
