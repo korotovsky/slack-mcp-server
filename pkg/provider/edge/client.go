@@ -106,7 +106,7 @@ func (c IM) SlackChannel() slack.Channel {
 	if c.User != "" {
 		members = []string{c.User}
 	}
-	
+
 	return slack.Channel{
 		GroupConversation: slack.GroupConversation{
 			Conversation: slack.Conversation{

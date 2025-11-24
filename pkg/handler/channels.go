@@ -59,7 +59,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, err
 	}
 
-	ar, err := ch.apiProvider.Slack().AuthTest()
+	ar, err := ch.apiProvider.SlackWithContext(ctx).AuthTest()
 	if err != nil {
 		ch.logger.Error("Auth test failed", zap.Error(err))
 		return nil, err

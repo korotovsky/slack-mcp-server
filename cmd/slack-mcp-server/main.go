@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -68,6 +69,10 @@ func main() {
 		}
 
 		sseServer := s.ServeSSE(":" + port)
+
+		// Create custom handler with OAuth2 routes
+		handler := s.GetHTTPHandler(sseServer)
+
 		logger.Info(
 			fmt.Sprintf("SSE server listening on %s", fmt.Sprintf("%s:%s/sse", host, port)),
 			zap.String("context", "console"),
@@ -81,7 +86,13 @@ func main() {
 			)
 		}
 
-		if err := sseServer.Start(host + ":" + port); err != nil {
+		// Start HTTP server with custom handler
+		httpServer := &http.Server{
+			Addr:    host + ":" + port,
+			Handler: handler,
+		}
+
+		if err := httpServer.ListenAndServe(); err != nil {
 			logger.Fatal("Server error",
 				zap.String("context", "console"),
 				zap.Error(err),
@@ -97,7 +108,11 @@ func main() {
 			port = strconv.Itoa(defaultSsePort)
 		}
 
-		httpServer := s.ServeHTTP(":" + port)
+		mcpHTTPServer := s.ServeHTTP(":" + port)
+
+		// Create custom handler with OAuth2 routes
+		handler := s.GetHTTPHandler(mcpHTTPServer)
+
 		logger.Info(
 			fmt.Sprintf("HTTP server listening on %s", fmt.Sprintf("%s:%s", host, port)),
 			zap.String("context", "console"),
@@ -111,7 +126,13 @@ func main() {
 			)
 		}
 
-		if err := httpServer.Start(host + ":" + port); err != nil {
+		// Start HTTP server with custom handler
+		httpServer := &http.Server{
+			Addr:    host + ":" + port,
+			Handler: handler,
+		}
+
+		if err := httpServer.ListenAndServe(); err != nil {
 			logger.Fatal("Server error",
 				zap.String("context", "console"),
 				zap.Error(err),
@@ -128,6 +149,14 @@ func main() {
 
 func newUsersWatcher(p *provider.ApiProvider, once *sync.Once, logger *zap.Logger) func() {
 	return func() {
+		// Skip caching if there's no default client (OAuth2-only mode)
+		if !p.HasDefaultClient() {
+			logger.Info("Skipping user cache - running in OAuth2-only mode",
+				zap.String("context", "console"),
+			)
+			return
+		}
+
 		logger.Info("Caching users collection...",
 			zap.String("context", "console"),
 		)
@@ -160,6 +189,14 @@ func newUsersWatcher(p *provider.ApiProvider, once *sync.Once, logger *zap.Logge
 
 func newChannelsWatcher(p *provider.ApiProvider, once *sync.Once, logger *zap.Logger) func() {
 	return func() {
+		// Skip caching if there's no default client (OAuth2-only mode)
+		if !p.HasDefaultClient() {
+			logger.Info("Skipping channels cache - running in OAuth2-only mode",
+				zap.String("context", "console"),
+			)
+			return
+		}
+
 		logger.Info("Caching channels collection...",
 			zap.String("context", "console"),
 		)

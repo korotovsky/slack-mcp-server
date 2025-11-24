@@ -9,16 +9,20 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/handler"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
+	"github.com/korotovsky/slack-mcp-server/pkg/server/oauth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/korotovsky/slack-mcp-server/pkg/version"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
 type MCPServer struct {
-	server *server.MCPServer
-	logger *zap.Logger
+	server       *server.MCPServer
+	logger       *zap.Logger
+	oauthHandler *oauth.Handler
+	oauthConfig  *oauth.Config
 }
 
 func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer {
@@ -30,6 +34,22 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		server.WithToolHandlerMiddleware(buildLoggerMiddleware(logger)),
 		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
+
+	// Initialize OAuth2 if enabled
+	oauthConfig := oauth.NewConfigFromEnv()
+	var oauthHandler *oauth.Handler
+	if oauthConfig.Enabled {
+		logger.Info("OAuth2 support enabled",
+			zap.String("redirect_uri", oauthConfig.SlackRedirectURI),
+		)
+		tokenStore := oauth.NewInMemoryStore()
+		oauthHandler = oauth.NewHandler(oauthConfig, tokenStore, logger)
+
+		// Set the token store in auth package for token validation using adapter
+		auth.SetTokenStore(oauth.NewStoreAdapter(tokenStore))
+	} else {
+		logger.Info("OAuth2 support disabled - set SLACK_OAUTH_CLIENT_ID, SLACK_OAUTH_CLIENT_SECRET, and SLACK_OAUTH_REDIRECT_URI to enable")
+	}
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
 
@@ -155,18 +175,24 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), channelsHandler.ChannelsHandler)
 
-	logger.Info("Authenticating with Slack API...",
-		zap.String("context", "console"),
-	)
-	ar, err := provider.Slack().AuthTest()
-	if err != nil {
-		logger.Fatal("Failed to authenticate with Slack",
-			zap.String("context", "console"),
-			zap.Error(err),
-		)
-	}
+	var ar *slack.AuthTestResponse
 
-	logger.Info("Successfully authenticated with Slack",
+	// Skip auth test if operating in per-request token mode
+	if provider.HasDefaultClient() {
+		slackClient := provider.Slack()
+		logger.Info("Authenticating with Slack API...",
+			zap.String("context", "console"),
+		)
+		var err error
+		ar, err = slackClient.AuthTest()
+		if err != nil {
+			logger.Fatal("Failed to authenticate with Slack",
+				zap.String("context", "console"),
+				zap.Error(err),
+			)
+		}
+
+		logger.Info("Successfully authenticated with Slack",
 		zap.String("context", "console"),
 		zap.String("team", ar.Team),
 		zap.String("user", ar.User),
@@ -196,10 +222,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		mcp.WithResourceDescription("This resource provides a directory of Slack users."),
 		mcp.WithMIMEType("text/csv"),
 	), conversationsHandler.UsersResource)
+	} else {
+		logger.Info("Running in OAuth2-only mode",
+			zap.String("context", "console"),
+			zap.String("message", "No default Slack client. Users must authenticate via OAuth2 flow."),
+		)
+	}
 
 	return &MCPServer{
-		server: s,
-		logger: logger,
+		server:       s,
+		logger:       logger,
+		oauthHandler: oauthHandler,
+		oauthConfig:  oauthConfig,
 	}
 }
 
@@ -211,7 +245,7 @@ func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
 		zap.String("commit_hash", version.CommitHash),
 		zap.String("address", addr),
 	)
-	return server.NewSSEServer(s.server,
+	sseServer := server.NewSSEServer(s.server,
 		server.WithBaseURL(fmt.Sprintf("http://%s", addr)),
 		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			ctx = auth.AuthFromRequest(s.logger)(ctx, r)
@@ -219,6 +253,26 @@ func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
 			return ctx
 		}),
 	)
+
+	return sseServer
+}
+
+// GetHTTPHandler returns an http.Handler that includes both MCP SSE/HTTP endpoints and OAuth2 endpoints
+func (s *MCPServer) GetHTTPHandler(mcpHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+
+	// Add MCP handler (handles /sse or /mcp)
+	mux.Handle("/", mcpHandler)
+
+	// Add OAuth2 routes if enabled
+	if s.oauthConfig != nil && s.oauthConfig.Enabled && s.oauthHandler != nil {
+		s.logger.Info("Registering OAuth2 endpoints")
+		mux.HandleFunc("/oauth/authorize", s.oauthHandler.HandleAuthorize)
+		mux.HandleFunc("/oauth/callback", s.oauthHandler.HandleCallback)
+		mux.HandleFunc("/oauth/token", s.oauthHandler.HandleToken)
+	}
+
+	return mux
 }
 
 func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
@@ -229,7 +283,7 @@ func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
 		zap.String("commit_hash", version.CommitHash),
 		zap.String("address", addr),
 	)
-	return server.NewStreamableHTTPServer(s.server,
+	httpServer := server.NewStreamableHTTPServer(s.server,
 		server.WithEndpointPath("/mcp"),
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			ctx = auth.AuthFromRequest(s.logger)(ctx, r)
@@ -237,6 +291,8 @@ func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
 			return ctx
 		}),
 	)
+
+	return httpServer
 }
 
 func (s *MCPServer) ServeStdio() error {

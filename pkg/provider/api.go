@@ -7,9 +7,11 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
+	serverauth "github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
@@ -47,7 +49,7 @@ type Channel struct {
 	IsMpIM      bool     `json:"mpim"`
 	IsIM        bool     `json:"im"`
 	IsPrivate   bool     `json:"private"`
-	User        string   `json:"user,omitempty"` // User ID for IM channels
+	User        string   `json:"user,omitempty"`    // User ID for IM channels
 	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
 
@@ -100,6 +102,10 @@ type ApiProvider struct {
 	channelsInv   map[string]string
 	channelsCache string
 	channelsReady bool
+
+	// Per-request client cache
+	perRequestClients map[string]SlackAPI
+	clientMutex       sync.RWMutex
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -305,6 +311,15 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
 
 	if xoxcToken == "" || xoxdToken == "" {
+		// For SSE/HTTP transport, allow starting without environment tokens
+		// if we're expecting per-request OAuth tokens
+		if transport == "sse" || transport == "http" {
+			logger.Warn("No environment tokens provided. Server will only accept per-request OAuth tokens in Authorization header.",
+				zap.String("transport", transport),
+			)
+			return newWithoutEnvToken(transport, logger)
+		}
+
 		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN (User OAuth) or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN (session-based) environment variables must be provided")
 	}
 
@@ -314,6 +329,42 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 	}
 
 	return newWithXOXC(transport, authProvider, logger)
+}
+
+func newWithoutEnvToken(transport string, logger *zap.Logger) *ApiProvider {
+	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
+	if usersCache == "" {
+		usersCache = ".users_cache.json"
+	}
+
+	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
+	if channelsCache == "" {
+		channelsCache = ".channels_cache_v2.json"
+	}
+
+	logger.Info("Starting without environment tokens - per-request OAuth tokens required",
+		zap.String("context", "provider"),
+		zap.String("transport", transport),
+	)
+
+	return &ApiProvider{
+		transport:   transport,
+		logger:      logger,
+		rateLimiter: limiter.Tier2.Limiter(),
+		client:      nil, // No default client
+
+		users:      make(map[string]slack.User),
+		usersInv:   map[string]string{},
+		usersCache: usersCache,
+		usersReady: false, // Not ready until first request
+
+		channels:      make(map[string]Channel),
+		channelsInv:   map[string]string{},
+		channelsCache: channelsCache,
+		channelsReady: false, // Not ready until first request
+
+		perRequestClients: make(map[string]SlackAPI),
+	}
 }
 
 func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
@@ -355,6 +406,8 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		perRequestClients: make(map[string]SlackAPI),
 	}
 }
 
@@ -397,6 +450,8 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		channels:      make(map[string]Channel),
 		channelsInv:   map[string]string{},
 		channelsCache: channelsCache,
+
+		perRequestClients: make(map[string]SlackAPI),
 	}
 }
 
@@ -490,7 +545,7 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 				if c.IsIM {
 					// Re-map the channel to get updated user name if available
 					remappedChannel := mapChannel(
-						c.ID, "", "", c.Topic, c.Purpose, 
+						c.ID, "", "", c.Topic, c.Purpose,
 						c.User, c.Members, c.MemberCount,
 						c.IsIM, c.IsMpIM, c.IsPrivate,
 						usersMap,
@@ -676,6 +731,12 @@ func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
 }
 
 func (ap *ApiProvider) IsReady() (bool, error) {
+	// If operating in per-request token mode (no default client),
+	// skip cache readiness checks
+	if ap.client == nil {
+		return true, nil
+	}
+
 	if !ap.usersReady {
 		return false, ErrUsersNotReady
 	}
@@ -690,7 +751,99 @@ func (ap *ApiProvider) ServerTransport() string {
 }
 
 func (ap *ApiProvider) Slack() SlackAPI {
+	if ap.client == nil {
+		ap.logger.Panic("Default Slack client is not initialized. Use SlackWithContext with per-request OAuth tokens.")
+	}
 	return ap.client
+}
+
+// HasDefaultClient returns true if a default Slack client is available.
+func (ap *ApiProvider) HasDefaultClient() bool {
+	return ap.client != nil
+}
+
+// SlackWithContext returns a SlackAPI client based on the request context.
+// If the context contains a per-request OAuth token, it creates and caches a client for that token.
+// Otherwise, it returns the default client initialized with environment variables.
+func (ap *ApiProvider) SlackWithContext(ctx context.Context) SlackAPI {
+	// Check if there's a per-request token in the context
+	token, ok := serverauth.GetSlackToken(ctx)
+	if !ok || token == "" {
+		// No per-request token, use the default client
+		if ap.client == nil {
+			ap.logger.Error("No per-request OAuth token provided and no default client available",
+				zap.String("context", "provider"),
+			)
+			return nil
+		}
+		return ap.client
+	}
+
+	// Check if we already have a cached client for this token
+	ap.clientMutex.RLock()
+	cachedClient, exists := ap.perRequestClients[token]
+	ap.clientMutex.RUnlock()
+
+	if exists {
+		ap.logger.Debug("Using cached per-request Slack client",
+			zap.String("context", "provider"),
+		)
+		return cachedClient
+	}
+
+	// Create a new client for this token
+	ap.logger.Info("Creating new per-request Slack client",
+		zap.String("context", "provider"),
+		zap.String("token_prefix", token[:5]+"..."),
+	)
+
+	// Determine token type and create appropriate auth provider
+	var authProvider auth.ValueAuth
+	var err error
+
+	if strings.HasPrefix(token, "xoxp-") || strings.HasPrefix(token, "xoxb-") {
+		// OAuth token (xoxp or bot token)
+		authProvider, err = auth.NewValueAuth(token, "")
+	} else if strings.HasPrefix(token, "xoxc-") {
+		// Session token - we need xoxd as well, but we can't get it from a single header
+		// For now, we'll just create with xoxc
+		ap.logger.Warn("Per-request xoxc- token detected, but xoxd- token is not available in the same header. This may not work correctly.",
+			zap.String("context", "provider"),
+		)
+		authProvider, err = auth.NewValueAuth(token, "")
+	} else {
+		authProvider, err = auth.NewValueAuth(token, "")
+	}
+
+	if err != nil {
+		ap.logger.Error("Failed to create auth provider for per-request token",
+			zap.String("context", "provider"),
+			zap.Error(err),
+		)
+		// Fallback to default client
+		return ap.client
+	}
+
+	client, err := NewMCPSlackClient(authProvider, ap.logger)
+	if err != nil {
+		ap.logger.Error("Failed to create per-request Slack client",
+			zap.String("context", "provider"),
+			zap.Error(err),
+		)
+		// Fallback to default client
+		return ap.client
+	}
+
+	// Cache the client
+	ap.clientMutex.Lock()
+	ap.perRequestClients[token] = client
+	ap.clientMutex.Unlock()
+
+	ap.logger.Debug("Successfully created and cached per-request Slack client",
+		zap.String("context", "provider"),
+	)
+
+	return client
 }
 
 func mapChannel(
@@ -709,7 +862,7 @@ func mapChannel(
 	if isIM {
 		finalMemberCount = 2
 		userID = user // Store the user ID for later re-mapping
-		
+
 		// If user field is empty but we have members, try to extract from members
 		if userID == "" && len(members) > 0 {
 			// For IM channels, members should contain the other user's ID
@@ -721,7 +874,7 @@ func mapChannel(
 				}
 			}
 		}
-		
+
 		if u, ok := usersMap[userID]; ok {
 			channelName = "@" + u.Name
 			finalPurpose = "DM with " + u.RealName

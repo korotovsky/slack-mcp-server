@@ -242,7 +242,12 @@ docker-compose up -d
 | `SLACK_MCP_XOXP_TOKEN`            | Yes*      | `nil`                     | User OAuth token (`xoxp-...`) — alternative to xoxc/xoxd                                                                                                                                                                                                                                  |
 | `SLACK_MCP_PORT`                  | No        | `13080`                   | Port for the MCP server to listen on                                                                                                                                                                                                                                                      |
 | `SLACK_MCP_HOST`                  | No        | `127.0.0.1`               | Host for the MCP server to listen on                                                                                                                                                                                                                                                      |
-| `SLACK_MCP_API_KEY`           | No        | `nil`                     | Bearer token for SSE and HTTP transports                                                                                                                                                                                                                                                            |
+| `SLACK_MCP_API_KEY`               | No        | `nil`                     | Bearer token for SSE and HTTP transports                                                                                                                                                                                                                                                  |
+| `SLACK_OAUTH_CLIENT_ID`           | No        | `nil`                     | Slack OAuth2 app client ID (for OAuth2 flow)                                                                                                                                                                                                                                              |
+| `SLACK_OAUTH_CLIENT_SECRET`       | No        | `nil`                     | Slack OAuth2 app client secret (for OAuth2 flow)                                                                                                                                                                                                                                          |
+| `SLACK_OAUTH_REDIRECT_URI`        | No        | `nil`                     | OAuth2 redirect URI (e.g., `https://your-server:3001/oauth/callback`)                                                                                                                                                                                                                     |
+| `MCP_OAUTH_CLIENT_ID`             | No        | `nil`                     | MCP OAuth2 client ID (for authenticating LiteLLM clients)                                                                                                                                                                                                                                 |
+| `MCP_OAUTH_CLIENT_SECRET`         | No        | `nil`                     | MCP OAuth2 client secret (for authenticating LiteLLM clients)                                                                                                                                                                                                                             |
 | `SLACK_MCP_PROXY`                 | No        | `nil`                     | Proxy URL for outgoing requests                                                                                                                                                                                                                                                           |
 | `SLACK_MCP_USER_AGENT`            | No        | `nil`                     | Custom User-Agent (for Enterprise Slack environments)                                                                                                                                                                                                                                     |
 | `SLACK_MCP_CUSTOM_TLS`            | No        | `nil`                     | Send custom TLS-handshake to Slack servers based on `SLACK_MCP_USER_AGENT` or default User-Agent. (for Enterprise Slack environments)                                                                                                                                                     |
@@ -255,3 +260,108 @@ docker-compose up -d
 | `SLACK_MCP_USERS_CACHE`           | No        | `.users_cache.json`       | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup.                                                                                                                                                                                |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `.channels_cache_v2.json` | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup.                                                                                                                                                                          |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
+
+### OAuth2 Flow (Recommended for LiteLLM)
+
+The MCP server supports OAuth2 authentication, which is ideal for integrating with LiteLLM and other OAuth2-aware clients. This provides a secure, standard way to authenticate users and manage multiple Slack workspaces.
+
+#### Setup
+
+1. **Create a Slack OAuth App** at [api.slack.com/apps](https://api.slack.com/apps)
+   - Add OAuth scopes (see [Authentication Setup](01-authentication-setup.md) for required scopes)
+   - Set redirect URI to `https://your-server:port/oauth/callback`
+   - Note your Client ID and Client Secret
+
+2. **Configure Environment Variables:**
+```bash
+# Slack OAuth app credentials
+export SLACK_OAUTH_CLIENT_ID="your-slack-client-id"
+export SLACK_OAUTH_CLIENT_SECRET="your-slack-client-secret"
+export SLACK_OAUTH_REDIRECT_URI="https://your-server:3001/oauth/callback"
+
+# Optional: MCP OAuth credentials (for client authentication)
+export MCP_OAUTH_CLIENT_ID="your-mcp-client-id"
+export MCP_OAUTH_CLIENT_SECRET="your-mcp-client-secret"
+```
+
+3. **Start the MCP server with SSE or HTTP transport:**
+```bash
+npx slack-mcp-server@latest --transport sse
+```
+
+4. **OAuth2 Endpoints Available:**
+- `GET /oauth/authorize` - Initiate OAuth flow
+- `GET /oauth/callback` - Handle Slack OAuth callback
+- `POST /oauth/token` - Token exchange endpoint
+
+#### Using with LiteLLM
+
+Configure LiteLLM to use OAuth2:
+
+```yaml
+mcp_servers:
+  slack:
+    url: "https://your-server:3001"
+    transport: "http"
+    auth_type: "oauth2"
+    authorization_url: "https://your-server:3001/oauth/authorize"
+    token_url: "https://your-server:3001/oauth/token"
+    client_id: "your-mcp-client-id"  # Optional if MCP_OAUTH_CLIENT_ID not set
+    client_secret: "your-mcp-secret"  # Optional if MCP_OAUTH_CLIENT_SECRET not set
+    scopes: ["slack:read", "slack:write"]
+```
+
+#### How It Works
+
+1. LiteLLM redirects user to `/oauth/authorize`
+2. MCP server redirects to Slack OAuth
+3. User authorizes the Slack app
+4. Slack redirects back to `/oauth/callback`
+5. MCP server exchanges code for Slack token
+6. MCP server generates an MCP access token and stores the mapping
+7. User receives the MCP access token
+8. LiteLLM uses this token in subsequent requests
+9. MCP server looks up the corresponding Slack token and makes Slack API calls
+
+#### Token Management
+
+- Tokens are cached in memory (persists until server restart)
+- Default expiration: 90 days
+- Each unique user/workspace gets a separate token
+- Tokens can be revoked by restarting the server
+
+### Per-Request OAuth Tokens
+
+The MCP server also supports per-request OAuth tokens for direct Slack token authentication, allowing you to authenticate each request with a different Slack workspace or user account. This is particularly useful for:
+- Multi-tenant applications
+- Serving multiple Slack workspaces from a single server instance
+- Dynamic token management
+
+#### How It Works
+
+When using SSE or HTTP transports, you can provide a Slack OAuth token in the `Authorization` header of each request. The server will:
+1. Detect if the token is a Slack OAuth token (by checking for `xoxp-`, `xoxc-`, `xoxb-`, or `xoxd-` prefixes)
+2. Create a new Slack API client for that token
+3. Use that client for the request
+4. Cache the client for future requests with the same token
+
+#### Usage
+
+**Per-Request Token (overrides environment token):**
+```bash
+curl -X POST https://your-server:13080/mcp \
+  -H "Authorization: Bearer xoxp-your-oauth-token" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "tools/list"}'
+```
+
+**Fallback to Environment Token:**
+If no per-request token is provided, the server falls back to the token configured via environment variables (`SLACK_MCP_XOXP_TOKEN`, `SLACK_MCP_XOXC_TOKEN`, etc.).
+
+#### Important Notes
+
+- **Token Priority:** Per-request tokens take priority over environment tokens when provided
+- **Token Caching:** The server caches clients per token for performance. Each unique token creates a new client instance
+- **Session Tokens:** When using `xoxc-` session tokens per-request, note that the corresponding `xoxd-` token cannot be passed in the same header. For session-based auth, it's recommended to use environment variables
+- **Stdio Transport:** Per-request tokens are only available for SSE and HTTP transports. The stdio transport always uses environment variables
+- **API Key Authentication:** The server can differentiate between API keys (for server authentication) and Slack OAuth tokens (for Slack API access) based on token prefixes

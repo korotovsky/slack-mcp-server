@@ -13,16 +13,58 @@ import (
 	"go.uber.org/zap"
 )
 
+// TokenStore interface for OAuth2 token lookups
+type TokenStore interface {
+	GetToken(accessToken string) (TokenInfo, error)
+}
+
+// TokenInfo represents stored token information
+type TokenInfo interface {
+	GetAccessToken() string
+	GetSlackToken() string
+	GetUserID() string
+	GetTeamID() string
+}
+
+var globalTokenStore TokenStore
+
+// SetTokenStore sets the global token store for OAuth2 support
+func SetTokenStore(store TokenStore) {
+	globalTokenStore = store
+}
+
 // authKey is a custom context key for storing the auth token.
 type authKey struct{}
+
+// slackTokenKey is a custom context key for storing the per-request Slack OAuth token.
+type slackTokenKey struct{}
 
 // withAuthKey adds an auth key to the context.
 func withAuthKey(ctx context.Context, auth string) context.Context {
 	return context.WithValue(ctx, authKey{}, auth)
 }
 
+// WithSlackToken adds a Slack OAuth token to the context.
+func WithSlackToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, slackTokenKey{}, token)
+}
+
+// GetSlackToken retrieves the Slack OAuth token from the context.
+func GetSlackToken(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(slackTokenKey{}).(string)
+	return token, ok
+}
+
 // Authenticate checks if the request is authenticated based on the provided context.
 func validateToken(ctx context.Context, logger *zap.Logger) (bool, error) {
+	// If a per-request Slack OAuth token is present, skip API key validation
+	if slackToken, ok := GetSlackToken(ctx); ok && slackToken != "" {
+		logger.Debug("Per-request Slack OAuth token present, skipping API key validation",
+			zap.String("context", "http"),
+		)
+		return true, nil
+	}
+
 	// no configured token means no authentication
 	keyA := os.Getenv("SLACK_MCP_API_KEY")
 	if keyA == "" {
@@ -69,11 +111,69 @@ func validateToken(ctx context.Context, logger *zap.Logger) (bool, error) {
 	return true, nil
 }
 
+// isSlackToken checks if the given token is a Slack OAuth token based on its prefix.
+func isSlackToken(token string) bool {
+	// Remove "Bearer " prefix if present
+	token = strings.TrimPrefix(token, "Bearer ")
+	token = strings.TrimSpace(token)
+
+	// Check for common Slack token prefixes
+	return strings.HasPrefix(token, "xoxp-") ||
+		strings.HasPrefix(token, "xoxc-") ||
+		strings.HasPrefix(token, "xoxb-") ||
+		strings.HasPrefix(token, "xoxd-")
+}
+
 // AuthFromRequest extracts the auth token from the request headers.
+// It differentiates between Slack OAuth tokens (xoxp-, xoxc-, xoxb-, xoxd-),
+// OAuth2 MCP tokens, and API keys, storing them in separate context values.
 func AuthFromRequest(logger *zap.Logger) func(context.Context, *http.Request) context.Context {
 	return func(ctx context.Context, r *http.Request) context.Context {
 		authHeader := r.Header.Get("Authorization")
-		return withAuthKey(ctx, authHeader)
+
+		if authHeader != "" {
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			token = strings.TrimSpace(token)
+
+			if isSlackToken(token) {
+				logger.Debug("Detected Slack OAuth token in Authorization header",
+					zap.String("context", "http"),
+					zap.String("prefix", token[:5]+"..."),
+				)
+				// Store as Slack token
+				ctx = WithSlackToken(ctx, token)
+			} else if globalTokenStore != nil {
+				// Check if it's an OAuth2 MCP token
+				tokenInfo, err := globalTokenStore.GetToken(token)
+				if err == nil && tokenInfo != nil {
+					logger.Debug("Detected OAuth2 MCP token in Authorization header",
+						zap.String("context", "http"),
+						zap.String("user_id", tokenInfo.GetUserID()),
+						zap.String("team_id", tokenInfo.GetTeamID()),
+					)
+					// If the token has a Slack token, use it
+					if tokenInfo.GetSlackToken() != "" {
+						ctx = WithSlackToken(ctx, tokenInfo.GetSlackToken())
+					}
+					// Token is valid, mark as authenticated
+					ctx = withAuthKey(ctx, authHeader)
+				} else {
+					logger.Debug("Token not found in OAuth2 store, treating as API key",
+						zap.String("context", "http"),
+					)
+					// Not an OAuth2 token, store as API key for validation
+					ctx = withAuthKey(ctx, authHeader)
+				}
+			} else {
+				logger.Debug("Detected API key in Authorization header",
+					zap.String("context", "http"),
+				)
+				// Store as API key for validation
+				ctx = withAuthKey(ctx, authHeader)
+			}
+		}
+
+		return ctx
 	}
 }
 
