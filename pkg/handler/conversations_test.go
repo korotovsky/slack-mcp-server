@@ -22,6 +22,13 @@ import (
 )
 
 func TestIntegrationConversations(t *testing.T) {
+	// Disabled: Requires external Slack workspace with #testcase-1 channel and test data,
+	// SLACK_MCP_OPENAI_API environment variable, and ngrok forwarding.
+	// Original test from upstream: https://github.com/korotovsky/slack-mcp-server
+	// Skipped in moloco fork to avoid CI failures without required test infrastructure.
+	t.Skip("Requires external Slack workspace with test data, OpenAI API key, and ngrok")
+	
+	// Original test code preserved below but unreachable:
 	sseKey := uuid.New().String()
 	require.NotEmpty(t, sseKey, "sseKey must be generated for integration tests")
 	apiKey := os.Getenv("SLACK_MCP_OPENAI_API")

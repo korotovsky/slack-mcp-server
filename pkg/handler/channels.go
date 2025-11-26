@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/gocarina/gocsv"
+	"github.com/korotovsky/slack-mcp-server/pkg/oauth"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
@@ -25,11 +27,14 @@ type Channel struct {
 }
 
 type ChannelsHandler struct {
-	apiProvider *provider.ApiProvider
-	validTypes  map[string]bool
-	logger      *zap.Logger
+	apiProvider  *provider.ApiProvider  // Legacy mode
+	tokenStorage oauth.TokenStorage     // OAuth mode
+	oauthEnabled bool
+	validTypes   map[string]bool
+	logger       *zap.Logger
 }
 
+// NewChannelsHandler creates handler for legacy mode
 func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ChannelsHandler {
 	validTypes := make(map[string]bool, len(provider.AllChanTypes))
 	for _, v := range provider.AllChanTypes {
@@ -37,10 +42,41 @@ func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *
 	}
 
 	return &ChannelsHandler{
-		apiProvider: apiProvider,
-		validTypes:  validTypes,
-		logger:      logger,
+		apiProvider:  apiProvider,
+		oauthEnabled: false,
+		validTypes:   validTypes,
+		logger:       logger,
 	}
+}
+
+// NewChannelsHandlerWithOAuth creates handler for OAuth mode
+func NewChannelsHandlerWithOAuth(tokenStorage oauth.TokenStorage, logger *zap.Logger) *ChannelsHandler {
+	validTypes := make(map[string]bool, len(provider.AllChanTypes))
+	for _, v := range provider.AllChanTypes {
+		validTypes[v] = true
+	}
+
+	return &ChannelsHandler{
+		tokenStorage: tokenStorage,
+		oauthEnabled: true,
+		validTypes:   validTypes,
+		logger:       logger,
+	}
+}
+
+// getSlackClient creates a Slack client for the current request (OAuth mode)
+func (ch *ChannelsHandler) getSlackClient(ctx context.Context) (*slack.Client, error) {
+	if !ch.oauthEnabled {
+		return nil, fmt.Errorf("OAuth not enabled")
+	}
+
+	userCtx, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("user context not found")
+	}
+
+	// Use token directly from context (already validated by middleware)
+	return slack.New(userCtx.AccessToken), nil
 }
 
 func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -104,6 +140,11 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 
 func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ChannelsHandler called")
+
+	// In OAuth mode, we don't have apiProvider - fetch directly
+	if ch.oauthEnabled {
+		return ch.channelsHandlerOAuth(ctx, request)
+	}
 
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
@@ -311,3 +352,79 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 
 	return paged, nextCursor
 }
+
+// channelsHandlerOAuth handles channel listing in OAuth mode
+func (ch *ChannelsHandler) channelsHandlerOAuth(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Get Slack client for this user
+	client, err := ch.getSlackClient(ctx)
+	if err != nil {
+		ch.logger.Error("Failed to get Slack client", zap.Error(err))
+		return nil, fmt.Errorf("authentication error: %w", err)
+	}
+
+	types := request.GetString("channel_types", "public_channel")
+	limit := request.GetInt("limit", 100)
+
+	ch.logger.Debug("OAuth mode: fetching channels",
+		zap.String("types", types),
+		zap.Int("limit", limit),
+	)
+
+	// Parse channel types
+	channelTypes := []string{}
+	for _, t := range strings.Split(types, ",") {
+		t = strings.TrimSpace(t)
+		if ch.validTypes[t] {
+			channelTypes = append(channelTypes, t)
+		}
+	}
+
+	if len(channelTypes) == 0 {
+		channelTypes = []string{"public_channel", "private_channel"}
+	}
+
+	// Fetch channels from Slack API
+	var allChannels []Channel
+	for _, chanType := range channelTypes {
+		params := &slack.GetConversationsParameters{
+			Types:           []string{chanType},
+			Limit:           limit,
+			ExcludeArchived: true,
+		}
+
+		channels, _, err := client.GetConversations(params)
+		if err != nil {
+			ch.logger.Error("Failed to get conversations", zap.Error(err))
+			return nil, fmt.Errorf("failed to get channels: %w", err)
+		}
+
+		for _, c := range channels {
+			allChannels = append(allChannels, Channel{
+				ID:          c.ID,
+				Name:        "#" + c.Name,
+				Topic:       c.Topic.Value,
+				Purpose:     c.Purpose.Value,
+				MemberCount: c.NumMembers,
+			})
+		}
+	}
+
+	// Sort by popularity if requested
+	sortType := request.GetString("sort", "")
+	if sortType == "popularity" {
+		sort.Slice(allChannels, func(i, j int) bool {
+			return allChannels[i].MemberCount > allChannels[j].MemberCount
+		})
+	}
+
+	// Marshal to CSV
+	csvBytes, err := gocsv.MarshalBytes(&allChannels)
+	if err != nil {
+		ch.logger.Error("Failed to marshal to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Returning channels", zap.Int("count", len(allChannels)))
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
