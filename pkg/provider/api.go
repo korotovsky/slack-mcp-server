@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
@@ -27,6 +28,22 @@ var PubChanType = "public_channel"
 
 var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
+
+// getCacheDir returns the appropriate cache directory for slack-mcp-server
+func getCacheDir() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		// Fallback to current directory if we can't get user cache dir
+		return "."
+	}
+
+	dir := filepath.Join(cacheDir, "slack-mcp-server")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		// Fallback to current directory if we can't create cache dir
+		return "."
+	}
+	return dir
+}
 
 type UsersCache struct {
 	Users    map[string]slack.User `json:"users"`
@@ -324,12 +341,14 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		usersCache = ".users_cache.json"
+		cacheDir := getCacheDir()
+		usersCache = filepath.Join(cacheDir, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = ".channels_cache_v2.json"
+		cacheDir := getCacheDir()
+		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -366,12 +385,14 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		usersCache = ".users_cache.json"
+		cacheDir := getCacheDir()
+		usersCache = filepath.Join(cacheDir, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = ".channels_cache_v2.json"
+		cacheDir := getCacheDir()
+		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
