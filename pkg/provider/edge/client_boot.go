@@ -149,7 +149,7 @@ func (c *UserBootChannel) SlackChannel() slack.Channel {
 			}
 		}
 	}
-	
+
 	return slack.Channel{
 		GroupConversation: slack.GroupConversation{
 			Conversation: slack.Conversation{
