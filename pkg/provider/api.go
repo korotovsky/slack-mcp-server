@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rusq/slackdump/v3/auth"
@@ -28,6 +29,22 @@ var PubChanType = "public_channel"
 var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
 
+// getCacheDir returns the appropriate cache directory for slack-mcp-server
+func getCacheDir() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		// Fallback to current directory if we can't get user cache dir
+		return "."
+	}
+
+	dir := filepath.Join(cacheDir, "slack-mcp-server")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		// Fallback to current directory if we can't create cache dir
+		return "."
+	}
+	return dir
+}
+
 type UsersCache struct {
 	Users    map[string]slack.User `json:"users"`
 	UsersInv map[string]string     `json:"users_inv"`
@@ -39,14 +56,16 @@ type ChannelsCache struct {
 }
 
 type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Topic       string `json:"topic"`
-	Purpose     string `json:"purpose"`
-	MemberCount int    `json:"memberCount"`
-	IsMpIM      bool   `json:"mpim"`
-	IsIM        bool   `json:"im"`
-	IsPrivate   bool   `json:"private"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Topic       string   `json:"topic"`
+	Purpose     string   `json:"purpose"`
+	MemberCount int      `json:"memberCount"`
+	IsMpIM      bool     `json:"mpim"`
+	IsIM        bool     `json:"im"`
+	IsPrivate   bool     `json:"private"`
+	User        string   `json:"user,omitempty"` // User ID for IM channels
+	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
 
 type SlackAPI interface {
@@ -82,6 +101,7 @@ type MCPSlackClient struct {
 
 	isEnterprise bool
 	isOAuth      bool
+	isBotToken   bool
 	teamEndpoint string
 }
 
@@ -138,6 +158,13 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	}
 
 	isEnterprise := authResp.EnterpriseID != ""
+	token := authProvider.SlackToken()
+
+	// Token type detection
+	// isOAuth: Official OAuth tokens (xoxp or xoxb) - uses Standard API
+	// isBotToken: Bot token - determines feature availability (e.g., search)
+	isOAuth := strings.HasPrefix(token, "xoxp-") || strings.HasPrefix(token, "xoxb-")
+	isBotToken := strings.HasPrefix(token, "xoxb-")
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
@@ -145,7 +172,8 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
-		isOAuth:      strings.HasPrefix(authProvider.SlackToken(), "xoxp-"),
+		isOAuth:      isOAuth,
+		isBotToken:   isBotToken,
 		teamEndpoint: authResp.URL,
 	}, nil
 }
@@ -275,6 +303,10 @@ func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
 	return c.authResponse
 }
 
+func (c *MCPSlackClient) IsBotToken() bool {
+	return c.isBotToken
+}
+
 func (c *MCPSlackClient) Raw() struct {
 	Slack *slack.Client
 	Edge  *edge.Client
@@ -294,8 +326,23 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		err          error
 	)
 
-	// Check for XOXP token first (User OAuth)
+	// Read all environment variables
 	xoxpToken := os.Getenv("SLACK_MCP_XOXP_TOKEN")
+	xoxbToken := os.Getenv("SLACK_MCP_XOXB_TOKEN")
+	xoxcToken := os.Getenv("SLACK_MCP_XOXC_TOKEN")
+	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
+
+	// Warn if both user and bot tokens are set
+	if xoxpToken != "" && xoxbToken != "" {
+		logger.Warn(
+			"Both SLACK_MCP_XOXP_TOKEN and SLACK_MCP_XOXB_TOKEN are set. "+
+				"Using User token (xoxp) for full features. "+
+				"Bot token will be ignored.",
+			zap.String("context", "console"),
+		)
+	}
+
+	// Priority 1: XOXP token (User OAuth)
 	if xoxpToken != "" {
 		authProvider, err = auth.NewValueAuth(xoxpToken, "")
 		if err != nil {
@@ -305,12 +352,24 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		return newWithXOXP(transport, authProvider, logger)
 	}
 
-	// Fall back to XOXC/XOXD tokens (session-based)
-	xoxcToken := os.Getenv("SLACK_MCP_XOXC_TOKEN")
-	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
+	// Priority 2: XOXB token (Bot)
+	if xoxbToken != "" {
+		authProvider, err = auth.NewValueAuth(xoxbToken, "")
+		if err != nil {
+			logger.Fatal("Failed to create auth provider with XOXB token", zap.Error(err))
+		}
 
+		logger.Info("Using Bot token authentication",
+			zap.String("context", "console"),
+			zap.String("token_type", "xoxb"),
+		)
+
+		return newWithXOXB(transport, authProvider, logger)
+	}
+
+	// Priority 3: XOXC/XOXD tokens (session-based)
 	if xoxcToken == "" || xoxdToken == "" {
-		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN (User OAuth) or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN (session-based) environment variables must be provided")
+		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided")
 	}
 
 	authProvider, err = auth.NewValueAuth(xoxcToken, xoxdToken)
@@ -329,12 +388,14 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		usersCache = ".users_cache.json"
+		cacheDir := getCacheDir()
+		usersCache = filepath.Join(cacheDir, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = ".channels_cache_v2.json"
+		cacheDir := getCacheDir()
+		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -363,6 +424,12 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 	}
 }
 
+func newWithXOXB(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
+	// Bot tokens do not support demo mode, but otherwise share the same
+	// initialization logic as user OAuth tokens.
+	return newWithXOXP(transport, authProvider, logger)
+}
+
 func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
 	var (
 		client *MCPSlackClient
@@ -371,12 +438,14 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		usersCache = ".users_cache.json"
+		cacheDir := getCacheDir()
+		usersCache = filepath.Join(cacheDir, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = ".channels_cache_v2.json"
+		cacheDir := getCacheDir()
+		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -488,11 +557,26 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 				zap.String("cache_file", ap.channelsCache),
 				zap.Error(err))
 		} else {
+			// Re-map channels with current users cache to ensure DM names are populated
+			usersMap := ap.ProvideUsersMap().Users
 			for _, c := range cachedChannels {
-				ap.channels[c.ID] = c
-				ap.channelsInv[c.Name] = c.ID
+				// For IM channels, re-generate the name and purpose using current users cache
+				if c.IsIM {
+					// Re-map the channel to get updated user name if available
+					remappedChannel := mapChannel(
+						c.ID, "", "", c.Topic, c.Purpose, 
+						c.User, c.Members, c.MemberCount,
+						c.IsIM, c.IsMpIM, c.IsPrivate,
+						usersMap,
+					)
+					ap.channels[c.ID] = remappedChannel
+					ap.channelsInv[remappedChannel.Name] = c.ID
+				} else {
+					ap.channels[c.ID] = c
+					ap.channelsInv[c.Name] = c.ID
+				}
 			}
-			ap.logger.Info("Loaded channels from cache",
+			ap.logger.Info("Loaded channels from cache and re-mapped DM names",
 				zap.Int("count", len(cachedChannels)),
 				zap.String("cache_file", ap.channelsCache))
 			ap.channelsReady = true
@@ -683,6 +767,11 @@ func (ap *ApiProvider) Slack() SlackAPI {
 	return ap.client
 }
 
+func (ap *ApiProvider) IsBotToken() bool {
+	client, ok := ap.client.(*MCPSlackClient)
+	return ok && client != nil && client.IsBotToken()
+}
+
 func mapChannel(
 	id, name, nameNormalized, topic, purpose, user string,
 	members []string,
@@ -695,14 +784,32 @@ func mapChannel(
 	finalTopic := topic
 	finalMemberCount := numMembers
 
+	var userID string
 	if isIM {
 		finalMemberCount = 2
-		if u, ok := usersMap[user]; ok {
+		userID = user // Store the user ID for later re-mapping
+		
+		// If user field is empty but we have members, try to extract from members
+		if userID == "" && len(members) > 0 {
+			// For IM channels, members should contain the other user's ID
+			// Try each member to find a valid user in the users map
+			for _, memberID := range members {
+				if _, ok := usersMap[memberID]; ok {
+					userID = memberID
+					break
+				}
+			}
+		}
+		
+		if u, ok := usersMap[userID]; ok {
 			channelName = "@" + u.Name
 			finalPurpose = "DM with " + u.RealName
+		} else if userID != "" {
+			channelName = "@" + userID
+			finalPurpose = "DM with " + userID
 		} else {
-			channelName = "@" + user
-			finalPurpose = "DM with " + user
+			channelName = "@"
+			finalPurpose = "DM with "
 		}
 		finalTopic = ""
 	} else if isMpIM {
@@ -733,5 +840,7 @@ func mapChannel(
 		IsIM:        isIM,
 		IsMpIM:      isMpIM,
 		IsPrivate:   isPrivate,
+		User:        userID,
+		Members:     members,
 	}
 }

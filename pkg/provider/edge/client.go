@@ -101,6 +101,12 @@ type IM struct {
 }
 
 func (c IM) SlackChannel() slack.Channel {
+	// Add Members array with just the User for IM channels
+	var members []string
+	if c.User != "" {
+		members = []string{c.User}
+	}
+	
 	return slack.Channel{
 		GroupConversation: slack.GroupConversation{
 			Conversation: slack.Conversation{
@@ -112,6 +118,7 @@ func (c IM) SlackChannel() slack.Channel {
 				LastRead:    c.LastRead.SlackString(),
 			},
 			IsArchived: c.IsArchived,
+			Members:    members,
 		},
 	}
 

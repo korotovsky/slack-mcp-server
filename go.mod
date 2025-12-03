@@ -13,7 +13,7 @@ require (
 	github.com/rusq/slackauth v0.6.1
 	github.com/rusq/slackdump/v3 v3.1.6
 	github.com/rusq/tagops v0.1.1
-	github.com/slack-go/slack v0.17.1
+	github.com/slack-go/slack v0.17.3
 	github.com/stretchr/testify v1.10.0
 	github.com/takara2314/slack-go-util v0.2.0
 	go.uber.org/zap v1.27.0
