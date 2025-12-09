@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -73,10 +75,12 @@ type searchParams struct {
 }
 
 type addMessageParams struct {
-	channel     string
-	threadTs    string
-	text        string
-	contentType string
+	channel        string
+	threadTs       string
+	text           string
+	contentType    string
+	attachmentUrl  string
+	attachmentName string
 }
 
 type ConversationsHandler struct {
@@ -161,45 +165,208 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, err
 	}
 
-	var options []slack.MsgOption
-	if params.threadTs != "" {
-		options = append(options, slack.MsgOptionTS(params.threadTs))
-	}
+	var respChannel, respTimestamp string
 
-	switch params.contentType {
-	case "text/plain":
-		options = append(options, slack.MsgOptionDisableMarkdown())
-		options = append(options, slack.MsgOptionText(params.text, false))
-	case "text/markdown":
-		blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+	// Check if attachment URL is provided
+	if params.attachmentUrl != "" {
+		// File uploads require conversation IDs, not user IDs
+		// Convert user ID to DM channel ID if necessary
+		uploadChannel := params.channel
+		if strings.HasPrefix(params.channel, "U") {
+			ch.logger.Debug("Converting user ID to DM channel ID",
+				zap.String("user_id", params.channel),
+			)
+			openParams := &slack.OpenConversationParameters{
+				Users: []string{params.channel},
+			}
+			dmChannel, _, _, err := ch.apiProvider.Slack().OpenConversationContext(ctx, openParams)
+			if err != nil {
+				ch.logger.Error("Failed to open DM conversation",
+					zap.String("user_id", params.channel),
+					zap.Error(err),
+				)
+				return nil, fmt.Errorf("failed to open DM with user %s: %w", params.channel, err)
+			}
+			uploadChannel = dmChannel.ID
+			ch.logger.Debug("Converted user ID to DM channel",
+				zap.String("user_id", params.channel),
+				zap.String("dm_channel_id", uploadChannel),
+			)
+		}
+
+		ch.logger.Debug("Uploading file attachment",
+			zap.String("channel", uploadChannel),
+			zap.String("attachment_url", params.attachmentUrl),
+		)
+
+		var filename string
+		var filePath string
+
+		// Determine if this is a local file path or remote URL
+		isRemote := strings.HasPrefix(params.attachmentUrl, "http://") || strings.HasPrefix(params.attachmentUrl, "https://")
+
+		// Handle file:// URLs by converting to local path
+		if strings.HasPrefix(params.attachmentUrl, "file://") {
+			filePath = strings.TrimPrefix(params.attachmentUrl, "file://")
+			isRemote = false
+		} else if !isRemote {
+			// Treat as local file path
+			filePath = params.attachmentUrl
+		}
+
+		// Determine filename
+		filename = params.attachmentName
+		if filename == "" {
+			if isRemote {
+				// Extract filename from URL
+				parsedURL, err := url.Parse(params.attachmentUrl)
+				if err == nil && parsedURL.Path != "" {
+					filename = filepath.Base(parsedURL.Path)
+				}
+			} else {
+				// Extract filename from file path
+				filename = filepath.Base(filePath)
+			}
+			if filename == "" || filename == "." || filename == "/" {
+				filename = "attachment"
+			}
+		}
+
+		var uploadParams slack.UploadFileV2Parameters
+
+		if isRemote {
+			// Download file from remote URL
+			resp, err := http.Get(params.attachmentUrl)
+			if err != nil {
+				ch.logger.Error("Failed to download attachment", zap.Error(err))
+				return nil, fmt.Errorf("failed to download attachment from URL: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				ch.logger.Error("Failed to download attachment", zap.Int("status_code", resp.StatusCode))
+				return nil, fmt.Errorf("failed to download attachment: HTTP %d", resp.StatusCode)
+			}
+
+			uploadParams = slack.UploadFileV2Parameters{
+				Reader:   resp.Body,
+				Filename: filename,
+				Channel:  uploadChannel,
+			}
+			if params.text != "" {
+				uploadParams.InitialComment = params.text
+			}
+			if params.threadTs != "" {
+				uploadParams.ThreadTimestamp = params.threadTs
+			}
+		} else {
+			// Read local file
+			ch.logger.Debug("Reading local file",
+				zap.String("file_path", filePath),
+			)
+
+			file, err := os.Open(filePath)
+			if err != nil {
+				ch.logger.Error("Failed to open local file", zap.Error(err))
+				return nil, fmt.Errorf("failed to open local file: %w", err)
+			}
+			defer file.Close()
+
+			// Get file size
+			fileInfo, err := file.Stat()
+			if err != nil {
+				ch.logger.Error("Failed to stat local file", zap.Error(err))
+				return nil, fmt.Errorf("failed to get file info: %w", err)
+			}
+
+			ch.logger.Debug("File info",
+				zap.String("file_path", filePath),
+				zap.Int64("file_size", fileInfo.Size()),
+			)
+
+			uploadParams = slack.UploadFileV2Parameters{
+				Reader:   file,
+				FileSize: int(fileInfo.Size()),
+				Filename: filename,
+				Channel:  uploadChannel,
+			}
+			if params.text != "" {
+				uploadParams.InitialComment = params.text
+			}
+			if params.threadTs != "" {
+				uploadParams.ThreadTimestamp = params.threadTs
+			}
+		}
+
+		ch.logger.Debug("Uploading file to Slack",
+			zap.String("filename", filename),
+			zap.String("channel", uploadChannel),
+			zap.String("thread_ts", params.threadTs),
+			zap.String("initial_comment", params.text),
+			zap.Int("file_size", uploadParams.FileSize),
+			zap.Bool("is_remote", isRemote),
+		)
+
+		fileSummary, err := ch.apiProvider.Slack().UploadFileV2Context(ctx, uploadParams)
 		if err != nil {
-			ch.logger.Warn("Markdown parsing error", zap.Error(err))
+			ch.logger.Error("Slack UploadFileV2Context failed",
+				zap.Error(err),
+				zap.String("channel", params.channel),
+				zap.String("filename", filename),
+			)
+			return nil, fmt.Errorf("failed to upload file to Slack: %w", err)
+		}
+
+		ch.logger.Info("File uploaded successfully",
+			zap.String("file_id", fileSummary.ID),
+			zap.String("channel", uploadChannel),
+		)
+
+		respChannel = uploadChannel
+		// File uploads don't return a timestamp in the same way, so we'll use the file ID
+		respTimestamp = fileSummary.ID
+	} else {
+		// Original message posting logic (no attachment)
+		var options []slack.MsgOption
+		if params.threadTs != "" {
+			options = append(options, slack.MsgOptionTS(params.threadTs))
+		}
+
+		switch params.contentType {
+		case "text/plain":
 			options = append(options, slack.MsgOptionDisableMarkdown())
 			options = append(options, slack.MsgOptionText(params.text, false))
-		} else {
-			options = append(options, slack.MsgOptionBlocks(blocks...))
+		case "text/markdown":
+			blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+			if err != nil {
+				ch.logger.Warn("Markdown parsing error", zap.Error(err))
+				options = append(options, slack.MsgOptionDisableMarkdown())
+				options = append(options, slack.MsgOptionText(params.text, false))
+			} else {
+				options = append(options, slack.MsgOptionBlocks(blocks...))
+			}
+		default:
+			return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
 		}
-	default:
-		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
-	}
 
-	unfurlOpt := os.Getenv("SLACK_MCP_ADD_MESSAGE_UNFURLING")
-	if text.IsUnfurlingEnabled(params.text, unfurlOpt, ch.logger) {
-		options = append(options, slack.MsgOptionEnableLinkUnfurl())
-	} else {
-		options = append(options, slack.MsgOptionDisableLinkUnfurl())
-		options = append(options, slack.MsgOptionDisableMediaUnfurl())
-	}
+		unfurlOpt := os.Getenv("SLACK_MCP_ADD_MESSAGE_UNFURLING")
+		if text.IsUnfurlingEnabled(params.text, unfurlOpt, ch.logger) {
+			options = append(options, slack.MsgOptionEnableLinkUnfurl())
+		} else {
+			options = append(options, slack.MsgOptionDisableLinkUnfurl())
+			options = append(options, slack.MsgOptionDisableMediaUnfurl())
+		}
 
-	ch.logger.Debug("Posting Slack message",
-		zap.String("channel", params.channel),
-		zap.String("thread_ts", params.threadTs),
-		zap.String("content_type", params.contentType),
-	)
-	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
-	if err != nil {
-		ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
-		return nil, err
+		ch.logger.Debug("Posting Slack message",
+			zap.String("channel", params.channel),
+			zap.String("thread_ts", params.threadTs),
+			zap.String("content_type", params.contentType),
+		)
+		respChannel, respTimestamp, err = ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
+		if err != nil {
+			ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
+			return nil, err
+		}
 	}
 
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
@@ -573,9 +740,13 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}
 
 	msgText := request.GetString("payload", "")
-	if msgText == "" {
-		ch.logger.Error("Message text missing")
-		return nil, errors.New("text must be a string")
+	attachmentUrl := request.GetString("attachment_url", "")
+	attachmentName := request.GetString("attachment_name", "")
+
+	// Payload is required unless we're uploading a file attachment
+	if msgText == "" && attachmentUrl == "" {
+		ch.logger.Error("Message text or attachment required")
+		return nil, errors.New("either payload or attachment_url must be provided")
 	}
 
 	contentType := request.GetString("content_type", "text/markdown")
@@ -585,10 +756,12 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}
 
 	return &addMessageParams{
-		channel:     channel,
-		threadTs:    threadTs,
-		text:        msgText,
-		contentType: contentType,
+		channel:        channel,
+		threadTs:       threadTs,
+		text:           msgText,
+		contentType:    contentType,
+		attachmentUrl:  attachmentUrl,
+		attachmentName: attachmentName,
 	}, nil
 }
 
