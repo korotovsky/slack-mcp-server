@@ -80,6 +80,12 @@ type addMessageParams struct {
 	contentType string
 }
 
+type addReactionParams struct {
+	channel   string
+	timestamp string
+	emoji     string
+}
+
 type ConversationsHandler struct {
 	apiProvider  *provider.ApiProvider // Legacy mode
 	tokenStorage oauth.TokenStorage    // OAuth mode
@@ -306,6 +312,12 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		// provider readiness (legacy mode)
+		if ready, err := ch.apiProvider.IsReady(); !ready {
+			ch.logger.Error("API provider not ready", zap.Error(err))
+			return nil, err
+		}
 	}
 
 	params, err := ch.parseParamsToolAddMessage(request)
@@ -404,6 +416,56 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 
 	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, historyParams.ChannelID, false)
 	return marshalMessagesToCSV(messages)
+}
+
+// ReactionsAddHandler adds an emoji reaction to a message
+func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
+
+	// Get Slack client (OAuth or legacy)
+	var slackClient *slack.Client
+	if ch.oauthEnabled {
+		client, err := ch.getSlackClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		slackClient = client
+	} else {
+		// provider readiness (legacy mode)
+		if ready, err := ch.apiProvider.IsReady(); !ready {
+			ch.logger.Error("API provider not ready", zap.Error(err))
+			return nil, err
+		}
+	}
+
+	params, err := ch.parseParamsToolAddReaction(ctx, slackClient, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
+		return nil, err
+	}
+
+	itemRef := slack.ItemRef{
+		Channel:   params.channel,
+		Timestamp: params.timestamp,
+	}
+
+	ch.logger.Debug("Adding reaction to Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+		zap.String("emoji", params.emoji),
+	)
+
+	if ch.oauthEnabled {
+		err = slackClient.AddReactionContext(ctx, params.emoji, itemRef)
+	} else {
+		err = ch.apiProvider.Slack().AddReactionContext(ctx, params.emoji, itemRef)
+	}
+	if err != nil {
+		ch.logger.Error("Slack AddReactionContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully added :%s: reaction to message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
 }
 
 // ConversationsHistoryHandler streams conversation history as CSV
@@ -604,6 +666,19 @@ func isChannelAllowed(channel string) bool {
 		}
 	}
 	return !isNegated
+}
+
+// resolveChannelID resolves a channel name to its ID (legacy mode only)
+func (ch *ConversationsHandler) resolveChannelID(channel string) (string, error) {
+	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
+		return channel, nil
+	}
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+	chn, ok := channelsMaps.ChannelsInv[channel]
+	if !ok {
+		return "", fmt.Errorf("channel %q not found", channel)
+	}
+	return channelsMaps.Channels[chn].ID, nil
 }
 
 func (ch *ConversationsHandler) convertMessagesFromHistory(ctx context.Context, slackClient *slack.Client, slackMessages []slack.Message, channel string, includeActivity bool) []Message {
@@ -905,13 +980,12 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
 		if !ch.oauthEnabled {
-			channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-			chn, ok := channelsMaps.ChannelsInv[channel]
-			if !ok {
-				ch.logger.Error("Channel not found", zap.String("channel", channel))
-				return nil, fmt.Errorf("channel %q not found", channel)
+			var err error
+			channel, err = ch.resolveChannelID(channel)
+			if err != nil {
+				ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+				return nil, err
 			}
-			channel = channelsMaps.Channels[chn].ID
 		} else {
 			// In OAuth mode without cache, require channel ID
 			return nil, fmt.Errorf("in OAuth mode, please use channel ID (C...) instead of name (%s)", channel)
@@ -945,6 +1019,65 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		threadTs:    threadTs,
 		text:        msgText,
 		contentType: contentType,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolAddReaction(ctx context.Context, slackClient *slack.Client, request mcp.CallToolRequest) (*addReactionParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	if toolConfig == "" {
+		ch.logger.Error("Reactions tool disabled by default")
+		return nil, errors.New(
+			"by default, the reactions_add tool is disabled to guard Slack workspaces against accidental spamming. " +
+				"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+				"to limit where the MCP can add reactions, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
+				"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
+		)
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+
+	// Resolve channel name to ID
+	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		if !ch.oauthEnabled {
+			var err error
+			channel, err = ch.resolveChannelID(channel)
+			if err != nil {
+				ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+				return nil, err
+			}
+		} else {
+			// OAuth mode: resolve channel name to ID using Slack API
+			resolvedID, err := ch.resolveChannelName(ctx, slackClient, channel)
+			if err != nil {
+				ch.logger.Error("Failed to resolve channel name", zap.String("channel", channel), zap.Error(err))
+				return nil, fmt.Errorf("failed to resolve channel name %q: %w", channel, err)
+			}
+			channel = resolvedID
+		}
+	}
+
+	if !isChannelAllowed(channel) {
+		ch.logger.Warn("Reactions tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("reactions_add tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		return nil, errors.New("timestamp is required")
+	}
+
+	emoji := strings.Trim(request.GetString("emoji", ""), ":")
+	if emoji == "" {
+		return nil, errors.New("emoji is required")
+	}
+
+	return &addReactionParams{
+		channel:   channel,
+		timestamp: timestamp,
+		emoji:     emoji,
 	}, nil
 }
 
