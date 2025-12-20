@@ -101,10 +101,21 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 		return nil, err
 	}
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
-		return nil, err
+	// wait for provider readiness
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for {
+		if ready, _ := ch.apiProvider.IsReady(); ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			ch.logger.Error("Timeout waiting for API provider to be ready")
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			ch.logger.Debug("continue waiting")
+		}
 	}
 
 	// Slack auth test
