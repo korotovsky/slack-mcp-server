@@ -313,7 +313,25 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.Description("Maximum messages to fetch per channel. Default is 10."),
 			mcp.DefaultNumber(10),
 		),
+		mcp.WithBoolean("mentions_only",
+			mcp.Description("If true, only returns channels where you have @mentions. Default is false."),
+			mcp.DefaultBool(false),
+		),
 	), conversationsHandler.ConversationsUnreadsHandler)
+
+	// Register mark tool - marks a channel as read
+	s.AddTool(mcp.NewTool("conversations_mark",
+		mcp.WithDescription("Mark a channel or DM as read. If no timestamp is provided, marks all messages as read."),
+		mcp.WithTitleAnnotation("Mark as Read"),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... (e.g., #general, @username)."),
+		),
+		mcp.WithString("ts",
+			mcp.Description("Timestamp of the message to mark as read up to. If not provided, marks all messages as read."),
+		),
+	), conversationsHandler.ConversationsMarkHandler)
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 	usergroupsHandler := handler.NewUsergroupsHandler(provider, logger)
 
