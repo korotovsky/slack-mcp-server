@@ -625,6 +625,7 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 	channelTypes := request.GetString("channel_types", "all") // "all", "dm", "group_dm", "partner", "internal"
 	maxChannels := request.GetInt("max_channels", 50)
 	maxMessagesPerChannel := request.GetInt("max_messages_per_channel", 10)
+	mentionsOnly := request.GetBool("mentions_only", false) // Priority Inbox: only show channels with @mentions
 
 	// Call ClientCounts to get unread status for all channels efficiently
 	// This uses the undocumented client.counts API which returns HasUnreads for all channels
@@ -649,6 +650,11 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 	// Process regular channels (public, private)
 	for _, snap := range counts.Channels {
 		if !snap.HasUnreads {
+			continue
+		}
+
+		// Priority Inbox: skip channels without @mentions
+		if mentionsOnly && snap.MentionCount == 0 {
 			continue
 		}
 
@@ -691,6 +697,11 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 			continue
 		}
 
+		// Priority Inbox: skip channels without @mentions
+		if mentionsOnly && snap.MentionCount == 0 {
+			continue
+		}
+
 		// Filter by requested channel types
 		if channelTypes != "all" && channelTypes != "group_dm" {
 			continue
@@ -714,6 +725,11 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 	// Process IMs (direct messages)
 	for _, snap := range counts.IMs {
 		if !snap.HasUnreads {
+			continue
+		}
+
+		// Priority Inbox: skip channels without @mentions
+		if mentionsOnly && snap.MentionCount == 0 {
 			continue
 		}
 
@@ -789,6 +805,61 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 	ch.logger.Debug("Fetched unread messages", zap.Int("total", len(allMessages)))
 
 	return marshalMessagesToCSV(allMessages)
+}
+
+// ConversationsMarkHandler marks a channel as read up to a specific timestamp
+func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("params", request.Params))
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+
+	// Resolve channel name to ID if needed
+	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+		chn, ok := channelsMaps.ChannelsInv[channel]
+		if !ok {
+			ch.logger.Error("Channel not found", zap.String("channel", channel))
+			return nil, fmt.Errorf("channel %q not found", channel)
+		}
+		channel = channelsMaps.Channels[chn].ID
+	}
+
+	// Get timestamp - if not provided, mark all as read by getting latest message timestamp
+	ts := request.GetString("ts", "")
+	if ts == "" {
+		// Fetch the latest message to get its timestamp
+		historyParams := slack.GetConversationHistoryParameters{
+			ChannelID: channel,
+			Limit:     1,
+		}
+		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		if err != nil {
+			ch.logger.Error("Failed to get latest message", zap.Error(err))
+			return nil, fmt.Errorf("failed to get latest message: %v", err)
+		}
+		if len(history.Messages) > 0 {
+			ts = history.Messages[0].Timestamp
+		} else {
+			// No messages in channel, nothing to mark
+			return mcp.NewToolResultText("No messages to mark as read"), nil
+		}
+	}
+
+	// Mark the conversation as read
+	err := ch.apiProvider.Slack().MarkConversationContext(ctx, channel, ts)
+	if err != nil {
+		ch.logger.Error("Failed to mark conversation", zap.Error(err))
+		return nil, fmt.Errorf("failed to mark conversation as read: %v", err)
+	}
+
+	ch.logger.Info("Marked conversation as read",
+		zap.String("channel", channel),
+		zap.String("ts", ts))
+
+	return mcp.NewToolResultText(fmt.Sprintf("Marked %s as read up to %s", channel, ts)), nil
 }
 
 // categorizeChannel determines the type of channel for prioritization
