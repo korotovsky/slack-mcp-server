@@ -666,12 +666,11 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 			name := cached.Name
 			if strings.HasPrefix(name, "#") {
 				channelName = name
-				name = strings.TrimPrefix(name, "#") // Strip # for prefix checks
 			} else {
 				channelName = "#" + name
 			}
-			// Check if it's a partner/external channel
-			if strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "shared-") {
+			// Check if it's a partner/external channel using Slack's metadata
+			if cached.IsExtShared {
 				channelType = "partner"
 			}
 		}
@@ -863,15 +862,15 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 }
 
 // categorizeChannel determines the type of channel for prioritization
-func (ch *ConversationsHandler) categorizeChannel(id, name string, isIM, isMpIM, isPrivate bool) string {
+func (ch *ConversationsHandler) categorizeChannel(id, name string, isIM, isMpIM, isPrivate, isExtShared bool) string {
 	if isIM {
 		return "dm"
 	}
 	if isMpIM {
 		return "group_dm"
 	}
-	// Check if it's a partner/external channel (typically prefixed with ext- or shared-)
-	if strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "shared-") {
+	// Check if it's a partner/external channel using Slack's metadata
+	if isExtShared {
 		return "partner"
 	}
 	return "internal"
