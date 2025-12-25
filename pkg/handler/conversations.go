@@ -622,52 +622,118 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 
 	// Get optional parameters
 	includeMessages := request.GetBool("include_messages", true)
-	channelTypes := request.GetString("channel_types", "all") // "all", "dm", "partner", "internal"
+	channelTypes := request.GetString("channel_types", "all") // "all", "dm", "group_dm", "partner", "internal"
 	maxChannels := request.GetInt("max_channels", 50)
 	maxMessagesPerChannel := request.GetInt("max_messages_per_channel", 10)
 
-	// Call ClientUserBoot to get all channels with LastRead/Latest in one API call
-	boot, err := ch.apiProvider.Slack().ClientUserBoot(ctx)
+	// Call ClientCounts to get unread status for all channels efficiently
+	// This uses the undocumented client.counts API which returns HasUnreads for all channels
+	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
 	if err != nil {
-		ch.logger.Error("ClientUserBoot failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to get user boot data: %v", err)
+		ch.logger.Error("ClientCounts failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to get client counts: %v", err)
 	}
 
-	ch.logger.Debug("Got boot data", zap.Int("channels", len(boot.Channels)), zap.Int("ims", len(boot.IMs)))
+	ch.logger.Debug("Got counts data",
+		zap.Int("channels", len(counts.Channels)),
+		zap.Int("mpims", len(counts.MPIMs)),
+		zap.Int("ims", len(counts.IMs)))
 
-	// Get users map for resolving names
+	// Get users map and channels map for resolving names
 	usersMap := ch.apiProvider.ProvideUsersMap()
 	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
 
 	// Collect channels with unreads
 	var unreadChannels []UnreadChannel
 
-	for _, bootCh := range boot.Channels {
-		// Skip if no unread (Latest <= LastRead)
-		// fasttime.Time is a type alias for time.Time, so we cast directly
-		latestTime := time.Time(bootCh.Latest)
-		lastReadTime := time.Time(bootCh.LastRead)
-		if !latestTime.After(lastReadTime) {
+	// Process regular channels (public, private)
+	for _, snap := range counts.Channels {
+		if !snap.HasUnreads {
 			continue
 		}
 
-		// Determine channel type for prioritization
-		channelType := ch.categorizeChannel(bootCh.ID, bootCh.Name, bootCh.IsIM, bootCh.IsMpim, bootCh.IsPrivate)
+		// Get channel info from cache to determine type and name
+		channelName := snap.ID
+		channelType := "internal"
+		if cached, ok := channelsMaps.Channels[snap.ID]; ok {
+			channelName = "#" + cached.Name
+			// Check if it's a partner/external channel
+			if strings.HasPrefix(cached.Name, "ext-") || strings.HasPrefix(cached.Name, "shared-") {
+				channelType = "partner"
+			}
+		}
 
 		// Filter by requested channel types
 		if channelTypes != "all" && channelType != channelTypes {
 			continue
 		}
 
-		// Get display name for channel
-		channelName := ch.getChannelDisplayName(bootCh.ID, bootCh.Name, bootCh.IsIM, bootCh.IsMpim, bootCh.Members, usersMap.Users, channelsMaps)
-
 		unreadChannels = append(unreadChannels, UnreadChannel{
-			ChannelID:   bootCh.ID,
+			ChannelID:   snap.ID,
 			ChannelName: channelName,
 			ChannelType: channelType,
-			LastRead:    bootCh.LastRead.SlackString(),
-			Latest:      bootCh.Latest.SlackString(),
+			UnreadCount: snap.MentionCount,
+			LastRead:    snap.LastRead.SlackString(),
+			Latest:      snap.Latest.SlackString(),
+		})
+	}
+
+	// Process MPIMs (group DMs)
+	for _, snap := range counts.MPIMs {
+		if !snap.HasUnreads {
+			continue
+		}
+
+		// Filter by requested channel types
+		if channelTypes != "all" && channelTypes != "group_dm" {
+			continue
+		}
+
+		channelName := snap.ID
+		if cached, ok := channelsMaps.Channels[snap.ID]; ok {
+			channelName = cached.Name
+		}
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   snap.ID,
+			ChannelName: channelName,
+			ChannelType: "group_dm",
+			UnreadCount: snap.MentionCount,
+			LastRead:    snap.LastRead.SlackString(),
+			Latest:      snap.Latest.SlackString(),
+		})
+	}
+
+	// Process IMs (direct messages)
+	for _, snap := range counts.IMs {
+		if !snap.HasUnreads {
+			continue
+		}
+
+		// Filter by requested channel types
+		if channelTypes != "all" && channelTypes != "dm" {
+			continue
+		}
+
+		// Get display name for DM from channel cache or users
+		channelName := snap.ID
+		if cached, ok := channelsMaps.Channels[snap.ID]; ok {
+			if cached.User != "" {
+				if u, ok := usersMap.Users[cached.User]; ok {
+					channelName = "@" + u.Name
+				} else {
+					channelName = "@" + cached.User
+				}
+			}
+		}
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   snap.ID,
+			ChannelName: channelName,
+			ChannelType: "dm",
+			UnreadCount: snap.MentionCount,
+			LastRead:    snap.LastRead.SlackString(),
+			Latest:      snap.Latest.SlackString(),
 		})
 	}
 
