@@ -656,9 +656,16 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		channelName := snap.ID
 		channelType := "internal"
 		if cached, ok := channelsMaps.Channels[snap.ID]; ok {
-			channelName = "#" + cached.Name
+			// The cached name may already have # prefix, so handle both cases
+			name := cached.Name
+			if strings.HasPrefix(name, "#") {
+				channelName = name
+				name = strings.TrimPrefix(name, "#") // Strip # for prefix checks
+			} else {
+				channelName = "#" + name
+			}
 			// Check if it's a partner/external channel
-			if strings.HasPrefix(cached.Name, "ext-") || strings.HasPrefix(cached.Name, "shared-") {
+			if strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "shared-") {
 				channelType = "partner"
 			}
 		}
