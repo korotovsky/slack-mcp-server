@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -597,6 +598,192 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
+}
+
+// UnreadChannel represents a channel with unread messages
+type UnreadChannel struct {
+	ChannelID   string `json:"channelID"`
+	ChannelName string `json:"channelName"`
+	ChannelType string `json:"channelType"` // "dm", "group_dm", "partner", "internal"
+	UnreadCount int    `json:"unreadCount"`
+	LastRead    string `json:"lastRead"`
+	Latest      string `json:"latest"`
+}
+
+// UnreadMessage extends Message with channel context
+type UnreadMessage struct {
+	Message
+	ChannelType string `json:"channelType"`
+}
+
+// ConversationsUnreadsHandler returns unread messages across all channels
+func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUnreadsHandler called", zap.Any("params", request.Params))
+
+	// Get optional parameters
+	includeMessages := request.GetBool("include_messages", true)
+	channelTypes := request.GetString("channel_types", "all") // "all", "dm", "partner", "internal"
+	maxChannels := request.GetInt("max_channels", 50)
+	maxMessagesPerChannel := request.GetInt("max_messages_per_channel", 10)
+
+	// Call ClientUserBoot to get all channels with LastRead/Latest in one API call
+	boot, err := ch.apiProvider.Slack().ClientUserBoot(ctx)
+	if err != nil {
+		ch.logger.Error("ClientUserBoot failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to get user boot data: %v", err)
+	}
+
+	ch.logger.Debug("Got boot data", zap.Int("channels", len(boot.Channels)), zap.Int("ims", len(boot.IMs)))
+
+	// Get users map for resolving names
+	usersMap := ch.apiProvider.ProvideUsersMap()
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+
+	// Collect channels with unreads
+	var unreadChannels []UnreadChannel
+
+	for _, bootCh := range boot.Channels {
+		// Skip if no unread (Latest <= LastRead)
+		// fasttime.Time is a type alias for time.Time, so we cast directly
+		latestTime := time.Time(bootCh.Latest)
+		lastReadTime := time.Time(bootCh.LastRead)
+		if !latestTime.After(lastReadTime) {
+			continue
+		}
+
+		// Determine channel type for prioritization
+		channelType := ch.categorizeChannel(bootCh.ID, bootCh.Name, bootCh.IsIM, bootCh.IsMpim, bootCh.IsPrivate)
+
+		// Filter by requested channel types
+		if channelTypes != "all" && channelType != channelTypes {
+			continue
+		}
+
+		// Get display name for channel
+		channelName := ch.getChannelDisplayName(bootCh.ID, bootCh.Name, bootCh.IsIM, bootCh.IsMpim, bootCh.Members, usersMap.Users, channelsMaps)
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   bootCh.ID,
+			ChannelName: channelName,
+			ChannelType: channelType,
+			LastRead:    bootCh.LastRead.SlackString(),
+			Latest:      bootCh.Latest.SlackString(),
+		})
+	}
+
+	// Sort by priority: DMs > partner channels > internal
+	ch.sortChannelsByPriority(unreadChannels)
+
+	// Limit channels
+	if len(unreadChannels) > maxChannels {
+		unreadChannels = unreadChannels[:maxChannels]
+	}
+
+	ch.logger.Debug("Found unread channels", zap.Int("count", len(unreadChannels)))
+
+	// If not including messages, just return channel summary
+	if !includeMessages {
+		return ch.marshalUnreadChannelsToCSV(unreadChannels)
+	}
+
+	// Fetch messages for each unread channel
+	var allMessages []Message
+
+	for _, uc := range unreadChannels {
+		historyParams := slack.GetConversationHistoryParameters{
+			ChannelID: uc.ChannelID,
+			Oldest:    uc.LastRead,
+			Limit:     maxMessagesPerChannel,
+			Inclusive: false,
+		}
+
+		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		if err != nil {
+			ch.logger.Warn("Failed to get history for channel",
+				zap.String("channel", uc.ChannelID),
+				zap.Error(err))
+			continue
+		}
+
+		// Update unread count
+		uc.UnreadCount = len(history.Messages)
+
+		// Convert messages
+		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)
+		allMessages = append(allMessages, channelMessages...)
+	}
+
+	ch.logger.Debug("Fetched unread messages", zap.Int("total", len(allMessages)))
+
+	return marshalMessagesToCSV(allMessages)
+}
+
+// categorizeChannel determines the type of channel for prioritization
+func (ch *ConversationsHandler) categorizeChannel(id, name string, isIM, isMpIM, isPrivate bool) string {
+	if isIM {
+		return "dm"
+	}
+	if isMpIM {
+		return "group_dm"
+	}
+	// Check if it's a partner/external channel (typically prefixed with ext- or shared-)
+	if strings.HasPrefix(name, "ext-") || strings.HasPrefix(name, "shared-") {
+		return "partner"
+	}
+	return "internal"
+}
+
+// getChannelDisplayName returns a human-readable channel name
+func (ch *ConversationsHandler) getChannelDisplayName(id, name string, isIM, isMpIM bool, members []string, usersMap map[string]slack.User, channelsMaps *provider.ChannelsCache) string {
+	// Try to get from cache first
+	if cached, ok := channelsMaps.Channels[id]; ok {
+		return cached.Name
+	}
+
+	if isIM && len(members) > 0 {
+		// For DMs, show the other user's name
+		for _, memberID := range members {
+			if u, ok := usersMap[memberID]; ok {
+				return "@" + u.Name
+			}
+		}
+		return "@" + id
+	}
+
+	if isMpIM {
+		return "@" + name
+	}
+
+	if name != "" {
+		return "#" + name
+	}
+
+	return id
+}
+
+// sortChannelsByPriority sorts channels: DMs > group_dm > partner > internal
+func (ch *ConversationsHandler) sortChannelsByPriority(channels []UnreadChannel) {
+	priority := map[string]int{
+		"dm":       0,
+		"group_dm": 1,
+		"partner":  2,
+		"internal": 3,
+	}
+
+	sort.Slice(channels, func(i, j int) bool {
+		pi := priority[channels[i].ChannelType]
+		pj := priority[channels[j].ChannelType]
+		return pi < pj
+	})
+}
+
+// marshalUnreadChannelsToCSV converts unread channels to CSV format
+func (ch *ConversationsHandler) marshalUnreadChannelsToCSV(channels []UnreadChannel) (*mcp.CallToolResult, error) {
+	csvBytes, err := gocsv.MarshalBytes(&channels)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
 func isChannelAllowedForConfig(channel, config string) bool {

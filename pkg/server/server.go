@@ -292,6 +292,28 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		),
 	), conversationsHandler.UsersSearchHandler)
 
+	// Register unreads tool - gets all unread messages across channels efficiently
+	s.AddTool(mcp.NewTool("conversations_unreads",
+		mcp.WithDescription("Get unread messages across all channels. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (ext-*) > internal channels."),
+		mcp.WithTitleAnnotation("Get Unread Messages"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithBoolean("include_messages",
+			mcp.Description("If true (default), returns the actual unread messages. If false, returns only a summary of channels with unreads."),
+			mcp.DefaultBool(true),
+		),
+		mcp.WithString("channel_types",
+			mcp.Description("Filter by channel type: 'all' (default), 'dm' (direct messages), 'group_dm' (group DMs), 'partner' (ext-* channels), 'internal' (other channels)."),
+			mcp.DefaultString("all"),
+		),
+		mcp.WithNumber("max_channels",
+			mcp.Description("Maximum number of channels to fetch unreads from. Default is 50."),
+			mcp.DefaultNumber(50),
+		),
+		mcp.WithNumber("max_messages_per_channel",
+			mcp.Description("Maximum messages to fetch per channel. Default is 10."),
+			mcp.DefaultNumber(10),
+		),
+	), conversationsHandler.ConversationsUnreadsHandler)
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 	usergroupsHandler := handler.NewUsergroupsHandler(provider, logger)
 
