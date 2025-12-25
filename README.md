@@ -13,6 +13,7 @@ This feature-rich Slack MCP Server has:
 - **Enterprise Workspaces Support**: Possibility to integrate with Enterprise Slack setups.
 - **Channel and Thread Support with `#Name` `@Lookup`**: Fetch messages from channels and threads, including activity messages, and retrieve channels using their names (e.g., #general) as well as their IDs.
 - **Smart History**: Fetch messages with pagination by date (d1, 7d, 1m) or message count.
+- **Unread Messages**: Get all unread messages across channels efficiently with priority sorting (DMs > partner channels > internal), @mention filtering, and mark-as-read support.
 - **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content.
 - **Safe Message Posting**: The `conversations_add_message` tool is disabled by default for safety. Enable it via an environment variable, with optional channel restrictions.
 - **DM and Group DM support**: Retrieve direct messages and group direct messages.
@@ -184,6 +185,24 @@ Manage your user group membership: list groups you're in, join a group, or leave
   - For `join`/`leave`: JSON with result message and updated group info
 
 > **Required OAuth scopes:** `usergroups:read` (for list), `usergroups:read` + `usergroups:write` (for join/leave)
+
+### 14. conversations_unreads
+Get unread messages across all channels efficiently. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (Slack Connect) > internal channels.
+
+> **Note**: For browser tokens (`xoxc`/`xoxd`), uses the fast `client.counts` API. For OAuth tokens (`xoxp`), falls back to iterating channels via `conversations.info` (slower but functional). Not available with bot tokens (`xoxb`).
+
+- **Parameters:**
+  - `include_messages` (boolean, default: true): If true, returns the actual unread messages. If false, returns only a summary of channels with unreads.
+  - `channel_types` (string, default: "all"): Filter by channel type: `all`, `dm` (direct messages), `group_dm` (group DMs), `partner` (externally shared channels), `internal` (regular workspace channels).
+  - `max_channels` (number, default: 50): Maximum number of channels to fetch unreads from.
+  - `max_messages_per_channel` (number, default: 10): Maximum messages to fetch per channel.
+  - `mentions_only` (boolean, default: false): If true, only returns channels where you have @mentions. Only available with browser tokens.
+
+### 15. conversations_mark
+Mark a channel or DM as read.
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` (e.g., `#general`, `@username`).
+  - `ts` (string, optional): Timestamp of the message to mark as read up to. If not provided, marks all messages as read.
 
 ## Resources
 
