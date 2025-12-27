@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"github.com/gocarina/gocsv"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider"
-	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
-	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/slack-go/slack"
 	slackGoUtil "github.com/takara2314/slack-go-util"
 	"go.uber.org/zap"
+	"slack-mcp-server/pkg/provider"
+	"slack-mcp-server/pkg/server/auth"
+	"slack-mcp-server/pkg/text"
 )
 
 const (
