@@ -84,6 +84,20 @@ type ConversationsHandler struct {
 	logger      *zap.Logger
 }
 
+type Conversation struct {
+	ID          string `json:"id" csv:"id"`
+	Name        string `json:"name" csv:"name"`
+	IsChannel   bool   `json:"is_channel" csv:"is_channel"`
+	IsPrivate   bool   `json:"is_private" csv:"is_private"`
+	IsIM        bool   `json:"is_im" csv:"is_im"`
+	IsMpIM      bool   `json:"is_mpim" csv:"is_mpim"`
+	IsMember    bool   `json:"is_member" csv:"is_member"`
+	MemberCount int    `json:"member_count" csv:"member_count"`
+	Created     int64  `json:"created" csv:"created"`
+	Topic       string `json:"topic" csv:"topic"`
+	Purpose     string `json:"purpose" csv:"purpose"`
+}
+
 func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ConversationsHandler {
 	return &ConversationsHandler{
 		apiProvider: apiProvider,
@@ -630,6 +644,14 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 		}
 		addFilter(filters, "from", f)
 	}
+	if mentions := req.GetString("filter_mentions_user", ""); mentions != "" {
+		f, err := ch.paramFormatUser(mentions)
+		if err != nil {
+			ch.logger.Error("Invalid mentions-user filter", zap.String("filter", mentions), zap.Error(err))
+			return nil, err
+		}
+		addFilter(filters, "to", f)
+	}
 
 	dateMap, err := buildDateFilters(
 		req.GetString("filter_date_before", ""),
@@ -1001,4 +1023,50 @@ func buildQuery(freeText []string, filters map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+// UsersConversationsHandler lists all conversations the authenticated user is a member of
+func (ch *ConversationsHandler) UsersConversationsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("UsersConversationsHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	// Get all conversations from cache
+	channelsMap := ch.apiProvider.ProvideChannelsMaps()
+	ch.logger.Debug("Retrieved channels from cache", zap.Int("total_count", len(channelsMap.Channels)))
+
+	var conversations []Conversation
+	for _, channel := range channelsMap.Channels {
+		// Note: The cache only contains channels the user is a member of
+		conversations = append(conversations, Conversation{
+			ID:          channel.ID,
+			Name:        channel.Name,
+			IsChannel:   !channel.IsPrivate && !channel.IsIM && !channel.IsMpIM,
+			IsPrivate:   channel.IsPrivate && !channel.IsIM && !channel.IsMpIM,
+			IsIM:        channel.IsIM,
+			IsMpIM:      channel.IsMpIM,
+			IsMember:    true, // All cached channels are ones the user is a member of
+			MemberCount: channel.MemberCount,
+			Created:     0, // Not available in simplified Channel struct
+			Topic:       channel.Topic,
+			Purpose:     channel.Purpose,
+		})
+	}
+
+	ch.logger.Info("User conversations retrieved",
+		zap.Int("count", len(conversations)),
+	)
+
+	// Return as CSV
+	csvBytes, err := gocsv.MarshalBytes(&conversations)
+	if err != nil {
+		ch.logger.Error("Failed to marshal conversations to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
