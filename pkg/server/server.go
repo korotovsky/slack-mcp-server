@@ -148,6 +148,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 	}
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
+	listsHandler := handler.NewListsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("channels_list",
 		mcp.WithDescription("Get list of channels"),
@@ -168,6 +169,88 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
 		),
 	), channelsHandler.ChannelsHandler)
+
+	s.AddTool(mcp.NewTool("lists_items_list",
+		mcp.WithDescription("Get items from a Slack List. Lists are only available to workspaces on a paid plan."),
+		mcp.WithTitleAnnotation("List Items"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("list_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target List."),
+		),
+		mcp.WithNumber("limit",
+			mcp.DefaultNumber(100),
+			mcp.Description("Maximum number of items to retrieve. Must be between 1 and 1000."),
+		),
+		mcp.WithString("cursor",
+			mcp.Description("Cursor for pagination. Use the value from the Cursor column in the last row of the previous response."),
+		),
+		mcp.WithBoolean("archived",
+			mcp.Description("Include archived items in results. Default is false."),
+			mcp.DefaultBool(false),
+		),
+	), listsHandler.ListsItemsListHandler)
+
+	s.AddTool(mcp.NewTool("lists_items_info",
+		mcp.WithDescription("Get detailed information about a specific item in a Slack List."),
+		mcp.WithTitleAnnotation("Get List Item Info"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("list_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target List."),
+		),
+		mcp.WithString("item_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target item."),
+		),
+	), listsHandler.ListsItemsInfoHandler)
+
+	s.AddTool(mcp.NewTool("lists_items_create",
+		mcp.WithDescription("Create a new item in a Slack List."),
+		mcp.WithTitleAnnotation("Create List Item"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("list_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target List."),
+		),
+		mcp.WithString("fields",
+			mcp.Description("JSON array of field objects with column_id and value. Example: [{\"column_id\":\"col1\",\"value\":\"text\"}]"),
+		),
+		mcp.WithString("parent_item_id",
+			mcp.Description("The encoded identifier of the parent item, if creating a subtask."),
+		),
+	), listsHandler.ListsItemsCreateHandler)
+
+	s.AddTool(mcp.NewTool("lists_items_update",
+		mcp.WithDescription("Update an existing item in a Slack List."),
+		mcp.WithTitleAnnotation("Update List Item"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("list_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target List."),
+		),
+		mcp.WithString("item_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target item."),
+		),
+		mcp.WithString("fields",
+			mcp.Description("JSON array of field objects with column_id and value to update."),
+		),
+	), listsHandler.ListsItemsUpdateHandler)
+
+	s.AddTool(mcp.NewTool("lists_items_delete",
+		mcp.WithDescription("Delete an item from a Slack List."),
+		mcp.WithTitleAnnotation("Delete List Item"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("list_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the target List."),
+		),
+		mcp.WithString("item_id",
+			mcp.Required(),
+			mcp.Description("The encoded identifier for the item to delete."),
+		),
+	), listsHandler.ListsItemsDeleteHandler)
 
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
