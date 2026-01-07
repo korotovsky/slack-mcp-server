@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
-	"github.com/korotovsky/slack-mcp-server/pkg/transport"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+	"slack-mcp-server/pkg/limiter"
+	"slack-mcp-server/pkg/provider/edge"
+	"slack-mcp-server/pkg/transport"
 )
 
 const usersNotReadyMsg = "users cache is not ready yet, sync process is still running... please wait"
@@ -84,6 +84,9 @@ type SlackAPI interface {
 
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
+
+	// File operations
+	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
@@ -212,7 +215,7 @@ func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, t
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
-	// Please see https://github.com/korotovsky/slack-mcp-server/issues/73
+	// Please see https://slack-mcp-server/issues/73
 	// It seems that `conversations.list` works with `xoxp` tokens within Enterprise Grid setups
 	// and if `xoxc`/`xoxd` defined we fallback to edge client.
 	// In non Enterprise Grid setups we always use `conversations.list` api as it accepts both token types wtf.
@@ -282,6 +285,10 @@ func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
+}
+
+func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
+	return c.slackClient.GetFileInfoContext(ctx, fileID, count, page)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
