@@ -173,6 +173,14 @@ func TimestampToIsoRFC3339(slackTS string) (string, error) {
 	return t.UTC().Format(time.RFC3339), nil
 }
 
+func FormatPermalinkTimestamp(slackTS string) (string, error) {
+	parts := strings.Split(slackTS, ".")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid slack timestamp format: %s", slackTS)
+	}
+	return parts[0] + parts[1], nil
+}
+
 func ProcessText(s string) string {
 	s = filterSpecialChars(s)
 
