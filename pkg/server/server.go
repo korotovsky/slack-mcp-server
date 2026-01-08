@@ -36,6 +36,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	s.AddTool(mcp.NewTool("conversations_history",
 		mcp.WithDescription("Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
+		mcp.WithTitleAnnotation("Get Conversation History"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("    - `channel_id` (string): ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
@@ -55,6 +57,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	s.AddTool(mcp.NewTool("conversations_replies",
 		mcp.WithDescription("Get a thread of messages posted to a conversation by channelID and thread_ts, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
+		mcp.WithTitleAnnotation("Get Thread Replies"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
@@ -78,6 +82,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	s.AddTool(mcp.NewTool("conversations_add_message",
 		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
+		mcp.WithTitleAnnotation("Send Message"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
@@ -94,8 +100,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
 
-	s.AddTool(mcp.NewTool("conversations_search_messages",
+	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
+		mcp.WithTitleAnnotation("Search Messages"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("search_query",
 			mcp.Description("Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored."),
 		),
@@ -134,12 +142,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.DefaultNumber(20),
 			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
 		),
-	), conversationsHandler.ConversationsSearchHandler)
+	)
+	// Only register search tool for non-bot tokens (bot tokens cannot use search.messages API)
+	if !provider.IsBotToken() {
+		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
+	}
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("channels_list",
 		mcp.WithDescription("Get list of channels"),
+		mcp.WithTitleAnnotation("List Channels"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("channel_types",
 			mcp.Required(),
 			mcp.Description("Comma-separated channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'. Example: 'public_channel,private_channel,im'"),

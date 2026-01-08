@@ -1,5 +1,15 @@
 ## 3. Configuration and Usage
 
+> **Maintainer note**
+>
+> I’m currently seeking a new **full-time or contract engineering role** after losing my primary job.  
+> This directly impacts my ability to maintain this project long-term.
+>
+> If you know a **Hiring Manager, Engineering Manager, or startup team** that might be a good fit, I’d be grateful for an introduction.
+>
+> 👉 See the full context in **[this issue](https://github.com/korotovsky/slack-mcp-server/issues/150)**  
+> 📩 Contact: `dmitry@korotovsky.io`
+
 You can configure the MCP server using command line arguments and environment variables.
 
 ### Using DXT
@@ -10,8 +20,8 @@ For [Claude Desktop](https://claude.ai/download) users, you can use the DXT exte
 2. Click on the `Extensions` tab.
 3. Drag and drop the downloaded .dxt file to install it and click "Install".
 5. Fill all required configuration fields
-    - Authentication method: `xoxc/xoxd` or `xoxp`.
-    - Value for `SLACK_MCP_XOXC_TOKEN` and `SLACK_MCP_XOXD_TOKEN` in case of `xoxc/xoxd` method, or `SLACK_MCP_XOXP_TOKEN` in case of `xoxp`.
+    - Authentication method: `xoxc/xoxd`, `xoxp`, or `xoxb`.
+    - Value for `SLACK_MCP_XOXC_TOKEN` and `SLACK_MCP_XOXD_TOKEN` in case of `xoxc/xoxd` method, `SLACK_MCP_XOXP_TOKEN` in case of `xoxp`, or `SLACK_MCP_XOXB_TOKEN` in case of `xoxb`.
     - You may also enable `Add Message Tool` to allow posting messages to channels.
     - You may also change User-Agent if needed if you have Enterprise Slack.
 6. Enable MCP Server.
@@ -27,6 +37,7 @@ Below are prepared configurations:
 
  - `npx` and `xoxc/xoxd` method: [![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](cursor://anysphere.cursor-deeplink/mcp/install?name=slack-mcp-server&config=eyJjb21tYW5kIjogIm5weCAteSBzbGFjay1tY3Atc2VydmVyQGxhdGVzdCAtLXRyYW5zcG9ydCBzdGRpbyIsImVudiI6IHsiU0xBQ0tfTUNQX1hPWENfVE9LRU4iOiAieG94Yy0uLi4iLCAiU0xBQ0tfTUNQX1hPWERfVE9LRU4iOiAieG94ZC0uLi4ifSwiZGlzYWJsZWQiOiBmYWxzZSwiYXV0b0FwcHJvdmUiOiBbXX0%3D)
  - `npx` and `xoxp` method: [![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](cursor://anysphere.cursor-deeplink/mcp/install?name=slack-mcp-server&config=eyJjb21tYW5kIjogIm5weCAteSBzbGFjay1tY3Atc2VydmVyQGxhdGVzdCAtLXRyYW5zcG9ydCBzdGRpbyIsImVudiI6IHsiU0xBQ0tfTUNQX1hPWFBfVE9LRU4iOiAieG94cC0uLi4ifSwiZGlzYWJsZWQiOiBmYWxzZSwiYXV0b0FwcHJvdmUiOiBbXX0%3D)
+ - `npx` and `xoxb` method: [![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](cursor://anysphere.cursor-deeplink/mcp/install?name=slack-mcp-server&config=eyJjb21tYW5kIjogIm5weCAteSBzbGFjay1tY3Atc2VydmVyQGxhdGVzdCAtLXRyYW5zcG9ydCBzdGRpbyIsImVudiI6IHsiU0xBQ0tfTUNQX1hPWEJfVE9LRU4iOiAieG94Yi0uLi4ifSwiZGlzYWJsZWQiOiBmYWxzZSwiYXV0b0FwcHJvdmUiOiBbXX0%3D)
 
 > [!IMPORTANT]
 > Remember to replace tokens in the configuration with your own tokens, as they are just examples.
@@ -60,7 +71,27 @@ Open your `claude_desktop_config.json` and add the mcp server to the list of `mc
 }
 ```
 
-**Option 2: Using XOXC/XOXD Tokens**
+**Option 2: Using XOXB Token (Bot)**
+``` json
+{
+  "mcpServers": {
+    "slack": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "slack-mcp-server@latest",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXB_TOKEN": "xoxb-..."
+      }
+    }
+  }
+}
+```
+
+**Option 3: Using XOXC/XOXD Tokens**
 ``` json
 {
   "mcpServers": {

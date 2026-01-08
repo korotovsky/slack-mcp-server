@@ -148,8 +148,8 @@ github.com/rusq/slackdump/v3 v3.1.6 h1:t6hi49jSDWpiXqyna8OlEd2I2zkLBgi9XZGr+xDl5
 github.com/rusq/slackdump/v3 v3.1.6/go.mod h1:c9AiEEkmLWIbQJuxDIK+K9H5g6kdfc06Eqk6DmLWWps=
 github.com/rusq/tagops v0.1.1 h1:R5MHPR822lSg3LFr0RS3DFS0CapRiqtuHVD5NlOMOvY=
 github.com/rusq/tagops v0.1.1/go.mod h1:mUJ5WoHxrSv9wreCrHQkAeMevt5aXFadlOdLM6UsoHc=
-github.com/slack-go/slack v0.17.1 h1:x0Mnc6biHBea5vfxLR+x4JFl/Rm3eIo0iS3xDZenX+o=
-github.com/slack-go/slack v0.17.1/go.mod h1:X+UqOufi3LYQHDnMG1vxf0J8asC6+WllXrVrhl8/Prk=
+github.com/slack-go/slack v0.17.3 h1:zV5qO3Q+WJAQ/XwbGfNFrRMaJ5T/naqaonyPV/1TP4g=
+github.com/slack-go/slack v0.17.3/go.mod h1:X+UqOufi3LYQHDnMG1vxf0J8asC6+WllXrVrhl8/Prk=
 github.com/spf13/cast v1.7.1 h1:cuNEagBQEHWN1FnbGEjCXL2szYEXqfJPbP2HNUaca9Y=
 github.com/spf13/cast v1.7.1/go.mod h1:ancEpBxwJDODSW/UG4rDrAqiKolqNNh2DX3mk86cAdo=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
@@ -157,8 +157,8 @@ github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXf
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
-github.com/takara2314/slack-go-util v0.2.0 h1:Oxc2lrL873rcVI0iwANfeDwAjBxryTIwgzexbntsaR0=
-github.com/takara2314/slack-go-util v0.2.0/go.mod h1:zAMjTWVT2/cDkJtbFm+AtNg5dp+l0FpknJZs8q95NWs=
+github.com/takara2314/slack-go-util v0.3.0 h1:vA4WV5liJkZ9JMa2dVN+Rj6u8EW2jRiupOGkn52SMrg=
+github.com/takara2314/slack-go-util v0.3.0/go.mod h1:zAMjTWVT2/cDkJtbFm+AtNg5dp+l0FpknJZs8q95NWs=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/gjson v1.17.0 h1:/Jocvlh98kcTfpN2+JzGQWQcqrPQwDrVEMApx/M5ZwM=
 github.com/tidwall/gjson v1.17.0/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
