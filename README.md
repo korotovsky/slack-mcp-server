@@ -235,12 +235,54 @@ Fetches a CSV directory of all users in the workspace.
   - `userName`: Slack username (e.g., `john`)
   - `realName`: User’s real name (e.g., `John Doe`)
 
-## Setup Guide
+## Quick Start
 
-- [Authentication Setup](docs/01-authentication-setup.md)
+### OAuth Mode (Recommended for Multi-User)
+
+**Best for**: Teams, production deployments, multiple users
+
+1. **Deploy the server** (Cloud Run, Docker, etc.)
+2. **Create a Slack app** at https://api.slack.com/apps
+3. **Add user scopes**: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `mpim:write`, `users:read`, `chat:write`, `search:read`
+4. **Set redirect URI**: `https://your-server-url/oauth/callback`
+5. **Configure environment variables**:
+   ```bash
+   SLACK_MCP_OAUTH_ENABLED=true
+   SLACK_MCP_OAUTH_CLIENT_ID=your_client_id
+   SLACK_MCP_OAUTH_CLIENT_SECRET=your_client_secret
+   SLACK_MCP_OAUTH_REDIRECT_URI=https://your-server-url/oauth/callback
+   ```
+6. **Users authenticate**: Visit `/oauth/authorize` → Get personal token
+7. **Use in MCP client**:
+   ```json
+   {
+     "slack": {
+       "command": "npx",
+       "args": ["-y", "mcp-remote", "https://your-server-url/sse", "--header", "Authorization: Bearer xoxp-user-token"]
+     }
+   }
+   ```
+
+**Benefits**: 
+- ✅ One-time OAuth flow (no token expiration)
+- ✅ No manual browser cookie extraction
+- ✅ Each user acts as themselves
+- ✅ Secure multi-user support
+
+### Legacy Mode (Single User)
+
+**Best for**: Personal use, quick testing
+
+See [Authentication Setup](docs/01-authentication-setup.md) for extracting browser tokens.
+
+---
+
+## Full Setup Guides
+
+- [Authentication Setup](docs/01-authentication-setup.md) - Legacy mode with browser tokens
 - [Installation](docs/02-installation.md)
 - [Configuration and Usage](docs/03-configuration-and-usage.md)
-- [OAuth Multi-User Setup](docs/04-oauth-setup.md) (Optional - for multi-user support)
+- [OAuth Multi-User Setup](docs/04-oauth-setup.md) - Complete OAuth guide with deployment instructions
 
 ### Environment Variables (Quick Reference)
 
@@ -250,6 +292,10 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_XOXD_TOKEN`            | Yes*      | `nil`                     | Slack browser cookie `d` (`xoxd-...`)                                                                                                                                                                                                                                                     |
 | `SLACK_MCP_XOXP_TOKEN`            | Yes*      | `nil`                     | User OAuth token (`xoxp-...`) — alternative to xoxc/xoxd                                                                                                                                                                                                                                  |
 | `SLACK_MCP_XOXB_TOKEN`            | Yes*      | `nil`                     | Bot token (`xoxb-...`) — alternative to xoxp/xoxc/xoxd. Bot has limited access (invited channels only, no search)                                                                                                                                                                         |
+| `SLACK_MCP_OAUTH_ENABLED`         | No        | `false`                   | Enable OAuth 2.0 mode for multi-user support (requires OAuth credentials below)                                                                                                                                                                                                          |
+| `SLACK_MCP_OAUTH_CLIENT_ID`       | Yes**     | `nil`                     | Slack OAuth app Client ID (required when OAuth enabled)                                                                                                                                                                                                                                   |
+| `SLACK_MCP_OAUTH_CLIENT_SECRET`   | Yes**     | `nil`                     | Slack OAuth app Client Secret (required when OAuth enabled)                                                                                                                                                                                                                               |
+| `SLACK_MCP_OAUTH_REDIRECT_URI`    | Yes**     | `nil`                     | OAuth callback URL (required when OAuth enabled, must use HTTPS)                                                                                                                                                                                                                          |
 | `SLACK_MCP_PORT`                  | No        | `13080`                   | Port for the MCP server to listen on                                                                                                                                                                                                                                                      |
 | `SLACK_MCP_HOST`                  | No        | `127.0.0.1`               | Host for the MCP server to listen on                                                                                                                                                                                                                                                      |
 | `SLACK_MCP_API_KEY`               | No        | `nil`                     | Bearer token for SSE and HTTP transports                                                                                                                                                                                                                                                            |
@@ -270,6 +316,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
+**For OAuth mode, set `SLACK_MCP_OAUTH_ENABLED=true` and provide Client ID, Secret, and Redirect URI instead.
 
 ### Limitations matrix & Cache
 
