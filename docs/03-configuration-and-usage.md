@@ -128,7 +128,6 @@ Open your `claude_desktop_config.json` and add the mcp server to the list of `mc
         "-e",
         "SLACK_MCP_XOXP_TOKEN",
         "ghcr.io/korotovsky/slack-mcp-server",
-        "mcp-server",
         "--transport",
         "stdio"
       ],
@@ -155,7 +154,6 @@ Open your `claude_desktop_config.json` and add the mcp server to the list of `mc
         "-e",
         "SLACK_MCP_XOXD_TOKEN",
         "ghcr.io/korotovsky/slack-mcp-server",
-        "mcp-server",
         "--transport",
         "stdio"
       ],
@@ -245,7 +243,7 @@ docker pull ghcr.io/korotovsky/slack-mcp-server:latest
 docker run -i --rm \
   -e SLACK_MCP_XOXC_TOKEN \
   -e SLACK_MCP_XOXD_TOKEN \
-  slack-mcp-server mcp-server --transport stdio
+  ghcr.io/korotovsky/slack-mcp-server:latest --transport stdio
 ```
 
 Or, the docker-compose way:
