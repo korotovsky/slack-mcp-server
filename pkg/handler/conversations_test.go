@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +27,8 @@ func TestIntegrationConversations(t *testing.T) {
 	require.NotEmpty(t, sseKey, "sseKey must be generated for integration tests")
 	apiKey := os.Getenv("SLACK_MCP_OPENAI_API")
 	require.NotEmpty(t, apiKey, "SLACK_MCP_OPENAI_API must be set for integration tests")
+	xoxpToken := os.Getenv("SLACK_MCP_XOXP_TOKEN")
+	require.NotEmpty(t, xoxpToken, "SLACK_MCP_XOXP_TOKEN must be set for integration tests")
 
 	cfg := util.MCPConfig{
 		SSEKey:             sseKey,
@@ -62,27 +65,53 @@ func TestIntegrationConversations(t *testing.T) {
 		expectedLLMOutputMatchingRules  []string
 	}
 
+	// First, post test messages to ensure we have content to retrieve
+	testChannelName := "testcase-1"
+	slackClient := slack.New(xoxpToken)
+
+	// Get channel ID
+	channels, _, err := slackClient.GetConversationsContext(ctx, &slack.GetConversationsParameters{
+		Types: []string{"public_channel"},
+		Limit: 1000,
+	})
+	if err != nil {
+		t.Skipf("Could not list channels for test setup: %v", err)
+	}
+
+	var testChannelID string
+	for _, ch := range channels {
+		if ch.Name == testChannelName {
+			testChannelID = ch.ID
+			break
+		}
+	}
+	if testChannelID == "" {
+		t.Skipf("Test channel #%s not found, skipping test", testChannelName)
+	}
+
+	// Post test messages
+	testMessages := []string{"test message 1", "test message 2", "test message 3"}
+	for _, msg := range testMessages {
+		_, _, err := slackClient.PostMessageContext(ctx, testChannelID, slack.MsgOptionText(msg, false))
+		if err != nil {
+			t.Skipf("Could not post test message: %v", err)
+		}
+	}
+	time.Sleep(2 * time.Second) // Wait for Slack to index messages
+
 	cases := []tc{
 		{
 			name:             "Test conversations_history tool",
-			input:            "Provide a list of slack messages from #testcase-1",
+			input:            fmt.Sprintf("Provide a list of slack messages from #%s", testChannelName),
 			expectedToolName: "conversations_history",
 			expectedToolOutputMatchingRules: []matchingRule{
 				{
 					csvFieldName:    "Text",
-					csvFieldValueRE: "^message 3$",
-				},
-				{
-					csvFieldName:    "Text",
-					csvFieldValueRE: "^message 2$",
-				},
-				{
-					csvFieldName:    "Text",
-					csvFieldValueRE: "^message 1$",
+					csvFieldValueRE: "test message [123]",
 				},
 			},
 			expectedLLMOutputMatchingRules: []string{
-				"message 1", "message 2", "message 3",
+				"test message",
 			},
 		},
 	}

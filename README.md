@@ -68,6 +68,7 @@ Search messages in a public channel, private channel, or direct message (DM, or 
   - `filter_in_im_or_mpim` (string, optional): Filter messages in a direct message (DM) or multi-person direct message (MPIM) conversation by its ID or name. Example: `D1234567890` or `@username_dm`. If not provided, all DMs and MPIMs will be searched.
   - `filter_users_with` (string, optional): Filter messages with a specific user by their ID or display name in threads and DMs. Example: `U1234567890` or `@username`. If not provided, all threads and DMs will be searched.
   - `filter_users_from` (string, optional): Filter messages from a specific user by their ID or display name. Example: `U1234567890` or `@username`. If not provided, all users will be searched.
+  - `filter_mentions_user` (string, optional): Filter messages that mention a specific user. Example: `U1234567890` or `@username`. Use `@me` to find messages mentioning you. Perfect for daily summaries!
   - `filter_date_before` (string, optional): Filter messages sent before a specific date in format `YYYY-MM-DD`. Example: `2023-10-01`, `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
   - `filter_date_after` (string, optional): Filter messages sent after a specific date in format `YYYY-MM-DD`. Example: `2023-10-01`, `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
   - `filter_date_on` (string, optional): Filter messages sent on a specific date in format `YYYY-MM-DD`. Example: `2023-10-01`, `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
@@ -76,13 +77,52 @@ Search messages in a public channel, private channel, or direct message (DM, or 
   - `cursor` (string, default: ""): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
   - `limit` (number, default: 20): The maximum number of items to return. Must be an integer between 1 and 100.
 
-### 5. channels_list:
+### 5. users_conversations:
+Get list of all conversations (channels, DMs, group DMs) that you are a member of
+- **Parameters:** None required
+- **Returns:** CSV with all your conversations including:
+  - Conversation ID, name, type (channel/private/DM/group DM)
+  - Member count, topic, purpose
+  - Perfect for getting a complete list of your workspace context!
+
+### 6. channels_list:
 Get list of channels
 - **Parameters:**
   - `channel_types` (string, required): Comma-separated channel types. Allowed values: `mpim`, `im`, `public_channel`, `private_channel`. Example: `public_channel,private_channel,im`
   - `sort` (string, optional): Type of sorting. Allowed values: `popularity` - sort by number of members/participants in each channel.
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
+
+### 7. canvases_create:
+Create a new canvas with markdown content
+- **Parameters:**
+  - `title` (string, optional): Title of the canvas. If not provided, canvas will be created untitled.
+  - `content` (string, required): Markdown content for the canvas. Supports headings, lists, code blocks, tables, links, mentions (@user, #channel), and emojis.
+- **Returns:** `canvas_id` that can be used for further operations
+
+### 8. canvases_edit:
+Edit an existing canvas by adding, replacing, or deleting content
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to edit (e.g., F1234567890)
+  - `operation` (string, default: "insert_at_end"): Type of edit operation. Allowed values: `insert_at_start`, `insert_at_end`, `insert_before`, `insert_after`, `replace`, `delete`
+  - `content` (string, required): Markdown content to add or use for replacement. Supports headings, lists, code blocks, tables, links, mentions, and emojis.
+  - `section_id` (string, optional): Section ID for targeted operations (required for: `insert_before`, `insert_after`, `delete`). Use `canvases_sections_lookup` to find section IDs.
+
+### 9. canvases_sections_lookup:
+Look up section IDs in a canvas for targeted edits
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to search for sections (e.g., F1234567890)
+  - `contains_text` (string, optional): Filter sections by text content
+- **Returns:** Array of section objects with IDs that can be used with `canvases_edit`
+
+### 10. canvases_read:
+Read canvas metadata and full content
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to read (e.g., F1234567890)
+- **Returns:** Canvas metadata and full markdown content including:
+  - **Metadata**: title, timestamps, URLs, user info, permissions
+  - **Content**: Full markdown content downloaded from Slack (via `url_private_download`)
+  - **Preview**: Text preview if available
 
 ## Resources
 
