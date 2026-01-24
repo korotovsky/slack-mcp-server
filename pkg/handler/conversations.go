@@ -25,7 +25,6 @@ import (
 const (
 	defaultConversationsNumericLimit    = 50
 	defaultConversationsExpressionLimit = "1d"
-	maxSlackSearchResults               = 100
 )
 
 var validFilterKeys = map[string]struct{}{
@@ -321,10 +320,6 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.Int("page", params.page))
 
 	apiLimit := params.limit
-	if isSafeSearchEnabled() {
-		// Over-fetch to reduce pagination gaps and leakage when safe search filters results out.
-		apiLimit = maxSlackSearchResults
-	}
 
 	searchParams := slack.SearchParameters{
 		Sort:          slack.DEFAULT_SEARCH_SORT,
@@ -343,15 +338,16 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	matches := messagesRes.Matches
 	if isSafeSearchEnabled() {
 		matches = filterSafeSearch(matches)
-		// Keep the client limit.
-		if len(matches) > params.limit {
-			matches = matches[:params.limit]
-		}
 	}
 
 	messages := ch.convertMessagesFromSearch(matches)
-	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
+	if len(messagesRes.Matches) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
+
+		if len(messages) == 0 {
+			// No messages after filtering; create a dummy message to hold the cursor
+			messages = append(messages, Message{})
+		}
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
