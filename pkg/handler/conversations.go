@@ -319,13 +319,11 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.Int("page", params.page))
 
-	apiLimit := params.limit
-
 	searchParams := slack.SearchParameters{
 		Sort:          slack.DEFAULT_SEARCH_SORT,
 		SortDirection: slack.DEFAULT_SEARCH_SORT_DIR,
 		Highlight:     false,
-		Count:         apiLimit,
+		Count:         params.limit,
 		Page:          params.page,
 	}
 	messagesRes, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
