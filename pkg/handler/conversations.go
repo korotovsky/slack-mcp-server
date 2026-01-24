@@ -79,6 +79,11 @@ type addMessageParams struct {
 	contentType string
 }
 
+type permalinkParams struct {
+	channel   string
+	messageTs string
+}
+
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
 	logger      *zap.Logger
@@ -1001,4 +1006,76 @@ func buildQuery(freeText []string, filters map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+// GetPermalinkHandler generates a Slack permalink for a specific message
+func (ch *ConversationsHandler) GetPermalinkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("GetPermalinkHandler called", zap.Any("params", request.Params))
+
+	params, err := ch.parseParamsToolGetPermalink(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse permalink params", zap.Error(err))
+		return nil, err
+	}
+
+	// Get workspace from Slack auth
+	ar, err := ch.apiProvider.Slack().AuthTest()
+	if err != nil {
+		ch.logger.Error("Slack AuthTest failed", zap.Error(err))
+		return nil, err
+	}
+
+	ws, err := text.Workspace(ar.URL)
+	if err != nil {
+		ch.logger.Error("Failed to parse workspace from URL",
+			zap.String("url", ar.URL),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to parse workspace from URL: %v", err)
+	}
+
+	// Format timestamp for permalink
+	formattedTs, err := text.FormatPermalinkTimestamp(params.messageTs)
+	if err != nil {
+		ch.logger.Error("Failed to format timestamp",
+			zap.String("timestamp", params.messageTs),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to format timestamp: %v", err)
+	}
+
+	// Construct permalink
+	permalink := fmt.Sprintf("https://%s.slack.com/archives/%s/p%s", ws, params.channel, formattedTs)
+
+	ch.logger.Debug("Generated permalink",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.messageTs),
+		zap.String("permalink", permalink),
+	)
+
+	return mcp.NewToolResultText(permalink), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolGetPermalink(request mcp.CallToolRequest) (*permalinkParams, error) {
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in permalink params")
+		return nil, errors.New("channel_id must be a string")
+	}
+
+	messageTs := request.GetString("message_ts", "")
+	if messageTs == "" {
+		ch.logger.Error("message_ts missing in permalink params")
+		return nil, errors.New("message_ts must be a string")
+	}
+
+	if !strings.Contains(messageTs, ".") {
+		ch.logger.Error("Invalid message_ts format", zap.String("message_ts", messageTs))
+		return nil, errors.New("message_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	return &permalinkParams{
+		channel:   channel,
+		messageTs: messageTs,
+	}, nil
 }

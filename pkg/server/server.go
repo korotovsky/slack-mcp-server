@@ -147,6 +147,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 
+	s.AddTool(mcp.NewTool("get_permalink",
+		mcp.WithDescription("Get the Slack permalink URL for a specific message"),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel. Example: 'C1234567890' for channels, 'D1234567890' for DMs."),
+		),
+		mcp.WithString("message_ts",
+			mcp.Required(),
+			mcp.Description("Message timestamp in format 1234567890.123456. This is the unique identifier for the message."),
+		),
+	), conversationsHandler.GetPermalinkHandler)
+
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
 	s.AddTool(mcp.NewTool("channels_list",
