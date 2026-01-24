@@ -25,6 +25,7 @@ import (
 const (
 	defaultConversationsNumericLimit    = 50
 	defaultConversationsExpressionLimit = "1d"
+	maxSlackSearchResults               = 100
 )
 
 var validFilterKeys = map[string]struct{}{
@@ -319,11 +320,16 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.Int("page", params.page))
 
+	apiLimit := params.limit
+	if isSafeSearchEnabled() {
+		apiLimit = maxSlackSearchResults
+	}
+
 	searchParams := slack.SearchParameters{
 		Sort:          slack.DEFAULT_SEARCH_SORT,
 		SortDirection: slack.DEFAULT_SEARCH_SORT_DIR,
 		Highlight:     false,
-		Count:         params.limit,
+		Count:         apiLimit,
 		Page:          params.page,
 	}
 	messagesRes, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
@@ -333,12 +339,36 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
 
-	messages := ch.convertMessagesFromSearch(messagesRes.Matches)
+	matches := messagesRes.Matches
+	if isSafeSearchEnabled() {
+		matches = filterSafeSearch(matches)
+		if len(matches) > params.limit {
+			matches = matches[:params.limit]
+		}
+	}
+
+	messages := ch.convertMessagesFromSearch(matches)
 	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
+}
+
+func isSafeSearchEnabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("SLACK_MCP_SAFE_SEARCH")))
+	return val == "true" || val == "1" || val == "yes"
+}
+
+func filterSafeSearch(messages []slack.SearchMessage) []slack.SearchMessage {
+	filtered := make([]slack.SearchMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Channel.IsPrivate || msg.Channel.IsMPIM || strings.HasPrefix(msg.Channel.ID, "D") {
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
 }
 
 func isChannelAllowed(channel string) bool {
@@ -595,6 +625,12 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (*searchParams, error) {
 	rawQuery := strings.TrimSpace(req.GetString("search_query", ""))
 	freeText, filters := splitQuery(rawQuery)
+
+	if isSafeSearchEnabled() {
+		if im := req.GetString("filter_in_im_or_mpim", ""); im != "" {
+			return nil, errors.New("filter_in_im_or_mpim is not allowed when SLACK_MCP_SAFE_SEARCH is enabled")
+		}
+	}
 
 	if req.GetBool("filter_threads_only", false) {
 		addFilter(filters, "is", "thread")
