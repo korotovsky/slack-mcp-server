@@ -322,6 +322,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 
 	apiLimit := params.limit
 	if isSafeSearchEnabled() {
+		// Over-fetch to reduce pagination gaps and leakage when safe search filters results out.
 		apiLimit = maxSlackSearchResults
 	}
 
@@ -342,6 +343,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	matches := messagesRes.Matches
 	if isSafeSearchEnabled() {
 		matches = filterSafeSearch(matches)
+		// Keep the client limit.
 		if len(matches) > params.limit {
 			matches = matches[:params.limit]
 		}
