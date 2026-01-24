@@ -21,6 +21,10 @@ type Channel struct {
 	Topic       string `json:"topic"`
 	Purpose     string `json:"purpose"`
 	MemberCount int    `json:"memberCount"`
+	UserID      string `json:"userId,omitempty"`      // For IM channels: the other user's ID
+	UserName    string `json:"userName,omitempty"`    // For IM channels: the other user's display name
+	Members     string `json:"members,omitempty"`     // For MPIM channels: comma-separated user IDs
+	MemberNames string `json:"memberNames,omitempty"` // For MPIM channels: comma-separated display names
 	Cursor      string `json:"cursor"`
 }
 
@@ -75,16 +79,48 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 	}
 
 	channels := ch.apiProvider.ProvideChannelsMaps().Channels
+	users := ch.apiProvider.ProvideUsersMap().Users
 	ch.logger.Debug("Retrieved channels from provider", zap.Int("count", len(channels)))
 
 	for _, channel := range channels {
-		channelList = append(channelList, Channel{
+		chanData := Channel{
 			ID:          channel.ID,
 			Name:        channel.Name,
 			Topic:       channel.Topic,
 			Purpose:     channel.Purpose,
 			MemberCount: channel.MemberCount,
-		})
+		}
+
+		// For IM channels, add the other user's information
+		if channel.IsIM && channel.User != "" {
+			if user, ok := users[channel.User]; ok {
+				chanData.UserID = user.ID
+				chanData.UserName = user.Profile.DisplayName
+				if chanData.UserName == "" {
+					chanData.UserName = user.RealName
+				}
+			}
+		}
+
+		// For MPIM channels, add members information
+		if channel.IsMpIM && len(channel.Members) > 0 {
+			memberIDs := []string{}
+			memberNames := []string{}
+			for _, memberID := range channel.Members {
+				memberIDs = append(memberIDs, memberID)
+				if user, ok := users[memberID]; ok {
+					displayName := user.Profile.DisplayName
+					if displayName == "" {
+						displayName = user.RealName
+					}
+					memberNames = append(memberNames, displayName)
+				}
+			}
+			chanData.Members = strings.Join(memberIDs, ",")
+			chanData.MemberNames = strings.Join(memberNames, ",")
+		}
+
+		channelList = append(channelList, chanData)
 	}
 
 	csvBytes, err := gocsv.MarshalBytes(&channelList)
@@ -175,14 +211,47 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		zap.Bool("has_next_page", nextcur != ""),
 	)
 
+	users := ch.apiProvider.ProvideUsersMap().Users
+
 	for _, channel := range chans {
-		channelList = append(channelList, Channel{
+		chanData := Channel{
 			ID:          channel.ID,
 			Name:        channel.Name,
 			Topic:       channel.Topic,
 			Purpose:     channel.Purpose,
 			MemberCount: channel.MemberCount,
-		})
+		}
+
+		// For IM channels, add the other user's information
+		if channel.IsIM && channel.User != "" {
+			if user, ok := users[channel.User]; ok {
+				chanData.UserID = user.ID
+				chanData.UserName = user.Profile.DisplayName
+				if chanData.UserName == "" {
+					chanData.UserName = user.RealName
+				}
+			}
+		}
+
+		// For MPIM channels, add members information
+		if channel.IsMpIM && len(channel.Members) > 0 {
+			memberIDs := []string{}
+			memberNames := []string{}
+			for _, memberID := range channel.Members {
+				memberIDs = append(memberIDs, memberID)
+				if user, ok := users[memberID]; ok {
+					displayName := user.Profile.DisplayName
+					if displayName == "" {
+						displayName = user.RealName
+					}
+					memberNames = append(memberNames, displayName)
+				}
+			}
+			chanData.Members = strings.Join(memberIDs, ",")
+			chanData.MemberNames = strings.Join(memberNames, ",")
+		}
+
+		channelList = append(channelList, chanData)
 	}
 
 	switch sortType {
