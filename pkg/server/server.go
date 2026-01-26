@@ -169,6 +169,16 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), channelsHandler.ChannelsHandler)
 
+	s.AddTool(mcp.NewTool("conversations_unread",
+		mcp.WithDescription("Get list of channels and DMs with unread messages. Returns channel ID, name, unread count, and purpose for each conversation with unread messages."),
+		mcp.WithTitleAnnotation("Get Unread Conversations"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("channel_types",
+			mcp.DefaultString("im,mpim,public_channel,private_channel"),
+			mcp.Description("Comma-separated channel types to check for unread messages. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'. Default: all types."),
+		),
+	), conversationsHandler.ConversationsUnreadHandler)
+
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
 	)

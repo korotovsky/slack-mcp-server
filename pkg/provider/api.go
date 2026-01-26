@@ -85,8 +85,12 @@ type SlackAPI interface {
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
+	// Used to get channel info including unread counts
+	GetConversationInfoContext(ctx context.Context, channelID string, includeLocale bool) (*slack.Channel, error)
+
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+	ClientCounts(ctx context.Context) (*edge.ClientCountsResponse, error)
 }
 
 type MCPSlackClient struct {
@@ -280,12 +284,25 @@ func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params
 	return c.slackClient.SearchContext(ctx, query, params)
 }
 
+func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, channelID string, includeLocale bool) (*slack.Channel, error) {
+	return c.slackClient.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+		ChannelID:         channelID,
+		IncludeLocale:     includeLocale,
+		IncludeNumMembers: true,
+	})
+}
+
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) ClientCounts(ctx context.Context) (*edge.ClientCountsResponse, error) {
+	resp, err := c.edgeClient.ClientCounts(ctx)
+	return &resp, err
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {

@@ -51,6 +51,13 @@ type Message struct {
 	Cursor    string `json:"cursor"`
 }
 
+type UnreadChannel struct {
+	ChannelID   string `json:"channelID"`
+	ChannelName string `json:"channelName"`
+	UnreadCount int    `json:"unreadCount"`
+	Purpose     string `json:"purpose"`
+}
+
 type User struct {
 	UserID   string `json:"userID"`
 	UserName string `json:"userName"`
@@ -339,6 +346,100 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
+}
+
+func (ch *ConversationsHandler) ConversationsUnreadHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUnreadHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	channelTypes := request.GetString("channel_types", "im,mpim,public_channel,private_channel")
+	ch.logger.Debug("Fetching unread counts for channel types", zap.String("channel_types", channelTypes))
+
+	typeSet := make(map[string]bool)
+	for _, t := range strings.Split(channelTypes, ",") {
+		typeSet[strings.TrimSpace(t)] = true
+	}
+
+	// Use ClientCounts API - single call returns all unreads
+	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
+	if err != nil {
+		ch.logger.Error("Failed to get client counts", zap.Error(err))
+		return nil, err
+	}
+
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+	var unreadChannels []UnreadChannel
+
+	// Build a map of channel IDs with unreads from the counts response
+	unreadMap := make(map[string]bool)
+	if typeSet["public_channel"] || typeSet["private_channel"] {
+		for _, snap := range counts.Channels {
+			if snap.HasUnreads {
+				unreadMap[snap.ID] = true
+			}
+		}
+	}
+	if typeSet["mpim"] {
+		for _, snap := range counts.MPIMs {
+			if snap.HasUnreads {
+				unreadMap[snap.ID] = true
+			}
+		}
+	}
+	if typeSet["im"] {
+		for _, snap := range counts.IMs {
+			if snap.HasUnreads {
+				unreadMap[snap.ID] = true
+			}
+		}
+	}
+
+	// Match against cached channels to get names and purposes
+	for _, channel := range channelsMaps.Channels {
+		if !matchesChannelType(channel, typeSet) {
+			continue
+		}
+		if !unreadMap[channel.ID] {
+			continue
+		}
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   channel.ID,
+			ChannelName: channel.Name,
+			UnreadCount: 1, // ClientCounts only gives HasUnreads bool, not count
+			Purpose:     channel.Purpose,
+		})
+	}
+
+	ch.logger.Debug("Found channels with unread messages", zap.Int("count", len(unreadChannels)))
+
+	csvBytes, err := gocsv.MarshalBytes(&unreadChannels)
+	if err != nil {
+		ch.logger.Error("Failed to marshal unread channels to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+func matchesChannelType(channel provider.Channel, typeSet map[string]bool) bool {
+	if typeSet["im"] && channel.IsIM {
+		return true
+	}
+	if typeSet["mpim"] && channel.IsMpIM {
+		return true
+	}
+	if typeSet["private_channel"] && channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
+		return true
+	}
+	if typeSet["public_channel"] && !channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
+		return true
+	}
+	return false
 }
 
 func isChannelAllowed(channel string) bool {
