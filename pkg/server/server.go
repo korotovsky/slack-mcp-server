@@ -387,13 +387,13 @@ func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
 }
 
 // ServeSSEWithOAuth creates SSE server with OAuth endpoints
-func (s *MCPServer) ServeSSEWithOAuth(addr string, oauthHandler *OAuthHandler) http.Handler {
+func (s *MCPServer) ServeSSEWithOAuth(addr string, oauthHandler *OAuthHandler, oauthManager oauth.OAuthManager) http.Handler {
 	s.logger.Info("Creating SSE server with OAuth",
 		zap.String("context", "console"),
 		zap.String("version", version.Version),
 		zap.String("address", addr),
 	)
-	
+
 	sseServer := server.NewSSEServer(s.server,
 		server.WithBaseURL(fmt.Sprintf("http://%s", addr)),
 		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
@@ -402,15 +402,16 @@ func (s *MCPServer) ServeSSEWithOAuth(addr string, oauthHandler *OAuthHandler) h
 			return ctx
 		}),
 	)
-	
+
 	// Create combined handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/authorize", oauthHandler.HandleAuthorize)
 	mux.HandleFunc("/oauth/callback", oauthHandler.HandleCallback)
 	mux.Handle("/sse", sseServer)
 	mux.Handle("/", sseServer) // Default to SSE server
-	
-	return mux
+
+	// Wrap with OAuth HTTP authentication middleware
+	return auth.OAuthHTTPMiddleware(oauthManager, s.logger)(mux)
 }
 
 func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
@@ -433,13 +434,13 @@ func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
 }
 
 // ServeHTTPWithOAuth creates HTTP server with OAuth endpoints
-func (s *MCPServer) ServeHTTPWithOAuth(addr string, oauthHandler *OAuthHandler) http.Handler {
+func (s *MCPServer) ServeHTTPWithOAuth(addr string, oauthHandler *OAuthHandler, oauthManager oauth.OAuthManager) http.Handler {
 	s.logger.Info("Creating HTTP server with OAuth",
 		zap.String("context", "console"),
 		zap.String("version", version.Version),
 		zap.String("address", addr),
 	)
-	
+
 	mcpServer := server.NewStreamableHTTPServer(s.server,
 		server.WithEndpointPath("/mcp"),
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
@@ -448,15 +449,16 @@ func (s *MCPServer) ServeHTTPWithOAuth(addr string, oauthHandler *OAuthHandler) 
 			return ctx
 		}),
 	)
-	
+
 	// Create combined handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/authorize", oauthHandler.HandleAuthorize)
 	mux.HandleFunc("/oauth/callback", oauthHandler.HandleCallback)
 	mux.Handle("/mcp", mcpServer)
 	mux.Handle("/", mcpServer) // Default to MCP server
-	
-	return mux
+
+	// Wrap with OAuth HTTP authentication middleware
+	return auth.OAuthHTTPMiddleware(oauthManager, s.logger)(mux)
 }
 
 func (s *MCPServer) ServeStdio() error {

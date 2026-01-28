@@ -48,6 +48,7 @@ func main() {
 
 	var s *server.MCPServer
 	var oauthHandler *server.OAuthHandler
+	var oauthManager oauth.OAuthManager
 	var p *provider.ApiProvider
 
 	if oauthEnabled {
@@ -70,7 +71,7 @@ func main() {
 
 		// Create OAuth components
 		tokenStorage := oauth.NewMemoryStorage()
-		oauthManager := oauth.NewManager(clientID, clientSecret, redirectURI, tokenStorage)
+		oauthManager = oauth.NewManager(clientID, clientSecret, redirectURI, tokenStorage)
 
 		// Create OAuth handler for HTTP endpoints
 		oauthHandler = server.NewOAuthHandler(oauthManager, logger)
@@ -128,8 +129,8 @@ func main() {
 		addr := host + ":" + port
 
 		if oauthEnabled && oauthHandler != nil {
-			// OAuth mode: use combined handler
-			handler := s.ServeSSEWithOAuth(":"+port, oauthHandler)
+			// OAuth mode: use combined handler with HTTP-level auth
+			handler := s.ServeSSEWithOAuth(":"+port, oauthHandler, oauthManager)
 
 			logger.Info("OAuth endpoints enabled",
 				zap.String("context", "console"),
@@ -187,8 +188,8 @@ func main() {
 		addr := host + ":" + port
 
 		if oauthEnabled && oauthHandler != nil {
-			// OAuth mode: use combined handler
-			handler := s.ServeHTTPWithOAuth(":"+port, oauthHandler)
+			// OAuth mode: use combined handler with HTTP-level auth
+			handler := s.ServeHTTPWithOAuth(":"+port, oauthHandler, oauthManager)
 
 			logger.Info("OAuth endpoints enabled",
 				zap.String("context", "console"),
