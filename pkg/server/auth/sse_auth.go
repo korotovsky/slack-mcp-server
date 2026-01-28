@@ -155,8 +155,8 @@ func IsAuthenticated(ctx context.Context, transport string, logger *zap.Logger) 
 func OAuthHTTPMiddleware(oauthMgr oauth.OAuthManager, logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip authentication for OAuth endpoints
-			if strings.HasPrefix(r.URL.Path, "/oauth/") {
+			// Skip authentication for OAuth and health endpoints
+			if strings.HasPrefix(r.URL.Path, "/oauth/") || r.URL.Path == "/health" {
 				next.ServeHTTP(w, r)
 				return
 			}
