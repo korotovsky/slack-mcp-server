@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -98,6 +99,24 @@ func shouldAddTool(name string, enabledTools []string, envVarName string) bool {
 	}
 
 	return false
+}
+
+// HealthResponse represents the JSON response for the health endpoint
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+}
+
+// HealthHandler returns a simple health check endpoint
+func HealthHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(HealthResponse{
+			Status:  "ok",
+			Version: version.Version,
+		})
+	}
 }
 
 func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *MCPServer {
@@ -664,7 +683,7 @@ func NewMCPServerWithOAuth(
 	}
 }
 
-func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
+func (s *MCPServer) ServeSSE(addr string) http.Handler {
 	s.logger.Info("Creating SSE server",
 		zap.String("context", "console"),
 		zap.String("version", version.Version),
@@ -672,7 +691,7 @@ func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
 		zap.String("commit_hash", version.CommitHash),
 		zap.String("address", addr),
 	)
-	return server.NewSSEServer(s.server,
+	sseServer := server.NewSSEServer(s.server,
 		server.WithBaseURL(fmt.Sprintf("http://%s", addr)),
 		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			// Extract Authorization header and add to context
@@ -681,6 +700,15 @@ func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
 			return ctx
 		}),
 	)
+
+	// Create mux with health endpoint
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", HealthHandler())
+	mux.Handle("/sse", sseServer)
+	mux.Handle("/message", sseServer)
+	mux.Handle("/", sseServer)
+
+	return mux
 }
 
 // ServeSSEWithOAuth creates SSE server with OAuth endpoints
@@ -702,16 +730,18 @@ func (s *MCPServer) ServeSSEWithOAuth(addr string, oauthHandler *OAuthHandler, o
 
 	// Create combined handler
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", HealthHandler())
 	mux.HandleFunc("/oauth/authorize", oauthHandler.HandleAuthorize)
 	mux.HandleFunc("/oauth/callback", oauthHandler.HandleCallback)
 	mux.Handle("/sse", sseServer)
+	mux.Handle("/message", sseServer)
 	mux.Handle("/", sseServer) // Default to SSE server
 
 	// Wrap with OAuth HTTP authentication middleware
 	return auth.OAuthHTTPMiddleware(oauthManager, s.logger)(mux)
 }
 
-func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
+func (s *MCPServer) ServeHTTP(addr string) http.Handler {
 	s.logger.Info("Creating HTTP server",
 		zap.String("context", "console"),
 		zap.String("version", version.Version),
@@ -719,7 +749,7 @@ func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
 		zap.String("commit_hash", version.CommitHash),
 		zap.String("address", addr),
 	)
-	return server.NewStreamableHTTPServer(s.server,
+	mcpServer := server.NewStreamableHTTPServer(s.server,
 		server.WithEndpointPath("/mcp"),
 		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 			// Extract Authorization header and add to context
@@ -728,6 +758,14 @@ func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
 			return ctx
 		}),
 	)
+
+	// Create mux with health endpoint
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", HealthHandler())
+	mux.Handle("/mcp", mcpServer)
+	mux.Handle("/", mcpServer)
+
+	return mux
 }
 
 // ServeHTTPWithOAuth creates HTTP server with OAuth endpoints
@@ -749,6 +787,7 @@ func (s *MCPServer) ServeHTTPWithOAuth(addr string, oauthHandler *OAuthHandler, 
 
 	// Create combined handler
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", HealthHandler())
 	mux.HandleFunc("/oauth/authorize", oauthHandler.HandleAuthorize)
 	mux.HandleFunc("/oauth/callback", oauthHandler.HandleCallback)
 	mux.Handle("/mcp", mcpServer)
