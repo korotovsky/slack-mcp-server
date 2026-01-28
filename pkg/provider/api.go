@@ -123,9 +123,11 @@ type ApiProvider struct {
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
 	httpClient := transport.ProvideHTTPClient(authProvider.Cookies(), logger)
 
-	slackClient := slack.New(authProvider.SlackToken(),
-		slack.OptionHTTPClient(httpClient),
-	)
+	slackOpts := []slack.Option{slack.OptionHTTPClient(httpClient)}
+	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
+		slackOpts = append(slackOpts, slack.OptionAPIURL("https://slack-gov.com/api/"))
+	}
+	slackClient := slack.New(authProvider.SlackToken(), slackOpts...)
 
 	authResp, err := slackClient.AuthTest()
 	if err != nil {
