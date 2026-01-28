@@ -12,6 +12,7 @@ type UserContext struct {
 	AccessToken string // User token (xoxp-...) for per-request client creation
 	BotToken    string // Bot token (xoxb-...) if available - for posting as bot
 	BotUserID   string // Bot user ID if available
+	URL         string // Workspace URL from auth.test (e.g., https://workspace.slack.com/)
 }
 
 // WithUserContext adds user context to the context
