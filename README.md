@@ -84,6 +84,37 @@ Get list of channels
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
 
+### 6. canvases_create:
+Create a new canvas with markdown content
+- **Parameters:**
+  - `title` (string, optional): Title of the canvas. If not provided, canvas will be created untitled.
+  - `content` (string, required): Markdown content for the canvas. Supports headings, lists, code blocks, tables, links, mentions (@user, #channel), and emojis.
+- **Returns:** `canvas_id` that can be used for further operations
+
+### 7. canvases_edit:
+Edit an existing canvas by adding, replacing, or deleting content
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to edit (e.g., F1234567890)
+  - `operation` (string, default: "insert_at_end"): Type of edit operation. Allowed values: `insert_at_start`, `insert_at_end`, `insert_before`, `insert_after`, `replace`, `delete`
+  - `content` (string, required): Markdown content to add or use for replacement. Supports headings, lists, code blocks, tables, links, mentions, and emojis.
+  - `section_id` (string, optional): Section ID for targeted operations (required for: `insert_before`, `insert_after`, `delete`). Use `canvases_sections_lookup` to find section IDs.
+
+### 8. canvases_sections_lookup:
+Look up section IDs in a canvas for targeted edits
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to search for sections (e.g., F1234567890)
+  - `contains_text` (string, optional): Filter sections by text content
+- **Returns:** Array of section objects with IDs that can be used with `canvases_edit`
+
+### 9. canvases_read:
+Read canvas metadata and full content
+- **Parameters:**
+  - `canvas_id` (string, required): ID of the canvas to read (e.g., F1234567890)
+- **Returns:** Canvas metadata and full markdown content including:
+  - **Metadata**: title, timestamps, URLs, user info, permissions
+  - **Content**: Full markdown content downloaded from Slack (via `url_private_download`)
+  - **Preview**: Text preview if available
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:

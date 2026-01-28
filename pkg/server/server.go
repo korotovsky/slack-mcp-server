@@ -169,6 +169,57 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), channelsHandler.ChannelsHandler)
 
+	canvasesHandler := handler.NewCanvasesHandler(provider, logger)
+
+	s.AddTool(mcp.NewTool("canvases_create",
+		mcp.WithDescription("Create a new canvas with markdown content"),
+		mcp.WithString("title",
+			mcp.Description("Title of the canvas (optional). If not provided, canvas will be created untitled."),
+		),
+		mcp.WithString("content",
+			mcp.Required(),
+			mcp.Description("Markdown content for the canvas. Supports headings, lists, code blocks, tables, links, mentions (@user, #channel), and emojis."),
+		),
+	), canvasesHandler.CanvasesCreateHandler)
+
+	s.AddTool(mcp.NewTool("canvases_edit",
+		mcp.WithDescription("Edit an existing canvas by adding, replacing, or deleting content"),
+		mcp.WithString("canvas_id",
+			mcp.Required(),
+			mcp.Description("ID of the canvas to edit (e.g., F1234567890)"),
+		),
+		mcp.WithString("operation",
+			mcp.DefaultString("insert_at_end"),
+			mcp.Description("Type of edit operation. Allowed values: 'insert_at_start', 'insert_at_end', 'insert_before', 'insert_after', 'replace', 'delete'. Default: 'insert_at_end'"),
+		),
+		mcp.WithString("content",
+			mcp.Required(),
+			mcp.Description("Markdown content to add or use for replacement. Supports headings, lists, code blocks, tables, links, mentions, and emojis."),
+		),
+		mcp.WithString("section_id",
+			mcp.Description("Section ID for targeted operations (required for: insert_before, insert_after, delete). Use canvases_sections_lookup to find section IDs."),
+		),
+	), canvasesHandler.CanvasesEditHandler)
+
+	s.AddTool(mcp.NewTool("canvases_sections_lookup",
+		mcp.WithDescription("Look up section IDs in a canvas for targeted edits"),
+		mcp.WithString("canvas_id",
+			mcp.Required(),
+			mcp.Description("ID of the canvas to search for sections (e.g., F1234567890)"),
+		),
+		mcp.WithString("contains_text",
+			mcp.Description("Filter sections by text content (optional)"),
+		),
+	), canvasesHandler.CanvasesSectionsLookupHandler)
+
+	s.AddTool(mcp.NewTool("canvases_read",
+		mcp.WithDescription("Read canvas metadata and content"),
+		mcp.WithString("canvas_id",
+			mcp.Required(),
+			mcp.Description("ID of the canvas to read (e.g., F1234567890)"),
+		),
+	), canvasesHandler.CanvasesReadHandler)
+
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
 	)
