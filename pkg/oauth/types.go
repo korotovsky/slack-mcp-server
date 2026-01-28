@@ -16,6 +16,7 @@ type TokenResponse struct {
 type TokenInfo struct {
 	UserID string
 	TeamID string
+	URL    string // Workspace URL from auth.test (e.g., https://workspace.slack.com/)
 }
 
 // OAuthManager handles OAuth 2.0 flow with Slack

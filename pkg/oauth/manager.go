@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 )
 
 type Manager struct {
@@ -57,7 +59,7 @@ func (m *Manager) GetAuthURL(state string) string {
 		"state":        {state},
 	}
 
-	return "https://slack.com/oauth/v2/authorize?" + params.Encode()
+	return "https://" + edge.GetSlackBaseDomain() + "/oauth/v2/authorize?" + params.Encode()
 }
 
 // HandleCallback exchanges OAuth code for access token
@@ -69,7 +71,7 @@ func (m *Manager) HandleCallback(code, state string) (*TokenResponse, error) {
 		"redirect_uri":  {m.redirectURI},
 	}
 
-	resp, err := m.httpClient.PostForm("https://slack.com/api/oauth.v2.access", data)
+	resp, err := m.httpClient.PostForm("https://"+edge.GetSlackBaseDomain()+"/api/oauth.v2.access", data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
@@ -99,8 +101,8 @@ func (m *Manager) HandleCallback(code, state string) (*TokenResponse, error) {
 	}
 
 	token := &TokenResponse{
-		AccessToken: result.AuthedUser.AccessToken,        // User token (xoxp-...)
-		BotToken:    result.AccessToken,                   // Bot token (xoxb-...) if available
+		AccessToken: result.AuthedUser.AccessToken, // User token (xoxp-...)
+		BotToken:    result.AccessToken,            // Bot token (xoxb-...) if available
 		UserID:      result.AuthedUser.ID,
 		TeamID:      result.Team.ID,
 		BotUserID:   result.BotUserID,
@@ -124,7 +126,7 @@ func (m *Manager) HandleCallback(code, state string) (*TokenResponse, error) {
 
 // ValidateToken validates an access token with Slack
 func (m *Manager) ValidateToken(accessToken string) (*TokenInfo, error) {
-	req, err := http.NewRequest("POST", "https://slack.com/api/auth.test", nil)
+	req, err := http.NewRequest("POST", "https://"+edge.GetSlackBaseDomain()+"/api/auth.test", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +145,7 @@ func (m *Manager) ValidateToken(accessToken string) (*TokenInfo, error) {
 		Error  string `json:"error"`
 		UserID string `json:"user_id"`
 		TeamID string `json:"team_id"`
+		URL    string `json:"url"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -156,6 +159,7 @@ func (m *Manager) ValidateToken(accessToken string) (*TokenInfo, error) {
 	return &TokenInfo{
 		UserID: result.UserID,
 		TeamID: result.TeamID,
+		URL:    result.URL,
 	}, nil
 }
 

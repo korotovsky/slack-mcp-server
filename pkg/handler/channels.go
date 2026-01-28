@@ -27,8 +27,8 @@ type Channel struct {
 }
 
 type ChannelsHandler struct {
-	apiProvider  *provider.ApiProvider  // Legacy mode
-	tokenStorage oauth.TokenStorage     // OAuth mode
+	apiProvider  *provider.ApiProvider // Legacy mode
+	tokenStorage oauth.TokenStorage    // OAuth mode
 	oauthEnabled bool
 	validTypes   map[string]bool
 	logger       *zap.Logger
@@ -76,7 +76,12 @@ func (ch *ChannelsHandler) getSlackClient(ctx context.Context) (*slack.Client, e
 	}
 
 	// Use token directly from context (already validated by middleware)
-	return slack.New(userCtx.AccessToken), nil
+	// Set API URL from auth.test response to support external tokens and GovSlack
+	opts := []slack.Option{}
+	if userCtx.URL != "" {
+		opts = append(opts, slack.OptionAPIURL(userCtx.URL+"api/"))
+	}
+	return slack.New(userCtx.AccessToken, opts...), nil
 }
 
 func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -399,12 +404,53 @@ func (ch *ChannelsHandler) channelsHandlerOAuth(ctx context.Context, request mcp
 		}
 
 		for _, c := range channels {
+			name := "#" + c.Name
+			memberCount := c.NumMembers
+
+			// Handle DM channels - they have empty names but have a User field
+			if c.IsIM && c.User != "" {
+				// Fetch user info to get their display name
+				user, err := client.GetUserInfo(c.User)
+				if err != nil {
+					ch.logger.Debug("Failed to get user info for DM", zap.String("userID", c.User), zap.Error(err))
+					name = "@" + c.User // Fallback to user ID
+				} else if user != nil {
+					// Priority: RealName (full name) → DisplayName → Name (username)
+					// This provides more consistent formatting across users
+					if user.RealName != "" {
+						name = "@" + user.RealName
+					} else if user.Profile.DisplayName != "" {
+						name = "@" + user.Profile.DisplayName
+					} else {
+						name = "@" + user.Name
+					}
+				}
+				memberCount = 2 // 1:1 DMs always have exactly 2 members
+			} else if c.IsMpIM {
+				// Group DMs - use the purpose or a placeholder
+				if c.Purpose.Value != "" {
+					name = c.Purpose.Value
+				} else {
+					name = "Group DM"
+				}
+				// Get actual member count for group DMs
+				members, _, err := client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
+					ChannelID: c.ID,
+					Limit:     1000,
+				})
+				if err != nil {
+					ch.logger.Debug("Failed to get members for MPIM", zap.String("channelID", c.ID), zap.Error(err))
+				} else {
+					memberCount = len(members)
+				}
+			}
+
 			allChannels = append(allChannels, Channel{
 				ID:          c.ID,
-				Name:        "#" + c.Name,
+				Name:        name,
 				Topic:       c.Topic.Value,
 				Purpose:     c.Purpose.Value,
-				MemberCount: c.NumMembers,
+				MemberCount: memberCount,
 			})
 		}
 	}
@@ -427,4 +473,3 @@ func (ch *ChannelsHandler) channelsHandlerOAuth(ctx context.Context, request mcp
 	ch.logger.Debug("Returning channels", zap.Int("count", len(allChannels)))
 	return mcp.NewToolResultText(string(csvBytes)), nil
 }
-

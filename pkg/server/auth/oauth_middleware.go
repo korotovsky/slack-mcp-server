@@ -50,6 +50,7 @@ func OAuthMiddleware(oauthMgr oauth.OAuthManager, logger *zap.Logger) server.Too
 				AccessToken: token,                  // User token for per-request client
 				BotToken:    storedToken.BotToken,   // Bot token if available
 				BotUserID:   storedToken.BotUserID,  // Bot user ID if available
+				URL:         tokenInfo.URL,          // Workspace URL for API calls
 			}
 
 			// Inject user context
@@ -64,4 +65,3 @@ func OAuthMiddleware(oauthMgr oauth.OAuthManager, logger *zap.Logger) server.Too
 		}
 	}
 }
-
