@@ -168,38 +168,51 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		zap.Int("limit", limit),
 	)
 
+	// Validate limit
+	if limit < 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", limit)
+	}
+	if limit == 0 {
+		limit = 100
+		ch.logger.Debug("Limit not provided, using default", zap.Int("limit", limit))
+	}
+	if limit > 999 {
+		ch.logger.Warn("Limit exceeds maximum of 999, capping", zap.Int("requested", limit))
+		limit = 999
+	}
+
 	// MCP Inspector v0.14.0 has issues with Slice type
 	// introspection, so some type simplification makes sense here
 	channelTypes := []string{}
+	var invalidTypes []string
 	for _, t := range strings.Split(types, ",") {
 		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
 		if ch.validTypes[t] {
 			channelTypes = append(channelTypes, t)
-		} else if t != "" {
-			ch.logger.Warn("Invalid channel type ignored", zap.String("type", t))
+		} else {
+			invalidTypes = append(invalidTypes, t)
 		}
 	}
 
+	if len(invalidTypes) > 0 {
+		return nil, fmt.Errorf("invalid channel_types: %v. Valid types are: public_channel, private_channel, im, mpim", invalidTypes)
+	}
+
 	if len(channelTypes) == 0 {
-		ch.logger.Debug("No valid channel types provided, using defaults")
+		ch.logger.Debug("No channel types provided, using defaults")
 		channelTypes = append(channelTypes, provider.PubChanType)
 		channelTypes = append(channelTypes, provider.PrivateChanType)
 	}
 
 	ch.logger.Debug("Validated channel types", zap.Strings("types", channelTypes))
 
-	if limit == 0 {
-		limit = 100
-		ch.logger.Debug("Limit not provided, using default", zap.Int("limit", limit))
-	}
-	if limit > 999 {
-		ch.logger.Warn("Limit exceeds maximum, capping to 999", zap.Int("requested", limit))
-		limit = 999
-	}
-
 	var (
 		nextcur     string
 		channelList []Channel
+		err         error
 	)
 
 	allChannels := ch.apiProvider.ProvideChannelsMaps().Channels
@@ -210,11 +223,15 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 
 	var chans []provider.Channel
 
-	chans, nextcur = paginateChannels(
+	chans, nextcur, err = paginateChannels(
 		channels,
 		cursor,
 		limit,
 	)
+	if err != nil {
+		ch.logger.Error("Pagination error", zap.Error(err))
+		return nil, err
+	}
 
 	ch.logger.Debug("Pagination results",
 		zap.Int("returned_count", len(chans)),
@@ -301,7 +318,7 @@ func filterChannelsByTypes(channels map[string]provider.Channel, types []string)
 	return result
 }
 
-func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string) {
+func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string, error) {
 	logger := zap.L()
 
 	sort.Slice(channels, func(i, j int) bool {
@@ -310,25 +327,40 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 
 	startIndex := 0
 	if cursor != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(cursor); err == nil {
-			lastID := string(decoded)
-			for i, ch := range channels {
-				if ch.ID > lastID {
-					startIndex = i
-					break
-				}
-			}
-			logger.Debug("Decoded cursor",
-				zap.String("cursor", cursor),
-				zap.String("decoded_id", lastID),
-				zap.Int("start_index", startIndex),
-			)
-		} else {
+		decoded, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
 			logger.Warn("Failed to decode cursor",
 				zap.String("cursor", cursor),
 				zap.Error(err),
 			)
+			return nil, "", fmt.Errorf("invalid cursor: failed to decode base64: %w", err)
 		}
+		lastID := string(decoded)
+		// Validate that lastID looks like a channel ID
+		if len(lastID) < 2 || (lastID[0] != 'C' && lastID[0] != 'G' && lastID[0] != 'D' && lastID[0] != 'W') {
+			logger.Warn("Invalid cursor format: decoded value is not a valid channel ID",
+				zap.String("cursor", cursor),
+				zap.String("decoded", lastID),
+			)
+			return nil, "", fmt.Errorf("invalid cursor: decoded value %q is not a valid channel ID", lastID)
+		}
+		found := false
+		for i, ch := range channels {
+			if ch.ID > lastID {
+				startIndex = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Cursor points past the end of results
+			startIndex = len(channels)
+		}
+		logger.Debug("Decoded cursor",
+			zap.String("cursor", cursor),
+			zap.String("decoded_id", lastID),
+			zap.Int("start_index", startIndex),
+		)
 	}
 
 	endIndex := startIndex + limit
@@ -355,7 +387,7 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 		zap.Bool("has_more", nextCursor != ""),
 	)
 
-	return paged, nextCursor
+	return paged, nextCursor, nil
 }
 
 // channelsHandlerOAuth handles channel listing in OAuth mode

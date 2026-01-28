@@ -218,13 +218,21 @@ func (h *ConversationsHandler) resolveChannelName(ctx context.Context, client *s
 	// Handle @username for DMs
 	if strings.HasPrefix(channelName, "@") {
 		username := strings.TrimPrefix(channelName, "@")
-		// Look up user by name
+		if username == "" {
+			return "", fmt.Errorf("invalid channel name: '@' requires a username")
+		}
+		usernameLower := strings.ToLower(username)
+
+		// Look up user by name (case-insensitive matching)
 		users, err := client.GetUsersContext(ctx)
 		if err != nil {
 			return "", fmt.Errorf("failed to get users: %w", err)
 		}
 		for _, user := range users {
-			if user.Name == username || user.Profile.DisplayName == username {
+			// Match against: username, display name, or real name (case-insensitive)
+			if strings.ToLower(user.Name) == usernameLower ||
+				strings.ToLower(user.Profile.DisplayName) == usernameLower ||
+				strings.ToLower(user.RealName) == usernameLower {
 				// Open a DM with this user
 				channel, _, _, err := client.OpenConversationContext(ctx, &slack.OpenConversationParameters{
 					Users: []string{user.ID},
@@ -238,7 +246,7 @@ func (h *ConversationsHandler) resolveChannelName(ctx context.Context, client *s
 				return channel.ID, nil
 			}
 		}
-		return "", fmt.Errorf("user %q not found", username)
+		return "", fmt.Errorf("user %q not found (searched by username, display name, and real name)", username)
 	}
 
 	// Handle #channel-name
@@ -805,6 +813,16 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 			return nil, err
 		}
 		slackClient = client
+	}
+
+	// Check if search_query is a Slack message URL
+	rawQuery := strings.TrimSpace(request.GetString("search_query", ""))
+	if channelID, timestamp, ok := parseSlackMessageURL(rawQuery); ok {
+		ch.logger.Debug("Detected Slack message URL, fetching single message",
+			zap.String("channelID", channelID),
+			zap.String("timestamp", timestamp),
+		)
+		return ch.fetchSingleMessage(ctx, slackClient, channelID, timestamp)
 	}
 
 	params, err := ch.parseParamsToolSearch(ctx, slackClient, request)
@@ -1904,6 +1922,11 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 		return nil, errors.New("channel_id must be a string")
 	}
 
+	// Validate @ prefix has a username
+	if channel == "@" {
+		return nil, errors.New("channel_id '@' is invalid: please provide a username after @ (e.g., @username)")
+	}
+
 	limit := request.GetString("limit", "")
 	cursor := request.GetString("cursor", "")
 	activity := request.GetBool("include_activity_messages", false)
@@ -1926,6 +1949,15 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 			ch.logger.Error("Invalid numeric limit", zap.String("limit", limit), zap.Error(err))
 			return nil, err
 		}
+	}
+
+	// Validate limit is positive
+	if paramLimit < 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", paramLimit)
+	}
+	if paramLimit == 0 && cursor == "" && paramOldest == "" {
+		// limit=0 with no cursor or time range - use default
+		paramLimit = defaultConversationsNumericLimit
 	}
 
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
@@ -2248,7 +2280,23 @@ func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, slack
 	}
 
 	finalQuery := buildQuery(freeText, filters)
+
+	// Validate that we have at least some search criteria
+	if strings.TrimSpace(finalQuery) == "" {
+		return nil, fmt.Errorf("search_query is required: provide a search term or use filters (filter_in_channel, filter_users_from, filter_date_after, etc.)")
+	}
+
 	limit := req.GetInt("limit", 100)
+
+	// Validate limit
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", limit)
+	}
+	if limit > 100 {
+		ch.logger.Warn("Limit exceeds maximum of 100, capping", zap.Int("requested", limit))
+		limit = 100
+	}
+
 	cursor := req.GetString("cursor", "")
 
 	var (
@@ -2756,4 +2804,99 @@ func hasImageBlocks(blocks slack.Blocks) bool {
 		}
 	}
 	return false
+}
+
+// parseSlackMessageURL parses a Slack message URL and extracts the channel ID and timestamp.
+// URL format: https://[workspace].slack.com/archives/C1234567890/p1234567890123456
+// The "p" prefix is followed by the timestamp without the decimal point.
+// Returns (channelID, timestamp, ok) where timestamp is in Slack format "1234567890.123456"
+func parseSlackMessageURL(rawURL string) (channelID, timestamp string, ok bool) {
+	rawURL = strings.TrimSpace(rawURL)
+
+	// Check if it looks like a Slack URL
+	if !strings.Contains(rawURL, "slack.com/archives/") {
+		return "", "", false
+	}
+
+	// Parse the URL
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", false
+	}
+
+	// Path should be /archives/CHANNEL_ID/p1234567890123456
+	// or /archives/CHANNEL_ID/p1234567890123456?thread_ts=...
+	pathParts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(pathParts) < 3 || pathParts[0] != "archives" {
+		return "", "", false
+	}
+
+	channelID = pathParts[1]
+	messageID := pathParts[2]
+
+	// Validate channel ID format (C, G, D, or W followed by alphanumeric)
+	if len(channelID) < 2 {
+		return "", "", false
+	}
+	prefix := channelID[0]
+	if prefix != 'C' && prefix != 'G' && prefix != 'D' && prefix != 'W' {
+		return "", "", false
+	}
+
+	// Parse message ID: starts with 'p' followed by 16 digits (timestamp without decimal)
+	if !strings.HasPrefix(messageID, "p") || len(messageID) != 17 {
+		return "", "", false
+	}
+
+	// Convert p1234567890123456 to 1234567890.123456
+	tsDigits := messageID[1:] // Remove 'p' prefix
+	if len(tsDigits) != 16 {
+		return "", "", false
+	}
+
+	// Insert decimal point after the first 10 digits
+	timestamp = tsDigits[:10] + "." + tsDigits[10:]
+
+	return channelID, timestamp, true
+}
+
+// fetchSingleMessage fetches a single message by channel ID and timestamp
+func (ch *ConversationsHandler) fetchSingleMessage(ctx context.Context, slackClient *slack.Client, channelID, timestamp string) (*mcp.CallToolResult, error) {
+	historyParams := slack.GetConversationHistoryParameters{
+		ChannelID: channelID,
+		Limit:     1,
+		Oldest:    timestamp,
+		Latest:    timestamp,
+		Inclusive: true,
+	}
+
+	var history *slack.GetConversationHistoryResponse
+	var err error
+
+	if ch.oauthEnabled {
+		if slackClient == nil {
+			return nil, fmt.Errorf("slack client is nil in OAuth mode")
+		}
+		history, err = slackClient.GetConversationHistoryContext(ctx, &historyParams)
+	} else {
+		history, err = ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+	}
+
+	if err != nil {
+		ch.logger.Error("Failed to fetch single message", zap.Error(err))
+		return nil, fmt.Errorf("failed to fetch message: %w", err)
+	}
+
+	if history == nil || len(history.Messages) == 0 {
+		ch.logger.Debug("No message found at timestamp",
+			zap.String("channelID", channelID),
+			zap.String("timestamp", timestamp),
+		)
+		return nil, fmt.Errorf("message not found at %s in channel %s", timestamp, channelID)
+	}
+
+	ch.logger.Debug("Fetched single message", zap.Int("count", len(history.Messages)))
+
+	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, channelID, false)
+	return marshalMessagesToCSV(messages)
 }
