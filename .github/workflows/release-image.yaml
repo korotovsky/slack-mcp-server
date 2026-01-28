@@ -6,8 +6,8 @@ on:
       - '*'
 
 env:
-  DOCKERHUB_IMAGE_NAME: aron-muon/slack-mcp-server
-  DOCKERHUB_USERNAME: aron-muon
+  DOCKERHUB_IMAGE_NAME: korotovsky/slack-mcp-server
+  DOCKERHUB_USERNAME: korotovsky
   TAG: ${{ github.ref_name == 'main' && 'latest' || github.ref_type == 'tag' && github.ref_name && startsWith(github.ref_name, 'v') && github.ref_name || 'unknown' }}
 
 jobs:
