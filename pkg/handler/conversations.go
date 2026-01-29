@@ -252,7 +252,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolAddReaction(request)
+	params, err := ch.parseParamsToolReaction(request)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
 		return nil, err
@@ -276,6 +276,42 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully added :%s: reaction to message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+// ReactionsRemoveHandler removes an emoji reaction from a message
+func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolReaction(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
+		return nil, err
+	}
+
+	itemRef := slack.ItemRef{
+		Channel:   params.channel,
+		Timestamp: params.timestamp,
+	}
+
+	ch.logger.Debug("Removing reaction from Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+		zap.String("emoji", params.emoji),
+	)
+
+	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	if err != nil {
+		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
 }
 
 // ConversationsHistoryHandler streams conversation history as CSV
@@ -648,15 +684,15 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolAddReaction(request mcp.CallToolRequest) (*addReactionParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequest) (*addReactionParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Reactions tool disabled by default")
 		return nil, errors.New(
-			"by default, the reactions_add tool is disabled to guard Slack workspaces against accidental spamming. " +
-				"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
-				"to limit where the MCP can add reactions, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
-				"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
+			"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
+				"To enable them, set the SLACK_MCP_REACTION_TOOL environment variable to true, 1, or comma separated list of channels " +
+				"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_REACTION_TOOL=C1234567890,D0987654321', 'SLACK_MCP_REACTION_TOOL=!C1234567890' " +
+				"to enable all except one or 'SLACK_MCP_REACTION_TOOL=true' for all channels and DMs",
 		)
 	}
 
@@ -671,7 +707,7 @@ func (ch *ConversationsHandler) parseParamsToolAddReaction(request mcp.CallToolR
 	}
 	if !isChannelAllowed(channel) {
 		ch.logger.Warn("Reactions tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
-		return nil, fmt.Errorf("reactions_add tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+		return nil, fmt.Errorf("reactions tools are not allowed for channel %q, applied policy: %s", channel, toolConfig)
 	}
 
 	timestamp := request.GetString("timestamp", "")
