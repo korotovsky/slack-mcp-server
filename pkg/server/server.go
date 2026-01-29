@@ -121,6 +121,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	s.AddTool(mcp.NewTool("reactions_add",
 		mcp.WithDescription("Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
@@ -137,6 +138,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	s.AddTool(mcp.NewTool("reactions_remove",
 		mcp.WithDescription("Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
 			mcp.Required(),
 			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
