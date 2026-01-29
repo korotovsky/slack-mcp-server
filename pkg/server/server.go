@@ -153,13 +153,13 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ReactionsRemoveHandler)
 
-	s.AddTool(mcp.NewTool("files_get",
-		mcp.WithDescription("Download a file's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
-		mcp.WithTitleAnnotation("Get File Content"),
+	s.AddTool(mcp.NewTool("attachment_get_data",
+		mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
+		mcp.WithTitleAnnotation("Get Attachment Data"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("file_id",
 			mcp.Required(),
-			mcp.Description("The ID of the file to download, in format Fxxxxxxxxxx. File IDs can be found in message metadata when HasMedia is true or FileCount > 0."),
+			mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs can be found in message metadata when HasMedia is true or AttachmentCount > 0."),
 		),
 	), conversationsHandler.FilesGetHandler)
 
