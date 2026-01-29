@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -25,6 +26,7 @@ import (
 const (
 	defaultConversationsNumericLimit    = 50
 	defaultConversationsExpressionLimit = "1d"
+	maxFileSizeBytes                    = 5 * 1024 * 1024 // 5MB limit
 )
 
 var validFilterKeys = map[string]struct{}{
@@ -86,6 +88,10 @@ type addReactionParams struct {
 	channel   string
 	timestamp string
 	emoji     string
+}
+
+type filesGetParams struct {
+	fileID string
 }
 
 type ConversationsHandler struct {
@@ -315,6 +321,90 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolFilesGet(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse files_get params", zap.Error(err))
+		return nil, err
+	}
+
+	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
+	if err != nil {
+		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	if fileInfo.Size > maxFileSizeBytes {
+		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxFileSizeBytes)
+	}
+
+	var buf bytes.Buffer
+	downloadURL := fileInfo.URLPrivateDownload
+	if downloadURL == "" {
+		downloadURL = fileInfo.URLPrivate
+	}
+	if downloadURL == "" {
+		return nil, errors.New("file has no downloadable URL")
+	}
+
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	if err != nil {
+		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	content := buf.Bytes()
+	encoding := "none"
+	var contentStr string
+
+	if isTextMimetype(fileInfo.Mimetype) {
+		contentStr = string(content)
+	} else {
+		contentStr = base64.StdEncoding.EncodeToString(content)
+		encoding = "base64"
+	}
+
+	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"encoding":"%s","content":"%s"}`,
+		fileInfo.ID,
+		escapeJSON(fileInfo.Name),
+		escapeJSON(fileInfo.Mimetype),
+		len(content),
+		encoding,
+		escapeJSON(contentStr))
+
+	return mcp.NewToolResultText(result), nil
+}
+
+func isTextMimetype(mimetype string) bool {
+	if strings.HasPrefix(mimetype, "text/") {
+		return true
+	}
+	textMimetypes := map[string]bool{
+		"application/json":       true,
+		"application/xml":        true,
+		"application/javascript": true,
+		"application/x-yaml":     true,
+		"application/x-sh":       true,
+	}
+	return textMimetypes[mimetype]
+}
+
+func escapeJSON(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
 }
 
 // ConversationsHistoryHandler streams conversation history as CSV
@@ -741,6 +831,30 @@ func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequ
 		channel:   channel,
 		timestamp: timestamp,
 		emoji:     emoji,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_FILES_TOOL")
+	if toolConfig == "" {
+		ch.logger.Error("Files tool disabled by default")
+		return nil, errors.New(
+			"by default, the files_get tool is disabled. " +
+				"To enable it, set the SLACK_MCP_FILES_TOOL environment variable to true or 1",
+		)
+	}
+	if toolConfig != "true" && toolConfig != "1" && toolConfig != "yes" {
+		ch.logger.Error("Files tool disabled", zap.String("config", toolConfig))
+		return nil, errors.New("SLACK_MCP_FILES_TOOL must be set to 'true', '1', or 'yes' to enable")
+	}
+
+	fileID := request.GetString("file_id", "")
+	if fileID == "" {
+		return nil, errors.New("file_id is required")
+	}
+
+	return &filesGetParams{
+		fileID: fileID,
 	}, nil
 }
 
