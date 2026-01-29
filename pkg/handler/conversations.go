@@ -438,7 +438,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		}
 	}
 
-	params, err := ch.parseParamsToolAddReaction(ctx, slackClient, request)
+	params, err := ch.parseParamsToolReaction(ctx, slackClient, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
 		return nil, err
@@ -478,7 +478,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolAddReaction(request)
+	params, err := ch.parseParamsToolReaction(request)
 	if err != nil {
 		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
 		return nil, err
@@ -1058,14 +1058,14 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolAddReaction(ctx context.Context, slackClient *slack.Client, request mcp.CallToolRequest) (*addReactionParams, error) {
+func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, slackClient *slack.Client, request mcp.CallToolRequest) (*addReactionParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Reactions tool disabled by default")
 		return nil, errors.New(
-			"by default, the reactions_add tool is disabled to guard Slack workspaces against accidental spamming. " +
-				"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
-				"to limit where the MCP can add reactions, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
+			"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
+				"To enable them, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+				"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
 				"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
 		)
 	}
@@ -1097,7 +1097,7 @@ func (ch *ConversationsHandler) parseParamsToolAddReaction(ctx context.Context, 
 
 	if !isChannelAllowed(channel) {
 		ch.logger.Warn("Reactions tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
-		return nil, fmt.Errorf("reactions_add tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+		return nil, fmt.Errorf("reactions tools are not allowed for channel %q, applied policy: %s", channel, toolConfig)
 	}
 
 	timestamp := request.GetString("timestamp", "")
