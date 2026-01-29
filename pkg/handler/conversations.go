@@ -48,6 +48,9 @@ type Message struct {
 	Text      string `json:"text"`
 	Time      string `json:"time"`
 	Reactions string `json:"reactions,omitempty"`
+	BotName   string `json:"botName,omitempty"`
+	FileCount int    `json:"fileCount,omitempty"`
+	HasMedia  bool   `json:"hasMedia,omitempty"`
 	Cursor    string `json:"cursor"`
 }
 
@@ -493,6 +496,14 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		}
 		reactionsString := strings.Join(reactionParts, "|")
 
+		botName := ""
+		if msg.BotProfile != nil && msg.BotProfile.Name != "" {
+			botName = msg.BotProfile.Name
+		}
+
+		fileCount := len(msg.Files)
+		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -503,6 +514,9 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			ThreadTs:  msg.ThreadTimestamp,
 			Time:      timestamp,
 			Reactions: reactionsString,
+			BotName:   botName,
+			FileCount: fileCount,
+			HasMedia:  hasMedia,
 		})
 	}
 
@@ -541,6 +555,8 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 
 		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
 
+		hasMedia := hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -551,6 +567,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 			ThreadTs:  threadTs,
 			Time:      timestamp,
 			Reactions: "",
+			HasMedia:  hasMedia,
 		})
 	}
 
@@ -1136,4 +1153,13 @@ func buildQuery(freeText []string, filters map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+func hasImageBlocks(blocks slack.Blocks) bool {
+	for _, block := range blocks.BlockSet {
+		if block.BlockType() == slack.MBTImage {
+			return true
+		}
+	}
+	return false
 }
