@@ -52,7 +52,7 @@ type Message struct {
 	Reactions string `json:"reactions,omitempty"`
 	BotName   string `json:"botName,omitempty"`
 	FileCount int    `json:"fileCount,omitempty"`
-	FileIDs   string `json:"fileIDs,omitempty"`
+	AttachmentIDs   string `json:"attachmentIDs,omitempty"`
 	HasMedia  bool   `json:"hasMedia,omitempty"`
 	Cursor    string `json:"cursor"`
 }
@@ -334,7 +334,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 
 	params, err := ch.parseParamsToolFilesGet(request)
 	if err != nil {
-		ch.logger.Error("Failed to parse files_get params", zap.Error(err))
+		ch.logger.Error("Failed to parse attachment_get_data params", zap.Error(err))
 		return nil, err
 	}
 
@@ -595,11 +595,11 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		fileCount := len(msg.Files)
 		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
 
-		var fileIDs []string
+		var attachmentIDs []string
 		for _, f := range msg.Files {
-			fileIDs = append(fileIDs, f.ID)
+			attachmentIDs = append(attachmentIDs, f.ID)
 		}
-		fileIDsStr := strings.Join(fileIDs, ",")
+		attachmentIDsStr := strings.Join(attachmentIDs, ",")
 
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
@@ -613,7 +613,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			Reactions: reactionsString,
 			BotName:   botName,
 			FileCount: fileCount,
-			FileIDs:   fileIDsStr,
+			AttachmentIDs:   attachmentIDsStr,
 			HasMedia:  hasMedia,
 		})
 	}
@@ -843,17 +843,17 @@ func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequ
 }
 
 func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_FILES_TOOL")
+	toolConfig := os.Getenv("SLACK_MCP_ATTACHMENT_TOOL")
 	if toolConfig == "" {
-		ch.logger.Error("Files tool disabled by default")
+		ch.logger.Error("Attachment tool disabled by default")
 		return nil, errors.New(
-			"by default, the files_get tool is disabled. " +
-				"To enable it, set the SLACK_MCP_FILES_TOOL environment variable to true or 1",
+			"by default, the attachment_get_data tool is disabled. " +
+				"To enable it, set the SLACK_MCP_ATTACHMENT_TOOL environment variable to true or 1",
 		)
 	}
 	if toolConfig != "true" && toolConfig != "1" && toolConfig != "yes" {
-		ch.logger.Error("Files tool disabled", zap.String("config", toolConfig))
-		return nil, errors.New("SLACK_MCP_FILES_TOOL must be set to 'true', '1', or 'yes' to enable")
+		ch.logger.Error("Attachment tool disabled", zap.String("config", toolConfig))
+		return nil, errors.New("SLACK_MCP_ATTACHMENT_TOOL must be set to 'true', '1', or 'yes' to enable")
 	}
 
 	fileID := request.GetString("file_id", "")
