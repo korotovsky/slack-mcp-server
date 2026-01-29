@@ -278,6 +278,42 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully added :%s: reaction to message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
 }
 
+// ReactionsRemoveHandler removes an emoji reaction from a message
+func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolAddReaction(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
+		return nil, err
+	}
+
+	itemRef := slack.ItemRef{
+		Channel:   params.channel,
+		Timestamp: params.timestamp,
+	}
+
+	ch.logger.Debug("Removing reaction from Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+		zap.String("emoji", params.emoji),
+	)
+
+	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	if err != nil {
+		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
 // ConversationsHistoryHandler streams conversation history as CSV
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))

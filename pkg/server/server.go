@@ -115,6 +115,22 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ReactionsAddHandler)
 
+	s.AddTool(mcp.NewTool("reactions_remove",
+		mcp.WithDescription("Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("timestamp",
+			mcp.Required(),
+			mcp.Description("Timestamp of the message to remove reaction from, in format 1234567890.123456."),
+		),
+		mcp.WithString("emoji",
+			mcp.Required(),
+			mcp.Description("The name of the emoji to remove as a reaction (without colons). Example: 'thumbsup', 'heart', 'rocket'."),
+		),
+	), conversationsHandler.ReactionsRemoveHandler)
+
 	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
