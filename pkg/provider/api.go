@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -83,6 +84,10 @@ type SlackAPI interface {
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
+
+	// Used to get files
+	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
+	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
@@ -294,6 +299,14 @@ func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, it
 
 func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
 	return c.slackClient.RemoveReactionContext(ctx, name, item)
+}
+
+func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
+	return c.slackClient.GetFileInfoContext(ctx, fileID, count, page)
+}
+
+func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
+	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {

@@ -153,6 +153,16 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ReactionsRemoveHandler)
 
+	s.AddTool(mcp.NewTool("files_get",
+		mcp.WithDescription("Download a file's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
+		mcp.WithTitleAnnotation("Get File Content"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("file_id",
+			mcp.Required(),
+			mcp.Description("The ID of the file to download, in format Fxxxxxxxxxx. File IDs can be found in message metadata when HasMedia is true or FileCount > 0."),
+		),
+	), conversationsHandler.FilesGetHandler)
+
 	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
