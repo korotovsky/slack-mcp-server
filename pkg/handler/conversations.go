@@ -52,6 +52,7 @@ type Message struct {
 	Reactions string `json:"reactions,omitempty"`
 	BotName   string `json:"botName,omitempty"`
 	FileCount int    `json:"fileCount,omitempty"`
+	FileIDs   string `json:"fileIDs,omitempty"`
 	HasMedia  bool   `json:"hasMedia,omitempty"`
 	Cursor    string `json:"cursor"`
 }
@@ -594,6 +595,12 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		fileCount := len(msg.Files)
 		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
 
+		var fileIDs []string
+		for _, f := range msg.Files {
+			fileIDs = append(fileIDs, f.ID)
+		}
+		fileIDsStr := strings.Join(fileIDs, ",")
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -606,6 +613,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			Reactions: reactionsString,
 			BotName:   botName,
 			FileCount: fileCount,
+			FileIDs:   fileIDsStr,
 			HasMedia:  hasMedia,
 		})
 	}
