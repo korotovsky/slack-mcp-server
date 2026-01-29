@@ -49,6 +49,9 @@ type Message struct {
 	Text      string `json:"text"`
 	Time      string `json:"time"`
 	Reactions string `json:"reactions,omitempty"`
+	BotName   string `json:"botName,omitempty"`
+	FileCount int    `json:"fileCount,omitempty"`
+	HasMedia  bool   `json:"hasMedia,omitempty"`
 	Cursor    string `json:"cursor"`
 }
 
@@ -776,6 +779,14 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(ctx context.Context, 
 		}
 		reactionsString := strings.Join(reactionParts, "|")
 
+		botName := ""
+		if msg.BotProfile != nil && msg.BotProfile.Name != "" {
+			botName = msg.BotProfile.Name
+		}
+
+		fileCount := len(msg.Files)
+		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -786,6 +797,9 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(ctx context.Context, 
 			ThreadTs:  msg.ThreadTimestamp,
 			Time:      timestamp,
 			Reactions: reactionsString,
+			BotName:   botName,
+			FileCount: fileCount,
+			HasMedia:  hasMedia,
 		})
 	}
 
@@ -879,6 +893,8 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, s
 			}
 		}
 
+		hasMedia := hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -889,6 +905,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, s
 			ThreadTs:  threadTs,
 			Time:      timestamp,
 			Reactions: "",
+			HasMedia:  hasMedia,
 		})
 	}
 
@@ -1781,4 +1798,13 @@ func (ch *ConversationsHandler) fetchSingleMessage(ctx context.Context, slackCli
 
 	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, channelID, false)
 	return marshalMessagesToCSV(messages)
+}
+
+func hasImageBlocks(blocks slack.Blocks) bool {
+	for _, block := range blocks.BlockSet {
+		if block.BlockType() == slack.MBTImage {
+			return true
+		}
+	}
+	return false
 }
