@@ -798,7 +798,6 @@ func isChannelAllowed(channel string) bool {
 	return !isNegated
 }
 
-// resolveChannelID resolves a channel name to its ID (legacy mode only)
 func (ch *ConversationsHandler) resolveChannelID(channel string) (string, error) {
 	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
 		return channel, nil
@@ -993,6 +992,8 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, s
 
 		hasMedia := hasImageBlocks(msg.Blocks)
 
+		hasMedia := hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -1174,7 +1175,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 }
 
 func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, slackClient *slack.Client, request mcp.CallToolRequest) (*addReactionParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Reactions tool disabled by default")
 		return nil, errors.New(
