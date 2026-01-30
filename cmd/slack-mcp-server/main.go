@@ -22,9 +22,28 @@ var defaultSsePort = 13080
 
 func main() {
 	var transport string
+	var enabledToolsFlag string
 	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse or http)")
+	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (default: all tools)")
+	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (default: all tools)")
 	flag.Parse()
+
+	// Check environment variable if flag not set
+	if enabledToolsFlag == "" {
+		enabledToolsFlag = os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+	}
+
+	// Parse enabled tools into a slice
+	var enabledTools []string
+	if enabledToolsFlag != "" {
+		for _, tool := range strings.Split(enabledToolsFlag, ",") {
+			tool = strings.TrimSpace(tool)
+			if tool != "" {
+				enabledTools = append(enabledTools, tool)
+			}
+		}
+	}
 
 	logger, err := newLogger(transport)
 	if err != nil {
@@ -41,7 +60,7 @@ func main() {
 	}
 
 	p := provider.New(transport, logger)
-	s := server.NewMCPServer(p, logger)
+	s := server.NewMCPServer(p, logger, enabledTools)
 
 	go func() {
 		var once sync.Once

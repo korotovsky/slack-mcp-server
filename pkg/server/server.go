@@ -21,7 +21,21 @@ type MCPServer struct {
 	logger *zap.Logger
 }
 
-func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer {
+// shouldAddTool checks if a tool should be added based on the enabledTools list.
+// If enabledTools is empty, all tools are enabled (backward compatible).
+func shouldAddTool(name string, enabledTools []string) bool {
+	if len(enabledTools) == 0 {
+		return true
+	}
+	for _, tool := range enabledTools {
+		if tool == name {
+			return true
+		}
+	}
+	return false
+}
+
+func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *MCPServer {
 	s := server.NewMCPServer(
 		"Slack MCP Server",
 		version.Version,
@@ -33,7 +47,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
 
-	s.AddTool(mcp.NewTool("conversations_history",
+	if shouldAddTool("conversations_history", enabledTools) {
+		s.AddTool(mcp.NewTool("conversations_history",
 		mcp.WithDescription("Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
 		mcp.WithTitleAnnotation("Get Conversation History"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -53,8 +68,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 1w - 1 week, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
 		),
 	), conversationsHandler.ConversationsHistoryHandler)
+	}
 
-	s.AddTool(mcp.NewTool("conversations_replies",
+	if shouldAddTool("conversations_replies", enabledTools) {
+		s.AddTool(mcp.NewTool("conversations_replies",
 		mcp.WithDescription("Get a thread of messages posted to a conversation by channelID and thread_ts, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
 		mcp.WithTitleAnnotation("Get Thread Replies"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -78,8 +95,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
 		),
 	), conversationsHandler.ConversationsRepliesHandler)
+	}
 
-	s.AddTool(mcp.NewTool("conversations_add_message",
+	if shouldAddTool("conversations_add_message", enabledTools) {
+		s.AddTool(mcp.NewTool("conversations_add_message",
 		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
 		mcp.WithTitleAnnotation("Send Message"),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -98,8 +117,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
+	}
 
-	s.AddTool(mcp.NewTool("reactions_add",
+	if shouldAddTool("reactions_add", enabledTools) {
+		s.AddTool(mcp.NewTool("reactions_add",
 		mcp.WithDescription("Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
@@ -115,8 +136,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("The name of the emoji to add as a reaction (without colons). Example: 'thumbsup', 'heart', 'rocket'."),
 		),
 	), conversationsHandler.ReactionsAddHandler)
+	}
 
-	s.AddTool(mcp.NewTool("reactions_remove",
+	if shouldAddTool("reactions_remove", enabledTools) {
+		s.AddTool(mcp.NewTool("reactions_remove",
 		mcp.WithDescription("Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
@@ -132,8 +155,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("The name of the emoji to remove as a reaction (without colons). Example: 'thumbsup', 'heart', 'rocket'."),
 		),
 	), conversationsHandler.ReactionsRemoveHandler)
+	}
 
-	s.AddTool(mcp.NewTool("attachment_get_data",
+	if shouldAddTool("attachment_get_data", enabledTools) {
+		s.AddTool(mcp.NewTool("attachment_get_data",
 		mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
 		mcp.WithTitleAnnotation("Get Attachment Data"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -142,6 +167,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs can be found in message metadata when HasMedia is true or AttachmentCount > 0."),
 		),
 	), conversationsHandler.FilesGetHandler)
+	}
 
 	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
@@ -187,13 +213,14 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	)
 	// Only register search tool for non-bot tokens (bot tokens cannot use search.messages API)
-	if !provider.IsBotToken() {
+	if !provider.IsBotToken() && shouldAddTool("conversations_search_messages", enabledTools) {
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
-	s.AddTool(mcp.NewTool("channels_list",
+	if shouldAddTool("channels_list", enabledTools) {
+		s.AddTool(mcp.NewTool("channels_list",
 		mcp.WithDescription("Get list of channels"),
 		mcp.WithTitleAnnotation("List Channels"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -212,6 +239,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
 		),
 	), channelsHandler.ChannelsHandler)
+	}
 
 	logger.Info("Authenticating with Slack API...",
 		zap.String("context", "console"),
