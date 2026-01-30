@@ -65,6 +65,7 @@ type Channel struct {
 	IsMpIM      bool     `json:"mpim"`
 	IsIM        bool     `json:"im"`
 	IsPrivate   bool     `json:"private"`
+	IsExtShared bool     `json:"is_ext_shared"` // Shared with external organizations
 	User        string   `json:"user,omitempty"`    // User ID for IM channels
 	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
@@ -94,6 +95,7 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
 }
 
 type MCPSlackClient struct {
@@ -311,6 +313,10 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error) {
+	return c.edgeClient.ClientCounts(ctx)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
@@ -584,7 +590,7 @@ func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
 					remappedChannel := mapChannel(
 						c.ID, "", "", c.Topic, c.Purpose,
 						c.User, c.Members, c.MemberCount,
-						c.IsIM, c.IsMpIM, c.IsPrivate,
+						c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
 						usersMap,
 					)
 					ap.channels[c.ID] = remappedChannel
@@ -702,6 +708,7 @@ func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) 
 				channel.IsIM,
 				channel.IsMpIM,
 				channel.IsPrivate,
+				channel.IsExtShared,
 				ap.ProvideUsersMap().Users,
 			)
 			chans = append(chans, ch)
@@ -794,7 +801,7 @@ func mapChannel(
 	id, name, nameNormalized, topic, purpose, user string,
 	members []string,
 	numMembers int,
-	isIM, isMpIM, isPrivate bool,
+	isIM, isMpIM, isPrivate, isExtShared bool,
 	usersMap map[string]slack.User,
 ) Channel {
 	channelName := name
@@ -858,6 +865,7 @@ func mapChannel(
 		IsIM:        isIM,
 		IsMpIM:      isMpIM,
 		IsPrivate:   isPrivate,
+		IsExtShared: isExtShared,
 		User:        userID,
 		Members:     members,
 	}
