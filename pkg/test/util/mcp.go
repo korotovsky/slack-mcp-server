@@ -18,6 +18,7 @@ type MCPConfig struct {
 	SSEKey             string
 	MessageToolEnabled bool
 	MessageToolMark    bool
+	EnabledTools       []string // List of enabled tools (empty = all tools)
 }
 
 type MCPConnection struct {
@@ -63,6 +64,10 @@ func SetupMCP(cfg MCPConfig) (*MCPConnection, error) {
 		"SLACK_MCP_USERS_CACHE=/tmp/users_cache.json",
 		"SLACK_MCP_CHANNELS_CACHE=/tmp/channels_cache_v3.json",
 	)
+
+	if len(cfg.EnabledTools) > 0 {
+		cmd.Env = append(cmd.Env, "SLACK_MCP_ENABLED_TOOLS="+strings.Join(cfg.EnabledTools, ","))
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -22,9 +22,26 @@ var defaultSsePort = 13080
 
 func main() {
 	var transport string
+	var enabledToolsFlag string
 	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse or http)")
+	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (empty = all tools)")
+	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.Parse()
+
+	if enabledToolsFlag == "" {
+		enabledToolsFlag = os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+	}
+
+	var enabledTools []string
+	if enabledToolsFlag != "" {
+		for _, tool := range strings.Split(enabledToolsFlag, ",") {
+			tool = strings.TrimSpace(tool)
+			if tool != "" {
+				enabledTools = append(enabledTools, tool)
+			}
+		}
+	}
 
 	logger, err := newLogger(transport)
 	if err != nil {
@@ -32,7 +49,8 @@ func main() {
 	}
 	defer logger.Sync()
 
-	err = validateToolConfig(os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
+	addMessageToolEnv := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	err = validateToolConfig(addMessageToolEnv)
 	if err != nil {
 		logger.Fatal("error in SLACK_MCP_ADD_MESSAGE_TOOL",
 			zap.String("context", "console"),
@@ -40,8 +58,16 @@ func main() {
 		)
 	}
 
+	err = server.ValidateEnabledTools(enabledTools)
+	if err != nil {
+		logger.Fatal("error in SLACK_MCP_ENABLED_TOOLS",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
+
 	p := provider.New(transport, logger)
-	s := server.NewMCPServer(p, logger)
+	s := server.NewMCPServer(p, logger, enabledTools)
 
 	go func() {
 		var once sync.Once
