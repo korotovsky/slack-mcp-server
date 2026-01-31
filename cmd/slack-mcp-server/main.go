@@ -25,8 +25,8 @@ func main() {
 	var enabledToolsFlag string
 	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse or http)")
-	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (default: all tools)")
-	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (default: all tools)")
+	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (empty = all tools)")
+	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.Parse()
 
 	// Check environment variable if flag not set
@@ -51,7 +51,8 @@ func main() {
 	}
 	defer logger.Sync()
 
-	err = validateToolConfig(os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
+	addMessageToolEnv := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	err = validateToolConfig(addMessageToolEnv)
 	if err != nil {
 		logger.Fatal("error in SLACK_MCP_ADD_MESSAGE_TOOL",
 			zap.String("context", "console"),

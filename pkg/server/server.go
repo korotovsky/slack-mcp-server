@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/handler"
@@ -22,17 +23,17 @@ type MCPServer struct {
 }
 
 // shouldAddTool checks if a tool should be added based on the enabledTools list.
-// If enabledTools is empty, all tools are enabled (backward compatible).
+// This only controls tool registration/visibility via MCP.
+// Runtime permissions (e.g., SLACK_MCP_ADD_MESSAGE_TOOL) are checked separately in handlers.
+//
+// Logic:
+//   - If enabledTools is empty, all tools are registered (no filtering)
+//   - If enabledTools is set, only those tools are registered
 func shouldAddTool(name string, enabledTools []string) bool {
 	if len(enabledTools) == 0 {
-		return true
+		return true // No filtering, all tools registered
 	}
-	for _, tool := range enabledTools {
-		if tool == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(enabledTools, name)
 }
 
 func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *MCPServer {
