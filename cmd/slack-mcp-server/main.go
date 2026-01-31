@@ -29,12 +29,10 @@ func main() {
 	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.Parse()
 
-	// Check environment variable if flag not set
 	if enabledToolsFlag == "" {
 		enabledToolsFlag = os.Getenv("SLACK_MCP_ENABLED_TOOLS")
 	}
 
-	// Parse enabled tools into a slice
 	var enabledTools []string
 	if enabledToolsFlag != "" {
 		for _, tool := range strings.Split(enabledToolsFlag, ",") {
