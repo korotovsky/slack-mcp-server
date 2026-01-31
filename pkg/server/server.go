@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/handler"
@@ -22,16 +23,51 @@ type MCPServer struct {
 	logger *zap.Logger
 }
 
-// shouldAddTool checks if a tool should be added based on the enabledTools list.
-// This only controls tool registration/visibility via MCP.
-// Runtime permissions (e.g., SLACK_MCP_ADD_MESSAGE_TOOL) are checked separately in handlers.
-//
-// Logic:
-//   - If enabledTools is empty, all tools are registered (no filtering)
-//   - If enabledTools is set, only those tools are registered
+const (
+	ToolConversationsHistory       = "conversations_history"
+	ToolConversationsReplies       = "conversations_replies"
+	ToolConversationsAddMessage    = "conversations_add_message"
+	ToolReactionsAdd               = "reactions_add"
+	ToolReactionsRemove            = "reactions_remove"
+	ToolAttachmentGetData          = "attachment_get_data"
+	ToolConversationsSearchMessages = "conversations_search_messages"
+	ToolChannelsList               = "channels_list"
+)
+
+var ValidToolNames = []string{
+	ToolConversationsHistory,
+	ToolConversationsReplies,
+	ToolConversationsAddMessage,
+	ToolReactionsAdd,
+	ToolReactionsRemove,
+	ToolAttachmentGetData,
+	ToolConversationsSearchMessages,
+	ToolChannelsList,
+}
+
+func ValidateEnabledTools(tools []string) error {
+	validToolSet := make(map[string]bool, len(ValidToolNames))
+	for _, name := range ValidToolNames {
+		validToolSet[name] = true
+	}
+
+	var invalidTools []string
+	for _, tool := range tools {
+		if !validToolSet[tool] {
+			invalidTools = append(invalidTools, tool)
+		}
+	}
+	if len(invalidTools) > 0 {
+		return fmt.Errorf("invalid tool name(s): %s. Valid tools are: %s",
+			strings.Join(invalidTools, ", "),
+			strings.Join(ValidToolNames, ", "))
+	}
+	return nil
+}
+
 func shouldAddTool(name string, enabledTools []string) bool {
 	if len(enabledTools) == 0 {
-		return true // No filtering, all tools registered
+		return true
 	}
 	return slices.Contains(enabledTools, name)
 }
@@ -48,8 +84,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
 
-	if shouldAddTool("conversations_history", enabledTools) {
-		s.AddTool(mcp.NewTool("conversations_history",
+	if shouldAddTool(ToolConversationsHistory, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolConversationsHistory,
 		mcp.WithDescription("Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
 		mcp.WithTitleAnnotation("Get Conversation History"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -71,8 +107,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ConversationsHistoryHandler)
 	}
 
-	if shouldAddTool("conversations_replies", enabledTools) {
-		s.AddTool(mcp.NewTool("conversations_replies",
+	if shouldAddTool(ToolConversationsReplies, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolConversationsReplies,
 		mcp.WithDescription("Get a thread of messages posted to a conversation by channelID and thread_ts, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
 		mcp.WithTitleAnnotation("Get Thread Replies"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -98,8 +134,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ConversationsRepliesHandler)
 	}
 
-	if shouldAddTool("conversations_add_message", enabledTools) {
-		s.AddTool(mcp.NewTool("conversations_add_message",
+	if shouldAddTool(ToolConversationsAddMessage, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolConversationsAddMessage,
 		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
 		mcp.WithTitleAnnotation("Send Message"),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -120,8 +156,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ConversationsAddMessageHandler)
 	}
 
-	if shouldAddTool("reactions_add", enabledTools) {
-		s.AddTool(mcp.NewTool("reactions_add",
+	if shouldAddTool(ToolReactionsAdd, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolReactionsAdd,
 		mcp.WithDescription("Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
@@ -139,8 +175,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ReactionsAddHandler)
 	}
 
-	if shouldAddTool("reactions_remove", enabledTools) {
-		s.AddTool(mcp.NewTool("reactions_remove",
+	if shouldAddTool(ToolReactionsRemove, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolReactionsRemove,
 		mcp.WithDescription("Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithString("channel_id",
@@ -158,8 +194,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ReactionsRemoveHandler)
 	}
 
-	if shouldAddTool("attachment_get_data", enabledTools) {
-		s.AddTool(mcp.NewTool("attachment_get_data",
+	if shouldAddTool(ToolAttachmentGetData, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolAttachmentGetData,
 		mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
 		mcp.WithTitleAnnotation("Get Attachment Data"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -170,7 +206,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.FilesGetHandler)
 	}
 
-	conversationsSearchTool := mcp.NewTool("conversations_search_messages",
+	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -214,14 +250,14 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		),
 	)
 	// Only register search tool for non-bot tokens (bot tokens cannot use search.messages API)
-	if !provider.IsBotToken() && shouldAddTool("conversations_search_messages", enabledTools) {
+	if !provider.IsBotToken() && shouldAddTool(ToolConversationsSearchMessages, enabledTools) {
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
-	if shouldAddTool("channels_list", enabledTools) {
-		s.AddTool(mcp.NewTool("channels_list",
+	if shouldAddTool(ToolChannelsList, enabledTools) {
+		s.AddTool(mcp.NewTool(ToolChannelsList,
 		mcp.WithDescription("Get list of channels"),
 		mcp.WithTitleAnnotation("List Channels"),
 		mcp.WithReadOnlyHintAnnotation(true),

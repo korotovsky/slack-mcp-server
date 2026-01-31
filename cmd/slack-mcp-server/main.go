@@ -60,6 +60,14 @@ func main() {
 		)
 	}
 
+	err = server.ValidateEnabledTools(enabledTools)
+	if err != nil {
+		logger.Fatal("error in SLACK_MCP_ENABLED_TOOLS",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
+
 	p := provider.New(transport, logger)
 	s := server.NewMCPServer(p, logger, enabledTools)
 
