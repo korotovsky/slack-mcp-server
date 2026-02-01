@@ -559,7 +559,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 	warn := false
 
 	for _, msg := range slackMessages {
-		if (msg.SubType != "" && msg.SubType != "bot_message") && !includeActivity {
+		if (msg.SubType != "" && msg.SubType != "bot_message" && msg.SubType != "thread_broadcast") && !includeActivity {
 			continue
 		}
 
