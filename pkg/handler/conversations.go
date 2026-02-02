@@ -95,6 +95,24 @@ type filesGetParams struct {
 	fileID string
 }
 
+type reactionsListParams struct {
+	count int
+	page  int
+	full  bool
+}
+
+type ReactedItemRow struct {
+	Type      string `csv:"type"`
+	Channel   string `csv:"channel"`
+	Timestamp string `csv:"timestamp"`
+	Emoji     string `csv:"emoji"`
+	Text      string `csv:"text"`
+	UserID    string `csv:"userID"`
+	UserName  string `csv:"userName"`
+	Time      string `csv:"time"`
+	Cursor    string `csv:"cursor"`
+}
+
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
 	logger      *zap.Logger
@@ -322,6 +340,120 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+// ReactionsListHandler lists items the authenticated user has reacted to
+func (ch *ConversationsHandler) ReactionsListHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsListHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolReactionsList(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse reactions_list params", zap.Error(err))
+		return nil, err
+	}
+
+	listParams := slack.ListReactionsParameters{
+		Count: params.count,
+		Page:  params.page,
+		Full:  params.full,
+	}
+
+	ch.logger.Debug("Listing reactions",
+		zap.Int("count", params.count),
+		zap.Int("page", params.page),
+		zap.Bool("full", params.full),
+	)
+
+	reactedItems, paging, err := ch.apiProvider.Slack().ListReactionsContext(ctx, listParams)
+	if err != nil {
+		ch.logger.Error("Slack ListReactionsContext failed", zap.Error(err))
+		return nil, err
+	}
+	ch.logger.Debug("Fetched reacted items", zap.Int("count", len(reactedItems)))
+
+	rows := ch.convertReactedItems(reactedItems)
+
+	// Add pagination cursor to the last row if there are more pages
+	if len(rows) > 0 && paging != nil && paging.Page < paging.Pages {
+		rows[len(rows)-1].Cursor = fmt.Sprintf("%d", paging.Page+1)
+	}
+
+	return marshalReactedItemsToCSV(rows)
+}
+
+func (ch *ConversationsHandler) convertReactedItems(items []slack.ReactedItem) []ReactedItemRow {
+	usersMap := ch.apiProvider.ProvideUsersMap()
+	var rows []ReactedItemRow
+
+	for _, item := range items {
+		// Get message text and user info
+		var msgText, userID, userName, timestamp, channel string
+		channel = item.Channel
+
+		switch item.Type {
+		case "message":
+			if item.Message != nil {
+				msgText = item.Message.Text
+				userID = item.Message.User
+				timestamp = item.Message.Timestamp
+			}
+		case "file":
+			if item.File != nil {
+				msgText = item.File.Name
+				userID = item.File.User
+				timestamp = item.File.Timestamp.String()
+			}
+		case "file_comment":
+			if item.Comment != nil {
+				msgText = item.Comment.Comment
+				userID = item.Comment.User
+				timestamp = fmt.Sprintf("%d", item.Comment.Timestamp)
+			}
+		}
+
+		// Resolve username
+		if u, ok := usersMap.Users[userID]; ok {
+			userName = u.Name
+		} else {
+			userName = userID
+		}
+
+		// Convert timestamp to readable format
+		timeStr, err := text.TimestampToIsoRFC3339(timestamp)
+		if err != nil {
+			timeStr = timestamp
+		}
+
+		// Create a row for each reaction on this item
+		for _, reaction := range item.Reactions {
+			rows = append(rows, ReactedItemRow{
+				Type:      item.Type,
+				Channel:   channel,
+				Timestamp: timestamp,
+				Emoji:     reaction.Name,
+				Text:      text.ProcessText(msgText),
+				UserID:    userID,
+				UserName:  userName,
+				Time:      timeStr,
+			})
+		}
+	}
+
+	return rows
+}
+
+func marshalReactedItemsToCSV(rows []ReactedItemRow) (*mcp.CallToolResult, error) {
+	csvBytes, err := gocsv.MarshalBytes(&rows)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -839,6 +971,29 @@ func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequ
 		channel:   channel,
 		timestamp: timestamp,
 		emoji:     emoji,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolReactionsList(request mcp.CallToolRequest) (*reactionsListParams, error) {
+	count := request.GetInt("count", 100)
+	if count < 1 {
+		count = 100
+	}
+	if count > 1000 {
+		count = 1000
+	}
+
+	page := request.GetInt("page", 1)
+	if page < 1 {
+		page = 1
+	}
+
+	full := request.GetBool("full", true)
+
+	return &reactionsListParams{
+		count: count,
+		page:  page,
+		full:  full,
 	}, nil
 }
 
