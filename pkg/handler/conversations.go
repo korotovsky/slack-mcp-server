@@ -63,6 +63,16 @@ type User struct {
 	RealName string `json:"realName"`
 }
 
+type UserSearchResult struct {
+	UserID      string `csv:"UserID"`
+	UserName    string `csv:"UserName"`
+	RealName    string `csv:"RealName"`
+	DisplayName string `csv:"DisplayName"`
+	Email       string `csv:"Email"`
+	Title       string `csv:"Title"`
+	DMChannelID string `csv:"DMChannelID"`
+}
+
 type conversationParams struct {
 	channel  string
 	limit    int
@@ -93,6 +103,11 @@ type addReactionParams struct {
 
 type filesGetParams struct {
 	fileID string
+}
+
+type usersSearchParams struct {
+	query string
+	limit int
 }
 
 type ConversationsHandler struct {
@@ -322,6 +337,71 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("UsersSearchHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolUsersSearch(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse users-search params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Searching for users",
+		zap.String("query", params.query),
+		zap.Int("limit", params.limit),
+	)
+
+	users, err := ch.apiProvider.Slack().UsersSearch(ctx, params.query, params.limit)
+	if err != nil {
+		ch.logger.Error("UsersSearch failed", zap.Error(err))
+		return nil, fmt.Errorf("users search failed (note: this feature requires browser session tokens xoxc/xoxd, not OAuth tokens): %w", err)
+	}
+
+	channelsMap := ch.apiProvider.ProvideChannelsMaps()
+
+	results := make([]UserSearchResult, 0, len(users))
+	for _, user := range users {
+		if user.Deleted {
+			continue
+		}
+
+		dmChannelID := ""
+		for _, ch := range channelsMap.Channels {
+			if ch.IsIM && ch.User == user.ID {
+				dmChannelID = ch.ID
+				break
+			}
+		}
+
+		results = append(results, UserSearchResult{
+			UserID:      user.ID,
+			UserName:    user.Name,
+			RealName:    user.RealName,
+			DisplayName: user.Profile.DisplayName,
+			Email:       user.Profile.Email,
+			Title:       user.Profile.Title,
+			DMChannelID: dmChannelID,
+		})
+	}
+
+	if len(results) == 0 {
+		return mcp.NewToolResultText("No users found matching the query."), nil
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&results)
+	if err != nil {
+		ch.logger.Error("Failed to marshal users to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -902,6 +982,26 @@ func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequ
 
 	return &filesGetParams{
 		fileID: fileID,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolUsersSearch(request mcp.CallToolRequest) (*usersSearchParams, error) {
+	query := strings.TrimSpace(request.GetString("query", ""))
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+
+	limit := request.GetInt("limit", 10)
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	return &usersSearchParams{
+		query: query,
+		limit: limit,
 	}, nil
 }
 

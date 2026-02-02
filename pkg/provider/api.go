@@ -157,6 +157,7 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
 }
 
 type MCPSlackClient struct {
@@ -380,6 +381,10 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error) {
+	return c.edgeClient.UsersSearch(ctx, query, count)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
