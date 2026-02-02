@@ -959,10 +959,15 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 	}, nil
 }
 
+// Slack user IDs may begin with U or W: https://docs.slack.dev/changelog/2016/08/11/user-id-format-changes
+func isSlackUserIDPrefix(s string) bool {
+	return strings.HasPrefix(s, "U") || strings.HasPrefix(s, "W")
+}
+
 func (ch *ConversationsHandler) paramFormatUser(raw string) (string, error) {
 	users := ch.apiProvider.ProvideUsersMap()
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "U") {
+	if isSlackUserIDPrefix(raw) {
 		u, ok := users.Users[raw]
 		if !ok {
 			return "", fmt.Errorf("user %q not found", raw)
