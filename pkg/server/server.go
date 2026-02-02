@@ -133,6 +133,24 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 		),
 	), conversationsHandler.ReactionsRemoveHandler)
 
+	s.AddTool(mcp.NewTool("reactions_list",
+		mcp.WithDescription("List items (messages, files) the authenticated user has reacted to. Useful as a workaround for accessing saved/bookmarked items."),
+		mcp.WithTitleAnnotation("List My Reactions"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithNumber("count",
+			mcp.DefaultNumber(100),
+			mcp.Description("Number of items to return per page (default 100, max 1000)."),
+		),
+		mcp.WithNumber("page",
+			mcp.DefaultNumber(1),
+			mcp.Description("Page number for pagination (default 1)."),
+		),
+		mcp.WithBoolean("full",
+			mcp.DefaultBool(true),
+			mcp.Description("If true, return full message/file details. Default is true."),
+		),
+	), conversationsHandler.ReactionsListHandler)
+
 	s.AddTool(mcp.NewTool("attachment_get_data",
 		mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
 		mcp.WithTitleAnnotation("Get Attachment Data"),

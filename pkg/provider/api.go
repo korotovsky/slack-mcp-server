@@ -79,6 +79,7 @@ type SlackAPI interface {
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 	AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error
 	RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error
+	ListReactionsContext(ctx context.Context, params slack.ListReactionsParameters) ([]slack.ReactedItem, *slack.Paging, error)
 
 	// Used to get messages
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
@@ -299,6 +300,10 @@ func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, it
 
 func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
 	return c.slackClient.RemoveReactionContext(ctx, name, item)
+}
+
+func (c *MCPSlackClient) ListReactionsContext(ctx context.Context, params slack.ListReactionsParameters) ([]slack.ReactedItem, *slack.Paging, error) {
+	return c.slackClient.ListReactionsContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
