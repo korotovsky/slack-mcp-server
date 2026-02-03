@@ -94,6 +94,34 @@ Add an emoji reaction to a message in a public channel, private channel, or dire
   - `timestamp` (string, required): Timestamp of the message to add reaction to, in format `1234567890.123456`.
   - `emoji` (string, required): The name of the emoji to add as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
 
+### 7. reactions_remove:
+Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation.
+
+> **Note:** Removing reactions follows the same permission model as `reactions_add`. To enable, set the `SLACK_MCP_ADD_MESSAGE_TOOL` environment variable.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `timestamp` (string, required): Timestamp of the message to remove reaction from, in format `1234567890.123456`.
+  - `emoji` (string, required): The name of the emoji to remove as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
+
+### 8. users_search:
+Search for users by name, email, or display name. Returns user details and DM channel ID if available.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available when using OAuth tokens (`xoxp`) or bot tokens (`xoxb`).
+
+- **Parameters:**
+  - `query` (string, required): Search query - matches against real name, display name, username, or email.
+  - `limit` (number, default: 10): Maximum number of results to return (1-100).
+
+- **Returns:** CSV with fields:
+  - `UserID`: User ID (e.g., `U1234567890`)
+  - `UserName`: Slack username
+  - `RealName`: User's real name
+  - `DisplayName`: User's display name
+  - `Email`: User's email address
+  - `Title`: User's job title
+  - `DMChannelID`: DM channel ID if available in cache (for quick messaging)
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -145,7 +173,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_SERVER_CA`             | No        | `nil`                     | Path to CA certificate                                                                                                                                                                                                                                                                    |
 | `SLACK_MCP_SERVER_CA_TOOLKIT`     | No        | `nil`                     | Inject HTTPToolkit CA certificate to root trust-store for MitM debugging                                                                                                                                                                                                                  |
 | `SLACK_MCP_SERVER_CA_INSECURE`    | No        | `false`                   | Trust all insecure requests (NOT RECOMMENDED)                                                                                                                                                                                                                                             |
-| `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` and emoji reactions via `reactions_add` by setting it to true for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones, while an empty value disables these tools by default. |
+| `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` and emoji reactions via `reactions_add`/`reactions_remove` by setting it to true for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones, while an empty value disables these tools by default. |
 | `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When the `conversations_add_message` tool is enabled, any new message sent will automatically be marked as read.                                                                                                                                                                          |
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_USERS_CACHE`           | No        | `~/Library/Caches/slack-mcp-server/users_cache.json` (macOS)<br>`~/.cache/slack-mcp-server/users_cache.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/users_cache.json` (Windows) | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup. |
