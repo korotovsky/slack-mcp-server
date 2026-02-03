@@ -177,7 +177,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolAddMessage(request)
+	params, err := ch.parseParamsToolAddMessage(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-message params", zap.Error(err))
 		return nil, err
@@ -262,7 +262,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolReaction(request)
+	params, err := ch.parseParamsToolReaction(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
 		return nil, err
@@ -298,7 +298,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolReaction(request)
+	params, err := ch.parseParamsToolReaction(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
 		return nil, err
@@ -412,7 +412,7 @@ func escapeJSON(s string) string {
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(request)
+	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse history params", zap.Error(err))
 		return nil, err
@@ -453,7 +453,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(request)
+	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse replies params", zap.Error(err))
 		return nil, err
@@ -519,8 +519,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	return marshalMessagesToCSV(messages)
 }
 
-func isChannelAllowed(channel string) bool {
-	config := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+func isChannelAllowedForConfig(channel, config string) bool {
 	if config == "" || config == "true" || config == "1" {
 		return true
 	}
@@ -541,15 +540,56 @@ func isChannelAllowed(channel string) bool {
 	return !isNegated
 }
 
-func (ch *ConversationsHandler) resolveChannelID(channel string) (string, error) {
+func isChannelAllowed(channel string) bool {
+	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
+}
+
+func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
 	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
 		return channel, nil
 	}
+
+	// First attempt: try to resolve from current cache
 	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
 	chn, ok := channelsMaps.ChannelsInv[channel]
+	if ok {
+		return channelsMaps.Channels[chn].ID, nil
+	}
+
+	// Channel not found - try refreshing cache and retry once
+	ch.logger.Debug("Channel not found in cache, attempting refresh",
+		zap.String("channel", channel))
+
+	refreshErr := ch.apiProvider.ForceRefreshChannels(ctx)
+	wasRateLimited := errors.Is(refreshErr, provider.ErrRefreshRateLimited)
+
+	if refreshErr != nil && !wasRateLimited {
+		ch.logger.Error("Failed to refresh channels cache",
+			zap.String("channel", channel),
+			zap.Error(refreshErr))
+		return "", fmt.Errorf("channel %q not found and cache refresh failed: %w", channel, refreshErr)
+	}
+
+	// If rate-limited, cache wasn't refreshed - no point in a second lookup
+	if wasRateLimited {
+		ch.logger.Warn("Channel not found; cache refresh was rate-limited",
+			zap.String("channel", channel))
+		return "", fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channel)
+	}
+
+	// Second attempt after successful refresh
+	channelsMaps = ch.apiProvider.ProvideChannelsMaps()
+	chn, ok = channelsMaps.ChannelsInv[channel]
 	if !ok {
+		ch.logger.Error("Channel not found even after cache refresh",
+			zap.String("channel", channel))
 		return "", fmt.Errorf("channel %q not found", channel)
 	}
+
+	ch.logger.Debug("Channel found after cache refresh",
+		zap.String("channel", channel),
+		zap.String("channel_id", channelsMaps.Channels[chn].ID))
+
 	return channelsMaps.Channels[chn].ID, nil
 }
 
@@ -680,7 +720,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 	return messages
 }
 
-func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToolRequest) (*conversationParams, error) {
+func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context, request mcp.CallToolRequest) (*conversationParams, error) {
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
 		ch.logger.Error("channel_id missing in conversations params")
@@ -727,13 +767,12 @@ func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToo
 			}
 			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
 		}
-		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			ch.logger.Error("Channel not found in synced cache", zap.String("channel", channel))
-			return nil, fmt.Errorf("channel %q not found in synced cache. Try to remove old cache file and restart MCP Server", channel)
+		// Use resolveChannelID which includes refresh-on-error logic
+		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
+		if err != nil {
+			return nil, err
 		}
-		channel = channelsMaps.Channels[chn].ID
+		channel = resolvedChannel
 	}
 
 	return &conversationParams{
@@ -746,7 +785,7 @@ func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToo
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRequest) (*addMessageParams, error) {
+func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Add-message tool disabled by default")
@@ -763,7 +802,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		ch.logger.Error("channel_id missing in add-message params")
 		return nil, errors.New("channel_id must be a string")
 	}
-	channel, err := ch.resolveChannelID(channel)
+	channel, err := ch.resolveChannelID(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
@@ -799,7 +838,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequest) (*addReactionParams, error) {
+func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, request mcp.CallToolRequest) (*addReactionParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Reactions tool disabled by default")
@@ -815,12 +854,12 @@ func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequ
 	if channel == "" {
 		return nil, errors.New("channel_id is required")
 	}
-	channel, err := ch.resolveChannelID(channel)
+	channel, err := ch.resolveChannelID(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
 	}
-	if !isChannelAllowed(channel) {
+	if !isChannelAllowedForConfig(channel, toolConfig) {
 		ch.logger.Warn("Reactions tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
 		return nil, fmt.Errorf("reactions tools are not allowed for channel %q, applied policy: %s", channel, toolConfig)
 	}
