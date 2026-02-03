@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -83,6 +84,7 @@ type addMessageParams struct {
 	threadTs    string
 	text        string
 	contentType string
+	blocks      []slack.Block
 }
 
 type addReactionParams struct {
@@ -200,6 +202,13 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 			options = append(options, slack.MsgOptionText(params.text, false))
 		} else {
 			options = append(options, slack.MsgOptionBlocks(blocks...))
+		}
+	case "application/json":
+		// Raw Block Kit blocks provided
+		options = append(options, slack.MsgOptionBlocks(params.blocks...))
+		if params.text != "" {
+			// Use payload as fallback text for notifications/accessibility
+			options = append(options, slack.MsgOptionText(params.text, false))
 		}
 	default:
 		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
@@ -779,10 +788,43 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
+	// Parse blocks parameter (optional, for advanced Block Kit usage)
+	blocksJSON := request.GetString("blocks", "")
+	var blocks []slack.Block
+	if blocksJSON != "" {
+		// Parse the blocks JSON
+		var rawBlocks []json.RawMessage
+		if err := json.Unmarshal([]byte(blocksJSON), &rawBlocks); err != nil {
+			ch.logger.Error("Invalid blocks JSON", zap.Error(err))
+			return nil, fmt.Errorf("blocks must be a valid JSON array of Block Kit blocks: %w", err)
+		}
+
+		// Parse each block using slack-go's block parser
+		for i, rawBlock := range rawBlocks {
+			block := slack.NewBlocksFromJSON(rawBlock)
+			if len(block.BlockSet) == 0 {
+				ch.logger.Error("Failed to parse block", zap.Int("index", i))
+				return nil, fmt.Errorf("failed to parse block at index %d", i)
+			}
+			blocks = append(blocks, block.BlockSet...)
+		}
+
+		// When blocks are provided, payload is optional (used as fallback text)
+		msgText := request.GetString("payload", "")
+		return &addMessageParams{
+			channel:     channel,
+			threadTs:    threadTs,
+			text:        msgText,
+			contentType: "application/json",
+			blocks:      blocks,
+		}, nil
+	}
+
+	// Standard text/markdown flow (existing behavior)
 	msgText := request.GetString("payload", "")
 	if msgText == "" {
 		ch.logger.Error("Message text missing")
-		return nil, errors.New("text must be a string")
+		return nil, errors.New("payload must be provided when blocks is not specified")
 	}
 
 	contentType := request.GetString("content_type", "text/markdown")

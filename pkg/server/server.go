@@ -91,11 +91,14 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 			mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread."),
 		),
 		mcp.WithString("payload",
-			mcp.Description("Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+			mcp.Description("Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown. When using blocks parameter, this becomes optional fallback text for notifications."),
 		),
 		mcp.WithString("content_type",
 			mcp.DefaultString("text/markdown"),
-			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'. Ignored when blocks parameter is provided."),
+		),
+		mcp.WithString("blocks",
+			mcp.Description("Optional JSON array of Slack Block Kit blocks for advanced formatting (e.g., nested lists, rich text). When provided, this takes precedence over content_type/payload. See https://api.slack.com/block-kit for Block Kit documentation."),
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
 

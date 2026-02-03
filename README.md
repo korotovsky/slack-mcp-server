@@ -54,9 +54,13 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
-  - `thread_ts` (string, optional): Unique identifier of either a thread’s parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
-  - `payload` (string, required): Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
-  - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'.
+  - `thread_ts` (string, optional): Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
+  - `payload` (string, required unless `blocks` is provided): Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown. When using `blocks`, this becomes optional fallback text for notifications.
+  - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'. Ignored when `blocks` parameter is provided.
+  - `blocks` (string, optional): JSON array of Slack Block Kit blocks for advanced formatting (e.g., nested lists, rich text with indentation). When provided, this takes precedence over `content_type`/`payload`. See [Block Kit documentation](https://api.slack.com/block-kit) for details. Example for nested lists:
+    ```json
+    [{"type":"rich_text","elements":[{"type":"rich_text_list","style":"bullet","indent":0,"elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"Parent item"}]}]},{"type":"rich_text_list","style":"bullet","indent":1,"elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"Nested child"}]}]}]}]
+    ```
 
 ### 4. conversations_search_messages
 Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required.
