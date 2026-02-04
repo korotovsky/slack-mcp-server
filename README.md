@@ -107,7 +107,7 @@ Remove an emoji reaction from a message in a public channel, private channel, or
 ### 8. users_search:
 Search for users by name, email, or display name. Returns user details and DM channel ID if available.
 
-> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available when using OAuth tokens (`xoxp`) or bot tokens (`xoxb`).
+> **Note:** For OAuth tokens (`xoxp`/`xoxb`), this tool searches the local users cache using pattern matching. For browser session tokens (`xoxc`/`xoxd`), it uses the Slack edge API for real-time search.
 
 - **Parameters:**
   - `query` (string, required): Search query - matches against real name, display name, username, or email.

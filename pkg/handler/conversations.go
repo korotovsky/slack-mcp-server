@@ -358,10 +358,10 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 		zap.Int("limit", params.limit),
 	)
 
-	users, err := ch.apiProvider.Slack().UsersSearch(ctx, params.query, params.limit)
+	users, err := ch.apiProvider.SearchUsers(ctx, params.query, params.limit)
 	if err != nil {
 		ch.logger.Error("UsersSearch failed", zap.Error(err))
-		return nil, fmt.Errorf("users search failed (note: this feature requires browser session tokens xoxc/xoxd, not OAuth tokens): %w", err)
+		return nil, fmt.Errorf("users search failed: %w", err)
 	}
 
 	channelsMap := ch.apiProvider.ProvideChannelsMaps()
