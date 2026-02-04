@@ -590,3 +590,24 @@ func TestUnitLimitByExpression_Invalid(t *testing.T) {
 		})
 	}
 }
+
+func TestUnitIsSlackUserIDPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{"U prefix", "U0123ABCD", true},
+		{"W prefix", "W0123ABCD", true},
+		{"plain name not ID", "alice", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSlackUserIDPrefix(tt.s)
+			if got != tt.want {
+				t.Errorf("isSlackUserIDPrefix(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
