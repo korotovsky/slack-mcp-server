@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
@@ -22,6 +25,8 @@ import (
 const usersNotReadyMsg = "users cache is not ready yet, sync process is still running... please wait"
 const channelsNotReadyMsg = "channels cache is not ready yet, sync process is still running... please wait"
 const defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+const defaultCacheTTL = 1 * time.Hour
+const defaultMinRefreshInterval = 30 * time.Second
 
 var AllChanTypes = []string{"mpim", "im", "public_channel", "private_channel"}
 var PrivateChanType = "private_channel"
@@ -29,6 +34,7 @@ var PubChanType = "public_channel"
 
 var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
+var ErrRefreshRateLimited = errors.New("refresh skipped due to rate limiting")
 
 // getCacheDir returns the appropriate cache directory for slack-mcp-server
 func getCacheDir() string {
@@ -44,6 +50,63 @@ func getCacheDir() string {
 		return "."
 	}
 	return dir
+}
+
+// getCacheTTL returns the cache TTL from SLACK_MCP_CACHE_TTL env var or default (1 hour).
+// Supports formats: "1h", "30m", "3600" (seconds), "0" (disable TTL, cache forever)
+// Negative values are rejected and fall back to default.
+func getCacheTTL() time.Duration {
+	ttlStr := os.Getenv("SLACK_MCP_CACHE_TTL")
+	if ttlStr == "" {
+		return defaultCacheTTL
+	}
+
+	// Try parsing as duration first (e.g., "1h", "30m")
+	if d, err := time.ParseDuration(ttlStr); err == nil {
+		if d < 0 {
+			return defaultCacheTTL // Reject negative TTL
+		}
+		return d
+	}
+
+	// Try parsing as seconds (e.g., "3600")
+	if secs, err := strconv.ParseInt(ttlStr, 10, 64); err == nil {
+		if secs < 0 {
+			return defaultCacheTTL // Reject negative TTL
+		}
+		return time.Duration(secs) * time.Second
+	}
+
+	return defaultCacheTTL
+}
+
+// getMinRefreshInterval returns the minimum interval between forced refreshes from
+// SLACK_MCP_MIN_REFRESH_INTERVAL env var or default (30s).
+// Supports formats: "30s", "1m", "60" (seconds), "0" (disable rate limiting)
+// Negative values are rejected and fall back to default.
+func getMinRefreshInterval() time.Duration {
+	intervalStr := os.Getenv("SLACK_MCP_MIN_REFRESH_INTERVAL")
+	if intervalStr == "" {
+		return defaultMinRefreshInterval
+	}
+
+	// Try parsing as duration first (e.g., "30s", "1m")
+	if d, err := time.ParseDuration(intervalStr); err == nil {
+		if d < 0 {
+			return defaultMinRefreshInterval // Reject negative interval
+		}
+		return d
+	}
+
+	// Try parsing as seconds (e.g., "60")
+	if secs, err := strconv.ParseInt(intervalStr, 10, 64); err == nil {
+		if secs < 0 {
+			return defaultMinRefreshInterval // Reject negative interval
+		}
+		return time.Duration(secs) * time.Second
+	}
+
+	return defaultMinRefreshInterval
 }
 
 type UsersCache struct {
@@ -114,17 +177,23 @@ type ApiProvider struct {
 	client    SlackAPI
 	logger    *zap.Logger
 
-	rateLimiter *rate.Limiter
+	rateLimiter        *rate.Limiter
+	cacheTTL           time.Duration
+	minRefreshInterval time.Duration
 
-	users      map[string]slack.User
-	usersInv   map[string]string
-	usersCache string
-	usersReady bool
+	// Users cache: atomic pointer to immutable snapshot (no copy on read)
+	usersSnapshot atomic.Pointer[UsersCache]
+	usersCachePath string
+	usersReady     bool
+	lastForcedUsersRefresh time.Time
+	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
 
-	channels      map[string]Channel
-	channelsInv   map[string]string
-	channelsCache string
-	channelsReady bool
+	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
+	channelsSnapshot atomic.Pointer[ChannelsCache]
+	channelsCachePath string
+	channelsReady     bool
+	lastForcedChannelsRefresh time.Time
+	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -425,21 +494,28 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		}
 	}
 
-	return &ApiProvider{
+	ap := &ApiProvider{
 		transport: transport,
 		client:    client,
 		logger:    logger,
 
-		rateLimiter: limiter.Tier2.Limiter(),
+		rateLimiter:        limiter.Tier2.Limiter(),
+		cacheTTL:           getCacheTTL(),
+		minRefreshInterval: getMinRefreshInterval(),
 
-		users:      make(map[string]slack.User),
-		usersInv:   map[string]string{},
-		usersCache: usersCache,
-
-		channels:      make(map[string]Channel),
-		channelsInv:   map[string]string{},
-		channelsCache: channelsCache,
+		usersCachePath:    usersCache,
+		channelsCachePath: channelsCache,
 	}
+	// Initialize with empty snapshots
+	ap.usersSnapshot.Store(&UsersCache{
+		Users:    make(map[string]slack.User),
+		UsersInv: make(map[string]string),
+	})
+	ap.channelsSnapshot.Store(&ChannelsCache{
+		Channels:    make(map[string]Channel),
+		ChannelsInv: make(map[string]string),
+	})
+	return ap
 }
 
 func newWithXOXB(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
@@ -475,90 +551,171 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		}
 	}
 
-	return &ApiProvider{
+	ap := &ApiProvider{
 		transport: transport,
 		client:    client,
 		logger:    logger,
 
-		rateLimiter: limiter.Tier2.Limiter(),
+		rateLimiter:        limiter.Tier2.Limiter(),
+		cacheTTL:           getCacheTTL(),
+		minRefreshInterval: getMinRefreshInterval(),
 
-		users:      make(map[string]slack.User),
-		usersInv:   map[string]string{},
-		usersCache: usersCache,
-
-		channels:      make(map[string]Channel),
-		channelsInv:   map[string]string{},
-		channelsCache: channelsCache,
+		usersCachePath:    usersCache,
+		channelsCachePath: channelsCache,
 	}
+	// Initialize with empty snapshots
+	ap.usersSnapshot.Store(&UsersCache{
+		Users:    make(map[string]slack.User),
+		UsersInv: make(map[string]string),
+	})
+	ap.channelsSnapshot.Store(&ChannelsCache{
+		Channels:    make(map[string]Channel),
+		ChannelsInv: make(map[string]string),
+	})
+	return ap
 }
 
 func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
+	return ap.refreshUsersInternal(ctx, false)
+}
+
+// ForceRefreshUsers bypasses the cache and fetches fresh user data from Slack API.
+// Rate limited by SLACK_MCP_MIN_REFRESH_INTERVAL (default 30s) to prevent API abuse.
+// Returns ErrRefreshRateLimited if refresh is skipped due to rate limiting.
+func (ap *ApiProvider) ForceRefreshUsers(ctx context.Context) error {
+	if ap.minRefreshInterval > 0 {
+		// Use single lock scope for check-and-update to prevent TOCTOU race
+		ap.usersMu.Lock()
+		sinceLast := time.Since(ap.lastForcedUsersRefresh)
+		if sinceLast < ap.minRefreshInterval {
+			ap.usersMu.Unlock()
+			ap.logger.Debug("Skipping forced users refresh, within rate limit",
+				zap.Duration("since_last", sinceLast),
+				zap.Duration("min_interval", ap.minRefreshInterval))
+			return ErrRefreshRateLimited
+		}
+		// Update timestamp before refresh to prevent concurrent forced refreshes
+		ap.lastForcedUsersRefresh = time.Now()
+		ap.usersMu.Unlock()
+	}
+
+	ap.logger.Info("Force refreshing users cache")
+	return ap.refreshUsersInternal(ctx, true)
+}
+
+func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) error {
+	ap.usersMu.Lock()
+	defer ap.usersMu.Unlock()
+
 	var (
-		list         []slack.User
-		usersCounter = 0
-		optionLimit  = slack.GetUsersOptionLimit(1000)
+		list        []slack.User
+		optionLimit = slack.GetUsersOptionLimit(1000)
 	)
 
-	if data, err := ioutil.ReadFile(ap.usersCache); err == nil {
-		var cachedUsers []slack.User
-		if err := json.Unmarshal(data, &cachedUsers); err != nil {
-			ap.logger.Warn("Failed to unmarshal users cache, will refetch",
-				zap.String("cache_file", ap.usersCache),
-				zap.Error(err))
-		} else {
-			for _, u := range cachedUsers {
-				ap.users[u.ID] = u
-				ap.usersInv[u.Name] = u.ID
+	// Check if we should use cache (not forced, cache exists, and within TTL)
+	if !force {
+		if data, err := os.ReadFile(ap.usersCachePath); err == nil {
+			var cachedUsers []slack.User
+			if err := json.Unmarshal(data, &cachedUsers); err != nil {
+				ap.logger.Warn("Failed to unmarshal users cache, will refetch",
+					zap.String("cache_file", ap.usersCachePath),
+					zap.Error(err))
+			} else {
+				// Check cache TTL using file modification time
+				cacheValid := true
+				if ap.cacheTTL > 0 {
+					if fileInfo, err := os.Stat(ap.usersCachePath); err == nil {
+						cacheAge := time.Since(fileInfo.ModTime())
+						if cacheAge > ap.cacheTTL {
+							ap.logger.Info("Users cache expired, will refetch",
+								zap.Duration("cache_age", cacheAge),
+								zap.Duration("ttl", ap.cacheTTL),
+								zap.String("cache_file", ap.usersCachePath))
+							cacheValid = false
+						}
+					}
+				}
+
+				if cacheValid {
+					// Build new snapshot from cache
+					newSnapshot := &UsersCache{
+						Users:    make(map[string]slack.User, len(cachedUsers)),
+						UsersInv: make(map[string]string, len(cachedUsers)),
+					}
+					for _, u := range cachedUsers {
+						newSnapshot.Users[u.ID] = u
+						newSnapshot.UsersInv[u.Name] = u.ID
+					}
+					ap.usersSnapshot.Store(newSnapshot)
+					ap.logger.Info("Loaded users from cache",
+						zap.Int("count", len(cachedUsers)),
+						zap.String("cache_file", ap.usersCachePath))
+					ap.usersReady = true
+					return nil
+				}
 			}
-			ap.logger.Info("Loaded users from cache",
-				zap.Int("count", len(cachedUsers)),
-				zap.String("cache_file", ap.usersCache))
-			ap.usersReady = true
-			return nil
 		}
 	}
 
+	// Fetch fresh data from Slack API
 	users, err := ap.client.GetUsersContext(ctx,
 		optionLimit,
 	)
 	if err != nil {
 		ap.logger.Error("Failed to fetch users", zap.Error(err))
 		return err
-	} else {
-		list = append(list, users...)
 	}
+	list = append(list, users...)
 
+	// Build new snapshot
+	newSnapshot := &UsersCache{
+		Users:    make(map[string]slack.User),
+		UsersInv: make(map[string]string),
+	}
 	for _, user := range users {
-		ap.users[user.ID] = user
-		ap.usersInv[user.Name] = user.ID
-		usersCounter++
+		newSnapshot.Users[user.ID] = user
+		newSnapshot.UsersInv[user.Name] = user.ID
 	}
+	// Store intermediate snapshot so GetSlackConnect can read current users
+	ap.usersSnapshot.Store(newSnapshot)
 
-	users, err = ap.GetSlackConnect(ctx)
+	connectUsers, err := ap.GetSlackConnect(ctx)
 	if err != nil {
 		ap.logger.Error("Failed to fetch users from Slack Connect", zap.Error(err))
 		return err
-	} else {
-		list = append(list, users...)
 	}
+	list = append(list, connectUsers...)
 
-	for _, user := range users {
-		ap.users[user.ID] = user
-		ap.usersInv[user.Name] = user.ID
-		usersCounter++
+	// Add Slack Connect users to a new snapshot (since maps are shared)
+	if len(connectUsers) > 0 {
+		finalSnapshot := &UsersCache{
+			Users:    make(map[string]slack.User, len(newSnapshot.Users)+len(connectUsers)),
+			UsersInv: make(map[string]string, len(newSnapshot.UsersInv)+len(connectUsers)),
+		}
+		for k, v := range newSnapshot.Users {
+			finalSnapshot.Users[k] = v
+		}
+		for k, v := range newSnapshot.UsersInv {
+			finalSnapshot.UsersInv[k] = v
+		}
+		for _, user := range connectUsers {
+			finalSnapshot.Users[user.ID] = user
+			finalSnapshot.UsersInv[user.Name] = user.ID
+		}
+		ap.usersSnapshot.Store(finalSnapshot)
 	}
 
 	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal users for cache", zap.Error(err))
 	} else {
-		if err := ioutil.WriteFile(ap.usersCache, data, 0644); err != nil {
+		if err := os.WriteFile(ap.usersCachePath, data, 0644); err != nil {
 			ap.logger.Error("Failed to write cache file",
-				zap.String("cache_file", ap.usersCache),
+				zap.String("cache_file", ap.usersCachePath),
 				zap.Error(err))
 		} else {
 			ap.logger.Info("Wrote users to cache",
-				zap.Int("count", usersCounter),
-				zap.String("cache_file", ap.usersCache))
+				zap.Int("count", len(list)),
+				zap.String("cache_file", ap.usersCachePath))
 		}
 	}
 
@@ -568,53 +725,111 @@ func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 }
 
 func (ap *ApiProvider) RefreshChannels(ctx context.Context) error {
-	if data, err := ioutil.ReadFile(ap.channelsCache); err == nil {
-		var cachedChannels []Channel
-		if err := json.Unmarshal(data, &cachedChannels); err != nil {
-			ap.logger.Warn("Failed to unmarshal channels cache, will refetch",
-				zap.String("cache_file", ap.channelsCache),
-				zap.Error(err))
-		} else {
-			// Re-map channels with current users cache to ensure DM names are populated
-			usersMap := ap.ProvideUsersMap().Users
-			for _, c := range cachedChannels {
-				// For IM channels, re-generate the name and purpose using current users cache
-				if c.IsIM {
-					// Re-map the channel to get updated user name if available
-					remappedChannel := mapChannel(
-						c.ID, "", "", c.Topic, c.Purpose,
-						c.User, c.Members, c.MemberCount,
-						c.IsIM, c.IsMpIM, c.IsPrivate,
-						usersMap,
-					)
-					ap.channels[c.ID] = remappedChannel
-					ap.channelsInv[remappedChannel.Name] = c.ID
-				} else {
-					ap.channels[c.ID] = c
-					ap.channelsInv[c.Name] = c.ID
+	return ap.refreshChannelsInternal(ctx, false)
+}
+
+// ForceRefreshChannels bypasses the cache and fetches fresh channel data from Slack API.
+// Use this when a channel lookup fails to attempt recovery with fresh data.
+// Rate limited by SLACK_MCP_MIN_REFRESH_INTERVAL (default 30s) to prevent API abuse.
+// Returns ErrRefreshRateLimited if refresh is skipped due to rate limiting.
+func (ap *ApiProvider) ForceRefreshChannels(ctx context.Context) error {
+	if ap.minRefreshInterval > 0 {
+		// Use single lock scope for check-and-update to prevent TOCTOU race
+		ap.channelsMu.Lock()
+		sinceLast := time.Since(ap.lastForcedChannelsRefresh)
+		if sinceLast < ap.minRefreshInterval {
+			ap.channelsMu.Unlock()
+			ap.logger.Debug("Skipping forced channels refresh, within rate limit",
+				zap.Duration("since_last", sinceLast),
+				zap.Duration("min_interval", ap.minRefreshInterval))
+			return ErrRefreshRateLimited
+		}
+		// Update timestamp before refresh to prevent concurrent forced refreshes
+		ap.lastForcedChannelsRefresh = time.Now()
+		ap.channelsMu.Unlock()
+	}
+
+	ap.logger.Info("Force refreshing channels cache")
+	return ap.refreshChannelsInternal(ctx, true)
+}
+
+func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) error {
+	ap.channelsMu.Lock()
+	defer ap.channelsMu.Unlock()
+
+	// Check if we should use cache (not forced, cache exists, and within TTL)
+	if !force {
+		if data, err := os.ReadFile(ap.channelsCachePath); err == nil {
+			var cachedChannels []Channel
+			if err := json.Unmarshal(data, &cachedChannels); err != nil {
+				ap.logger.Warn("Failed to unmarshal channels cache, will refetch",
+					zap.String("cache_file", ap.channelsCachePath),
+					zap.Error(err))
+			} else {
+				// Check cache TTL using file modification time
+				cacheValid := true
+				if ap.cacheTTL > 0 {
+					if fileInfo, err := os.Stat(ap.channelsCachePath); err == nil {
+						cacheAge := time.Since(fileInfo.ModTime())
+						if cacheAge > ap.cacheTTL {
+							ap.logger.Info("Channels cache expired, will refetch",
+								zap.Duration("cache_age", cacheAge),
+								zap.Duration("ttl", ap.cacheTTL),
+								zap.String("cache_file", ap.channelsCachePath))
+							cacheValid = false
+						}
+					}
+				}
+
+				if cacheValid {
+					// Re-map channels with current users cache to ensure DM names are populated
+					usersMap := ap.ProvideUsersMap().Users
+					newSnapshot := &ChannelsCache{
+						Channels:    make(map[string]Channel, len(cachedChannels)),
+						ChannelsInv: make(map[string]string, len(cachedChannels)),
+					}
+					for _, c := range cachedChannels {
+						// For IM channels, re-generate the name and purpose using current users cache
+						if c.IsIM {
+							// Re-map the channel to get updated user name if available
+							remappedChannel := mapChannel(
+								c.ID, "", "", c.Topic, c.Purpose,
+								c.User, c.Members, c.MemberCount,
+								c.IsIM, c.IsMpIM, c.IsPrivate,
+								usersMap,
+							)
+							newSnapshot.Channels[c.ID] = remappedChannel
+							newSnapshot.ChannelsInv[remappedChannel.Name] = c.ID
+						} else {
+							newSnapshot.Channels[c.ID] = c
+							newSnapshot.ChannelsInv[c.Name] = c.ID
+						}
+					}
+					ap.channelsSnapshot.Store(newSnapshot)
+					ap.logger.Info("Loaded channels from cache and re-mapped DM names",
+						zap.Int("count", len(cachedChannels)),
+						zap.String("cache_file", ap.channelsCachePath))
+					ap.channelsReady = true
+					return nil
 				}
 			}
-			ap.logger.Info("Loaded channels from cache and re-mapped DM names",
-				zap.Int("count", len(cachedChannels)),
-				zap.String("cache_file", ap.channelsCache))
-			ap.channelsReady = true
-			return nil
 		}
 	}
 
+	// Fetch fresh data from Slack API
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
-		if err := ioutil.WriteFile(ap.channelsCache, data, 0644); err != nil {
+		if err := os.WriteFile(ap.channelsCachePath, data, 0644); err != nil {
 			ap.logger.Error("Failed to write cache file",
-				zap.String("cache_file", ap.channelsCache),
+				zap.String("cache_file", ap.channelsCachePath),
 				zap.Error(err))
 		} else {
 			ap.logger.Info("Wrote channels to cache",
 				zap.Int("count", len(channels)),
-				zap.String("cache_file", ap.channelsCache))
+				zap.String("cache_file", ap.channelsCachePath))
 		}
 	}
 
@@ -630,13 +845,14 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 		return nil, err
 	}
 
+	usersSnapshot := ap.usersSnapshot.Load()
 	var collectedIDs []string
 	for _, im := range boot.IMs {
 		if !im.IsShared && !im.IsExtShared {
 			continue
 		}
 
-		_, ok := ap.users[im.User]
+		_, ok := usersSnapshot.Users[im.User]
 		if !ok {
 			collectedIDs = append(collectedIDs, im.User)
 		}
@@ -727,18 +943,25 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		chans = append(chans, typeChannels...)
 	}
 
-	for _, ch := range chans {
-		ap.channels[ch.ID] = ch
-		ap.channelsInv[ch.Name] = ch.ID
+	// Build new snapshot with all fetched channels
+	newSnapshot := &ChannelsCache{
+		Channels:    make(map[string]Channel, len(chans)),
+		ChannelsInv: make(map[string]string, len(chans)),
 	}
+	for _, ch := range chans {
+		newSnapshot.Channels[ch.ID] = ch
+		newSnapshot.ChannelsInv[ch.Name] = ch.ID
+	}
+	ap.channelsSnapshot.Store(newSnapshot)
 
+	// Filter by requested channel types
 	var res []Channel
 	for _, t := range channelTypes {
-		for _, channel := range ap.channels {
-			if t == "public_channel" && !channel.IsPrivate {
+		for _, channel := range newSnapshot.Channels {
+			if t == "public_channel" && !channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
 				res = append(res, channel)
 			}
-			if t == "private_channel" && channel.IsPrivate {
+			if t == "private_channel" && channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
 				res = append(res, channel)
 			}
 			if t == "im" && channel.IsIM {
@@ -754,17 +977,13 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 }
 
 func (ap *ApiProvider) ProvideUsersMap() *UsersCache {
-	return &UsersCache{
-		Users:    ap.users,
-		UsersInv: ap.usersInv,
-	}
+	// Atomic load - no lock needed, snapshot is immutable
+	return ap.usersSnapshot.Load()
 }
 
 func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
-	return &ChannelsCache{
-		Channels:    ap.channels,
-		ChannelsInv: ap.channelsInv,
-	}
+	// Atomic load - no lock needed, snapshot is immutable
+	return ap.channelsSnapshot.Load()
 }
 
 func (ap *ApiProvider) IsReady() (bool, error) {
