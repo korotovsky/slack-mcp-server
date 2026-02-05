@@ -192,7 +192,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger) *MCPServer
 	}
 
 	s.AddTool(mcp.NewTool("users_search",
-		mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available. Note: This feature requires browser session tokens (xoxc/xoxd), not OAuth tokens (xoxp/xoxb)."),
+		mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available."),
 		mcp.WithTitleAnnotation("Search Users"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
