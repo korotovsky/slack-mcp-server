@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,6 +158,7 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
 }
 
 type MCPSlackClient struct {
@@ -382,6 +384,10 @@ func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBo
 	return c.edgeClient.ClientUserBoot(ctx)
 }
 
+func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error) {
+	return c.edgeClient.UsersSearch(ctx, query, count)
+}
+
 func (c *MCPSlackClient) IsEnterprise() bool {
 	return c.isEnterprise
 }
@@ -392,6 +398,10 @@ func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
 
 func (c *MCPSlackClient) IsBotToken() bool {
 	return c.isBotToken
+}
+
+func (c *MCPSlackClient) IsOAuth() bool {
+	return c.isOAuth
 }
 
 func (c *MCPSlackClient) Raw() struct {
@@ -1007,6 +1017,56 @@ func (ap *ApiProvider) Slack() SlackAPI {
 func (ap *ApiProvider) IsBotToken() bool {
 	client, ok := ap.client.(*MCPSlackClient)
 	return ok && client != nil && client.IsBotToken()
+}
+
+func (ap *ApiProvider) IsOAuth() bool {
+	client, ok := ap.client.(*MCPSlackClient)
+	return ok && client != nil && client.IsOAuth()
+}
+
+// SearchUsers searches for users by name, email, or display name.
+// For OAuth tokens (xoxp/xoxb), it searches the local users cache using regex matching.
+// For browser tokens (xoxc/xoxd), it uses the edge API's UsersSearch method.
+func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int) ([]slack.User, error) {
+	if ap.IsOAuth() {
+		return ap.searchUsersInCache(query, limit)
+	}
+
+	return ap.client.UsersSearch(ctx, query, limit)
+}
+
+// searchUsersInCache performs a case-insensitive regex search on cached users.
+// Matches against username, real name, display name, and email.
+func (ap *ApiProvider) searchUsersInCache(query string, limit int) ([]slack.User, error) {
+	if !ap.usersReady {
+		return nil, ErrUsersNotReady
+	}
+
+	pattern, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
+	if err != nil {
+		return nil, err
+	}
+
+	usersCache := ap.usersSnapshot.Load()
+	var results []slack.User
+	for _, user := range usersCache.Users {
+		if user.Deleted {
+			continue
+		}
+
+		if pattern.MatchString(user.Name) ||
+			pattern.MatchString(user.RealName) ||
+			pattern.MatchString(user.Profile.DisplayName) ||
+			pattern.MatchString(user.Profile.Email) {
+			results = append(results, user)
+
+			if len(results) >= limit {
+				break
+			}
+		}
+	}
+
+	return results, nil
 }
 
 func mapChannel(
