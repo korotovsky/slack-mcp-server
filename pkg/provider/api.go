@@ -157,6 +157,13 @@ type SlackAPI interface {
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
+
+	// Lists API methods
+	ListsItemsList(ctx context.Context, listID string, limit int, cursor string, archived bool) (*edge.ListsItemsListResponse, error)
+	ListsItemsInfo(ctx context.Context, listID, itemID string) (*edge.ListsItemsInfoResponse, error)
+	ListsItemsCreate(ctx context.Context, listID string, fields []edge.ListItemField, parentItemID string) (*edge.ListsItemsCreateResponse, error)
+	ListsItemsUpdate(ctx context.Context, listID, itemID string, fields []edge.ListItemField) (*edge.ListsItemsUpdateResponse, error)
+	ListsItemsDelete(ctx context.Context, listID, itemID string) (*edge.ListsItemsDeleteResponse, error)
 }
 
 type MCPSlackClient struct {
@@ -380,6 +387,26 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
+}
+
+func (c *MCPSlackClient) ListsItemsList(ctx context.Context, listID string, limit int, cursor string, archived bool) (*edge.ListsItemsListResponse, error) {
+	return c.edgeClient.ListsItemsList(ctx, listID, limit, cursor, archived)
+}
+
+func (c *MCPSlackClient) ListsItemsInfo(ctx context.Context, listID, itemID string) (*edge.ListsItemsInfoResponse, error) {
+	return c.edgeClient.ListsItemsInfo(ctx, listID, itemID)
+}
+
+func (c *MCPSlackClient) ListsItemsCreate(ctx context.Context, listID string, fields []edge.ListItemField, parentItemID string) (*edge.ListsItemsCreateResponse, error) {
+	return c.edgeClient.ListsItemsCreate(ctx, listID, fields, parentItemID)
+}
+
+func (c *MCPSlackClient) ListsItemsUpdate(ctx context.Context, listID, itemID string, fields []edge.ListItemField) (*edge.ListsItemsUpdateResponse, error) {
+	return c.edgeClient.ListsItemsUpdate(ctx, listID, itemID, fields)
+}
+
+func (c *MCPSlackClient) ListsItemsDelete(ctx context.Context, listID, itemID string) (*edge.ListsItemsDeleteResponse, error) {
+	return c.edgeClient.ListsItemsDelete(ctx, listID, itemID)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {
