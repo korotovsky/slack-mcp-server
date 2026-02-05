@@ -617,7 +617,7 @@ func isChannelAllowedForConfig(channel, config string) bool {
 			}
 		}
 	}
-	return !isNegated
+	return isNegated
 }
 
 func isChannelAllowed(channel string) bool {
