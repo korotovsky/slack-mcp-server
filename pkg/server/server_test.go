@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -171,4 +172,177 @@ func TestValidateEnabledTools(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "channel_list")
 	})
+}
+
+func TestShouldAddWriteTool(t *testing.T) {
+	// Helper to set/unset env vars for tests
+	setEnv := func(key, value string) func() {
+		old := os.Getenv(key)
+		os.Setenv(key, value)
+		return func() {
+			if old == "" {
+				os.Unsetenv(key)
+			} else {
+				os.Setenv(key, old)
+			}
+		}
+	}
+
+	t.Run("empty enabledTools and empty env var - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.False(t, result, "write tool should NOT be registered when both enabledTools is empty and env var is not set")
+	})
+
+	t.Run("empty enabledTools and env var set to true - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "true")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.True(t, result, "write tool should be registered when enabledTools is empty but env var is set")
+	})
+
+	t.Run("empty enabledTools and env var set to channel list - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "C123,C456")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.True(t, result, "write tool should be registered when enabledTools is empty but env var has channel list")
+	})
+
+	t.Run("explicit enabledTools includes tool and empty env var - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{ToolConversationsAddMessage}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.True(t, result, "write tool should be registered when explicitly in enabledTools even without env var")
+	})
+
+	t.Run("explicit enabledTools includes tool and env var set - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "C123")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{ToolConversationsAddMessage}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.True(t, result, "write tool should be registered when explicitly in enabledTools with env var")
+	})
+
+	t.Run("explicit enabledTools excludes tool - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "true")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolConversationsAddMessage, []string{ToolConversationsHistory}, "SLACK_MCP_ADD_MESSAGE_TOOL")
+		assert.False(t, result, "write tool should NOT be registered when not in explicit enabledTools list")
+	})
+
+	t.Run("reactions tools with empty enabledTools and no env var - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_REACTION_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolReactionsAdd, []string{}, "SLACK_MCP_REACTION_TOOL")
+		assert.False(t, result, "reactions_add should NOT be registered when env var is not set")
+
+		result = shouldAddWriteTool(ToolReactionsRemove, []string{}, "SLACK_MCP_REACTION_TOOL")
+		assert.False(t, result, "reactions_remove should NOT be registered when env var is not set")
+	})
+
+	t.Run("attachment tool with empty enabledTools and no env var - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ATTACHMENT_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolAttachmentGetData, []string{}, "SLACK_MCP_ATTACHMENT_TOOL")
+		assert.False(t, result, "attachment_get_data should NOT be registered when env var is not set")
+	})
+
+	t.Run("attachment tool explicitly enabled via enabledTools - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_ATTACHMENT_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddWriteTool(ToolAttachmentGetData, []string{ToolAttachmentGetData}, "SLACK_MCP_ATTACHMENT_TOOL")
+		assert.True(t, result, "attachment_get_data should be registered when explicitly in enabledTools")
+	})
+}
+
+func TestShouldAddWriteTool_Matrix(t *testing.T) {
+	// Test the complete matrix from the plan:
+	// | ENABLED_TOOLS | ADD_MESSAGE_TOOL | Result |
+	// |---------------|------------------|--------|
+	// | empty         | empty            | NOT registered |
+	// | empty         | true/list        | Registered |
+	// | includes tool | empty            | Registered |
+	// | includes tool | list             | Registered |
+	// | excludes tool | any              | NOT registered |
+
+	setEnv := func(key, value string) func() {
+		old := os.Getenv(key)
+		os.Setenv(key, value)
+		return func() {
+			if old == "" {
+				os.Unsetenv(key)
+			} else {
+				os.Setenv(key, old)
+			}
+		}
+	}
+
+	tests := []struct {
+		name         string
+		enabledTools []string
+		envVarValue  string
+		expected     bool
+	}{
+		{
+			name:         "empty ENABLED_TOOLS + empty env var = NOT registered",
+			enabledTools: []string{},
+			envVarValue:  "",
+			expected:     false,
+		},
+		{
+			name:         "empty ENABLED_TOOLS + env var=true = registered",
+			enabledTools: []string{},
+			envVarValue:  "true",
+			expected:     true,
+		},
+		{
+			name:         "empty ENABLED_TOOLS + env var=channel list = registered",
+			enabledTools: []string{},
+			envVarValue:  "C123,C456",
+			expected:     true,
+		},
+		{
+			name:         "includes tool + empty env var = registered",
+			enabledTools: []string{ToolConversationsAddMessage},
+			envVarValue:  "",
+			expected:     true,
+		},
+		{
+			name:         "includes tool + env var=list = registered",
+			enabledTools: []string{ToolConversationsAddMessage},
+			envVarValue:  "C123",
+			expected:     true,
+		},
+		{
+			name:         "excludes tool + empty env var = NOT registered",
+			enabledTools: []string{ToolConversationsHistory},
+			envVarValue:  "",
+			expected:     false,
+		},
+		{
+			name:         "excludes tool + env var=true = NOT registered",
+			enabledTools: []string{ToolConversationsHistory},
+			envVarValue:  "true",
+			expected:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", tt.envVarValue)
+			defer cleanup()
+
+			result := shouldAddWriteTool(ToolConversationsAddMessage, tt.enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL")
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

@@ -748,14 +748,23 @@ func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToo
 
 func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRequest) (*addMessageParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	// If tool is explicitly enabled via ENABLED_TOOLS and no ADD_MESSAGE_TOOL config,
+	// allow all channels (no restrictions)
 	if toolConfig == "" {
-		ch.logger.Error("Add-message tool disabled by default")
-		return nil, errors.New(
-			"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming." +
-				"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels" +
-				"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890'" +
-				"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
-		)
+		if !strings.Contains(enabledTools, "conversations_add_message") {
+			// This shouldn't happen if registration is correct, but safety check
+			ch.logger.Error("Add-message tool disabled by default")
+			return nil, errors.New(
+				"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming. " +
+					"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+					"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
+					"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
+			)
+		}
+		// Explicitly enabled via ENABLED_TOOLS - allow unrestricted
+		toolConfig = "true"
 	}
 
 	channel := request.GetString("channel_id", "")
@@ -801,14 +810,24 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 
 func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequest) (*addReactionParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	// If tool is explicitly enabled via ENABLED_TOOLS and no REACTION_TOOL config,
+	// allow all channels (no restrictions)
 	if toolConfig == "" {
-		ch.logger.Error("Reactions tool disabled by default")
-		return nil, errors.New(
-			"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
-				"To enable them, set the SLACK_MCP_REACTION_TOOL environment variable to true, 1, or comma separated list of channels " +
-				"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_REACTION_TOOL=C1234567890,D0987654321', 'SLACK_MCP_REACTION_TOOL=!C1234567890' " +
-				"to enable all except one or 'SLACK_MCP_REACTION_TOOL=true' for all channels and DMs",
-		)
+		// Check if reactions_add or reactions_remove is in enabled tools
+		if !strings.Contains(enabledTools, "reactions_add") && !strings.Contains(enabledTools, "reactions_remove") {
+			// This shouldn't happen if registration is correct, but safety check
+			ch.logger.Error("Reactions tool disabled by default")
+			return nil, errors.New(
+				"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
+					"To enable them, set the SLACK_MCP_REACTION_TOOL environment variable to true, 1, or comma separated list of channels " +
+					"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_REACTION_TOOL=C1234567890,D0987654321', 'SLACK_MCP_REACTION_TOOL=!C1234567890' " +
+					"to enable all except one or 'SLACK_MCP_REACTION_TOOL=true' for all channels and DMs",
+			)
+		}
+		// Explicitly enabled via ENABLED_TOOLS - allow unrestricted
+		toolConfig = "true"
 	}
 
 	channel := request.GetString("channel_id", "")
@@ -844,12 +863,21 @@ func (ch *ConversationsHandler) parseParamsToolReaction(request mcp.CallToolRequ
 
 func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ATTACHMENT_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	// If tool is explicitly enabled via ENABLED_TOOLS and no ATTACHMENT_TOOL config,
+	// allow access (no restrictions)
 	if toolConfig == "" {
-		ch.logger.Error("Attachment tool disabled by default")
-		return nil, errors.New(
-			"by default, the attachment_get_data tool is disabled. " +
-				"To enable it, set the SLACK_MCP_ATTACHMENT_TOOL environment variable to true or 1",
-		)
+		if !strings.Contains(enabledTools, "attachment_get_data") {
+			// This shouldn't happen if registration is correct, but safety check
+			ch.logger.Error("Attachment tool disabled by default")
+			return nil, errors.New(
+				"by default, the attachment_get_data tool is disabled. " +
+					"To enable it, set the SLACK_MCP_ATTACHMENT_TOOL environment variable to true or 1",
+			)
+		}
+		// Explicitly enabled via ENABLED_TOOLS - allow access
+		toolConfig = "true"
 	}
 	if toolConfig != "true" && toolConfig != "1" && toolConfig != "yes" {
 		ch.logger.Error("Attachment tool disabled", zap.String("config", toolConfig))

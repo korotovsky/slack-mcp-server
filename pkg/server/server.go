@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -72,6 +73,27 @@ func shouldAddTool(name string, enabledTools []string) bool {
 	return slices.Contains(enabledTools, name)
 }
 
+// shouldAddWriteTool checks both ENABLED_TOOLS and tool-specific env var to determine
+// if a write tool should be registered. Write tools require explicit enablement:
+// - If ENABLED_TOOLS explicitly includes this tool, register it
+// - If ENABLED_TOOLS is empty (all-tools mode), only register if tool-specific env var is set
+// - If ENABLED_TOOLS excludes this tool, don't register
+func shouldAddWriteTool(name string, enabledTools []string, envVarName string) bool {
+	envValue := os.Getenv(envVarName)
+
+	// If ENABLED_TOOLS explicitly includes this tool, register it
+	if len(enabledTools) > 0 && slices.Contains(enabledTools, name) {
+		return true
+	}
+
+	// If ENABLED_TOOLS is empty (all-tools mode), only register if env var is set
+	if len(enabledTools) == 0 {
+		return envValue != ""
+	}
+
+	return false
+}
+
 func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *MCPServer {
 	s := server.NewMCPServer(
 		"Slack MCP Server",
@@ -134,7 +156,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ConversationsRepliesHandler)
 	}
 
-	if shouldAddTool(ToolConversationsAddMessage, enabledTools) {
+	if shouldAddWriteTool(ToolConversationsAddMessage, enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL") {
 		s.AddTool(mcp.NewTool(ToolConversationsAddMessage,
 		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
 		mcp.WithTitleAnnotation("Send Message"),
@@ -156,7 +178,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ConversationsAddMessageHandler)
 	}
 
-	if shouldAddTool(ToolReactionsAdd, enabledTools) {
+	if shouldAddWriteTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
 		s.AddTool(mcp.NewTool(ToolReactionsAdd,
 		mcp.WithDescription("Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -175,7 +197,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ReactionsAddHandler)
 	}
 
-	if shouldAddTool(ToolReactionsRemove, enabledTools) {
+	if shouldAddWriteTool(ToolReactionsRemove, enabledTools, "SLACK_MCP_REACTION_TOOL") {
 		s.AddTool(mcp.NewTool(ToolReactionsRemove,
 		mcp.WithDescription("Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -194,7 +216,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.ReactionsRemoveHandler)
 	}
 
-	if shouldAddTool(ToolAttachmentGetData, enabledTools) {
+	if shouldAddWriteTool(ToolAttachmentGetData, enabledTools, "SLACK_MCP_ATTACHMENT_TOOL") {
 		s.AddTool(mcp.NewTool(ToolAttachmentGetData,
 		mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
 		mcp.WithTitleAnnotation("Get Attachment Data"),
