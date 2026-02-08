@@ -898,7 +898,11 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
-	msgText := request.GetString("payload", "")
+	msgText := request.GetString("text", "")
+	if msgText == "" {
+		// Backward compatibility with "payload" parameter
+		msgText = request.GetString("payload", "")
+	}
 	if msgText == "" {
 		ch.logger.Error("Message text missing")
 		return nil, errors.New("text must be a string")
