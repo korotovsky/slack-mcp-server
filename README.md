@@ -94,6 +94,34 @@ Add an emoji reaction to a message in a public channel, private channel, or dire
   - `timestamp` (string, required): Timestamp of the message to add reaction to, in format `1234567890.123456`.
   - `emoji` (string, required): The name of the emoji to add as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
 
+### 7. reactions_remove:
+Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation.
+
+> **Note:** Removing reactions follows the same permission model as `reactions_add`. To enable, set the `SLACK_MCP_ADD_MESSAGE_TOOL` environment variable.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `timestamp` (string, required): Timestamp of the message to remove reaction from, in format `1234567890.123456`.
+  - `emoji` (string, required): The name of the emoji to remove as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
+
+### 8. users_search:
+Search for users by name, email, or display name. Returns user details and DM channel ID if available.
+
+> **Note:** For OAuth tokens (`xoxp`/`xoxb`), this tool searches the local users cache using pattern matching. For browser session tokens (`xoxc`/`xoxd`), it uses the Slack edge API for real-time search.
+
+- **Parameters:**
+  - `query` (string, required): Search query - matches against real name, display name, username, or email.
+  - `limit` (number, default: 10): Maximum number of results to return (1-100).
+
+- **Returns:** CSV with fields:
+  - `UserID`: User ID (e.g., `U1234567890`)
+  - `UserName`: Slack username
+  - `RealName`: User's real name
+  - `DisplayName`: User's display name
+  - `Email`: User's email address
+  - `Title`: User's job title
+  - `DMChannelID`: DM channel ID if available in cache (for quick messaging)
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:

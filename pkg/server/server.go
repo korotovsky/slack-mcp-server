@@ -159,8 +159,8 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		mcp.WithString("thread_ts",
 			mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread."),
 		),
-		mcp.WithString("payload",
-			mcp.Description("Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+		mcp.WithString("text",
+			mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
 		),
 		mcp.WithString("content_type",
 			mcp.DefaultString("text/markdown"),
@@ -266,6 +266,20 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	if !provider.IsBotToken() && shouldAddTool(ToolConversationsSearchMessages, enabledTools, "") {
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
+
+	s.AddTool(mcp.NewTool("users_search",
+		mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available."),
+		mcp.WithTitleAnnotation("Search Users"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("Search query - matches against real name, display name, username, or email."),
+		),
+		mcp.WithNumber("limit",
+			mcp.DefaultNumber(10),
+			mcp.Description("Maximum number of results to return (1-100). Default is 10."),
+		),
+	), conversationsHandler.UsersSearchHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 
