@@ -91,6 +91,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		version.Version,
 		server.WithLogging(),
 		server.WithRecovery(),
+		server.WithToolHandlerMiddleware(buildErrorRecoveryMiddleware(logger)),
 		server.WithToolHandlerMiddleware(buildLoggerMiddleware(logger)),
 		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
@@ -400,6 +401,25 @@ func (s *MCPServer) ServeStdio() error {
 		s.logger.Error("STDIO server error", zap.Error(err))
 	}
 	return err
+}
+
+// buildErrorRecoveryMiddleware converts tool handler errors into MCP tool results
+// with isError=true, allowing LLMs to see the error and retry with different parameters.
+// Without this, errors become JSON-RPC -32603 protocol errors that crash MCP clients.
+func buildErrorRecoveryMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			res, err := next(ctx, req)
+			if err != nil {
+				logger.Warn("Tool call returned error, converting to isError tool result",
+					zap.String("tool", req.Params.Name),
+					zap.Error(err),
+				)
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return res, nil
+		}
+	}
 }
 
 func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
