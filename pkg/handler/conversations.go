@@ -488,7 +488,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolReaction(request)
+	params, err := ch.parseParamsToolReaction(ctx, nil, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
 		return nil, err
@@ -989,8 +989,6 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, s
 				channelDisplay = "@" + msg.Channel.Name
 			}
 		}
-
-		hasMedia := hasImageBlocks(msg.Blocks)
 
 		hasMedia := hasImageBlocks(msg.Blocks)
 

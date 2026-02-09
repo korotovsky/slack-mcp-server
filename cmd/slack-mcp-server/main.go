@@ -91,7 +91,15 @@ func main() {
 		// Legacy Mode (existing code)
 		logger.Info("Legacy mode enabled", zap.String("context", "console"))
 
-		p := provider.New(transport, logger)
+		// Token resolution: env var → file store → local OAuth flow
+		if err := resolveToken(transport, logger); err != nil {
+			logger.Fatal("failed to resolve Slack token",
+				zap.String("context", "console"),
+				zap.Error(err),
+			)
+		}
+
+		p = provider.New(transport, logger)
 		s = server.NewMCPServer(p, logger)
 
 		go func() {
@@ -455,4 +463,76 @@ func getConsoleLevelEncoder(useColors bool) zapcore.LevelEncoder {
 		return zapcore.CapitalColorLevelEncoder
 	}
 	return zapcore.CapitalLevelEncoder
+}
+
+// resolveToken checks for a Slack token in order: env vars → file store → local OAuth flow.
+// If a token is found or obtained, it sets SLACK_MCP_XOXP_TOKEN so provider.New() picks it up.
+func resolveToken(transport string, logger *zap.Logger) error {
+	// 1. Check env vars first (backward compatible)
+	if os.Getenv("SLACK_MCP_XOXP_TOKEN") != "" ||
+		os.Getenv("SLACK_MCP_XOXB_TOKEN") != "" ||
+		os.Getenv("SLACK_MCP_XOXC_TOKEN") != "" {
+		logger.Info("using token from environment variable",
+			zap.String("context", "console"),
+		)
+		return nil
+	}
+
+	// 2. Check file store (~/.slack-mcp/token.json)
+	fileStore := oauth.NewFileStorage("")
+	token, err := fileStore.GetAnyToken()
+	if err == nil && token.AccessToken != "" {
+		logger.Info("using stored token from file",
+			zap.String("context", "console"),
+			zap.String("user_id", token.UserID),
+			zap.String("team_id", token.TeamID),
+		)
+		os.Setenv("SLACK_MCP_XOXP_TOKEN", token.AccessToken)
+		return nil
+	}
+
+	// 3. No stored token — trigger local OAuth flow
+	// Only supported for stdio transport (interactive CLI use)
+	if transport != "stdio" {
+		return fmt.Errorf(
+			"no Slack token found. Set SLACK_MCP_XOXP_TOKEN env var, " +
+				"or run with stdio transport to use the local OAuth flow",
+		)
+	}
+
+	clientID := os.Getenv("SLACK_MCP_OAUTH_CLIENT_ID")
+	clientSecret := os.Getenv("SLACK_MCP_OAUTH_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		return fmt.Errorf(
+			"no Slack token found and SLACK_MCP_OAUTH_CLIENT_ID / SLACK_MCP_OAUTH_CLIENT_SECRET not set. " +
+				"Either set SLACK_MCP_XOXP_TOKEN or provide OAuth client credentials for the local login flow",
+		)
+	}
+
+	logger.Info("no stored token found, starting local OAuth flow",
+		zap.String("context", "console"),
+	)
+
+	token, err = oauth.LocalOAuthFlow(clientID, clientSecret, logger)
+	if err != nil {
+		return fmt.Errorf("local OAuth flow failed: %w", err)
+	}
+
+	// 4. Store the token for next time
+	if err := fileStore.Store(token.UserID, token); err != nil {
+		logger.Warn("failed to persist token to file (will need to re-auth next time)",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	} else {
+		logger.Info("token stored for future use",
+			zap.String("context", "console"),
+			zap.String("path", "~/.slack-mcp/token.json"),
+		)
+	}
+
+	// 5. Set the token so provider.New() picks it up
+	os.Setenv("SLACK_MCP_XOXP_TOKEN", token.AccessToken)
+
+	return nil
 }
