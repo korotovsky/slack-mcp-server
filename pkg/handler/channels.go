@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -116,6 +117,18 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
+	}
+
+	if request.GetBool("refresh_cache", false) {
+		ch.logger.Info("Forced channels cache refresh requested")
+		if err := ch.apiProvider.ForceRefreshChannels(ctx); err != nil {
+			if errors.Is(err, provider.ErrRefreshRateLimited) {
+				ch.logger.Warn("Channels cache refresh was rate-limited, returning cached data")
+			} else {
+				ch.logger.Error("Failed to refresh channels cache", zap.Error(err))
+				return nil, fmt.Errorf("failed to refresh channels cache: %w", err)
+			}
+		}
 	}
 
 	sortType := request.GetString("sort", "popularity")
