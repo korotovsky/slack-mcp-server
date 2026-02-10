@@ -16,12 +16,16 @@ import (
 )
 
 type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Topic       string `json:"topic"`
-	Purpose     string `json:"purpose"`
-	MemberCount int    `json:"memberCount"`
-	Cursor      string `json:"cursor"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Topic        string `json:"topic"`
+	Purpose      string `json:"purpose"`
+	MemberCount  int    `json:"memberCount"`
+	IsMember     bool   `json:"isMember"`
+	HasUnreads   bool   `json:"hasUnreads"`
+	LastRead     string `json:"lastRead"`
+	MentionCount int    `json:"mentionCount"`
+	Cursor       string `json:"cursor"`
 }
 
 type ChannelsHandler struct {
@@ -79,11 +83,15 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 
 	for _, channel := range channels {
 		channelList = append(channelList, Channel{
-			ID:          channel.ID,
-			Name:        channel.Name,
-			Topic:       channel.Topic,
-			Purpose:     channel.Purpose,
-			MemberCount: channel.MemberCount,
+			ID:           channel.ID,
+			Name:         channel.Name,
+			Topic:        channel.Topic,
+			Purpose:      channel.Purpose,
+			MemberCount:  channel.MemberCount,
+			IsMember:     channel.IsMember,
+			HasUnreads:   channel.HasUnreads,
+			LastRead:     channel.LastRead,
+			MentionCount: channel.MentionCount,
 		})
 	}
 
@@ -177,11 +185,15 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 
 	for _, channel := range chans {
 		channelList = append(channelList, Channel{
-			ID:          channel.ID,
-			Name:        channel.Name,
-			Topic:       channel.Topic,
-			Purpose:     channel.Purpose,
-			MemberCount: channel.MemberCount,
+			ID:           channel.ID,
+			Name:         channel.Name,
+			Topic:        channel.Topic,
+			Purpose:      channel.Purpose,
+			MemberCount:  channel.MemberCount,
+			IsMember:     channel.IsMember,
+			HasUnreads:   channel.HasUnreads,
+			LastRead:     channel.LastRead,
+			MentionCount: channel.MentionCount,
 		})
 	}
 

@@ -121,16 +121,20 @@ type ChannelsCache struct {
 }
 
 type Channel struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Topic       string   `json:"topic"`
-	Purpose     string   `json:"purpose"`
-	MemberCount int      `json:"memberCount"`
-	IsMpIM      bool     `json:"mpim"`
-	IsIM        bool     `json:"im"`
-	IsPrivate   bool     `json:"private"`
-	User        string   `json:"user,omitempty"`    // User ID for IM channels
-	Members     []string `json:"members,omitempty"` // Member IDs for the channel
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Topic        string   `json:"topic"`
+	Purpose      string   `json:"purpose"`
+	MemberCount  int      `json:"memberCount"`
+	IsMpIM       bool     `json:"mpim"`
+	IsIM         bool     `json:"im"`
+	IsPrivate    bool     `json:"private"`
+	IsMember     bool     `json:"is_member"`
+	User         string   `json:"user,omitempty"`    // User ID for IM channels
+	Members      []string `json:"members,omitempty"` // Member IDs for the channel
+	HasUnreads   bool     `json:"has_unreads"`
+	LastRead     string   `json:"last_read,omitempty"`
+	MentionCount int      `json:"mention_count"`
 }
 
 type SlackAPI interface {
@@ -184,16 +188,16 @@ type ApiProvider struct {
 	minRefreshInterval time.Duration
 
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
-	usersSnapshot atomic.Pointer[UsersCache]
-	usersCachePath string
-	usersReady     bool
+	usersSnapshot          atomic.Pointer[UsersCache]
+	usersCachePath         string
+	usersReady             bool
 	lastForcedUsersRefresh time.Time
 	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
-	channelsSnapshot atomic.Pointer[ChannelsCache]
-	channelsCachePath string
-	channelsReady     bool
+	channelsSnapshot          atomic.Pointer[ChannelsCache]
+	channelsCachePath         string
+	channelsReady             bool
 	lastForcedChannelsRefresh time.Time
 	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
 }
@@ -313,6 +317,7 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 
 				channels = append(channels, slack.Channel{
 					IsGeneral: ec.IsGeneral,
+					IsMember:  ec.IsMember,
 					GroupConversation: slack.GroupConversation{
 						Conversation: slack.Conversation{
 							ID:                 ec.ID,
@@ -805,7 +810,7 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 							remappedChannel := mapChannel(
 								c.ID, "", "", c.Topic, c.Purpose,
 								c.User, c.Members, c.MemberCount,
-								c.IsIM, c.IsMpIM, c.IsPrivate,
+								c.IsIM, c.IsMpIM, c.IsPrivate, c.IsMember,
 								usersMap,
 							)
 							newSnapshot.Channels[c.ID] = remappedChannel
@@ -928,6 +933,7 @@ func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) 
 				channel.IsIM,
 				channel.IsMpIM,
 				channel.IsPrivate,
+				channel.IsMember,
 				ap.ProvideUsersMap().Users,
 			)
 			chans = append(chans, ch)
@@ -951,6 +957,17 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	for _, t := range AllChanTypes {
 		var typeChannels = ap.GetChannelsType(ctx, t)
 		chans = append(chans, typeChannels...)
+	}
+
+	// Merge unread info from ClientCounts if edge client is available
+	if counts := ap.fetchChannelCounts(ctx); counts != nil {
+		for i, ch := range chans {
+			if snap, ok := counts[ch.ID]; ok {
+				chans[i].HasUnreads = snap.HasUnreads
+				chans[i].LastRead = snap.LastRead.SlackString()
+				chans[i].MentionCount = snap.MentionCount
+			}
+		}
 	}
 
 	// Build new snapshot with all fetched channels
@@ -1069,11 +1086,40 @@ func (ap *ApiProvider) searchUsersInCache(query string, limit int) ([]slack.User
 	return results, nil
 }
 
+// fetchChannelCounts returns unread counts per channel via the edge client.
+// Returns nil if edge client is not available (e.g. standard bot tokens).
+func (ap *ApiProvider) fetchChannelCounts(ctx context.Context) map[string]edge.ChannelSnapshot {
+	client, ok := ap.client.(*MCPSlackClient)
+	if !ok || client == nil {
+		return nil
+	}
+	raw := client.Raw()
+	if raw.Edge == nil {
+		return nil
+	}
+	cr, err := raw.Edge.ClientCounts(ctx)
+	if err != nil {
+		ap.logger.Warn("Failed to fetch client counts for unread info", zap.Error(err))
+		return nil
+	}
+	counts := make(map[string]edge.ChannelSnapshot)
+	for _, ch := range cr.Channels {
+		counts[ch.ID] = ch
+	}
+	for _, ch := range cr.MPIMs {
+		counts[ch.ID] = ch
+	}
+	for _, ch := range cr.IMs {
+		counts[ch.ID] = ch
+	}
+	return counts
+}
+
 func mapChannel(
 	id, name, nameNormalized, topic, purpose, user string,
 	members []string,
 	numMembers int,
-	isIM, isMpIM, isPrivate bool,
+	isIM, isMpIM, isPrivate, isMember bool,
 	usersMap map[string]slack.User,
 ) Channel {
 	channelName := name
@@ -1137,6 +1183,7 @@ func mapChannel(
 		IsIM:        isIM,
 		IsMpIM:      isMpIM,
 		IsPrivate:   isPrivate,
+		IsMember:    isMember,
 		User:        userID,
 		Members:     members,
 	}
