@@ -101,6 +101,11 @@ func TestValidToolNames(t *testing.T) {
 			ToolAttachmentGetData:           true,
 			ToolConversationsSearchMessages: true,
 			ToolChannelsList:                true,
+			ToolUsergroupsList:              true,
+			ToolUsergroupsMe:                true,
+			ToolUsergroupsCreate:            true,
+			ToolUsergroupsUpdate:            true,
+			ToolUsergroupsUsersUpdate:       true,
 		}
 
 		assert.Equal(t, len(expectedTools), len(ValidToolNames), "ValidToolNames should have %d tools", len(expectedTools))
@@ -119,6 +124,11 @@ func TestValidToolNames(t *testing.T) {
 		assert.Equal(t, "attachment_get_data", ToolAttachmentGetData)
 		assert.Equal(t, "conversations_search_messages", ToolConversationsSearchMessages)
 		assert.Equal(t, "channels_list", ToolChannelsList)
+		assert.Equal(t, "usergroups_list", ToolUsergroupsList)
+		assert.Equal(t, "usergroups_me", ToolUsergroupsMe)
+		assert.Equal(t, "usergroups_create", ToolUsergroupsCreate)
+		assert.Equal(t, "usergroups_update", ToolUsergroupsUpdate)
+		assert.Equal(t, "usergroups_users_update", ToolUsergroupsUsersUpdate)
 	})
 }
 

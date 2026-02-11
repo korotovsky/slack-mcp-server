@@ -122,6 +122,69 @@ Search for users by name, email, or display name. Returns user details and DM ch
   - `Title`: User's job title
   - `DMChannelID`: DM channel ID if available in cache (for quick messaging)
 
+### 9. usergroups_list:
+List all user groups (subteams) in the workspace.
+
+- **Parameters:**
+  - `include_users` (boolean, default: false): Include list of user IDs in each group.
+  - `include_count` (boolean, default: true): Include user count for each group.
+  - `include_disabled` (boolean, default: false): Include disabled/archived groups.
+
+- **Returns:** CSV with fields: id, name, handle, description, user_count, is_external
+
+> **Required OAuth scopes:** `usergroups:read`
+
+### 10. usergroups_create:
+Create a new user group in the workspace.
+
+- **Parameters:**
+  - `name` (string, required): Name of the user group (e.g., "Engineering Team").
+  - `handle` (string, optional): Mention handle without @ (e.g., "engineering"). If not provided, Slack will auto-generate one.
+  - `description` (string, optional): Purpose or description of the group.
+  - `channels` (string, optional): Comma-separated channel IDs for default channels where group mentions will be highlighted.
+
+- **Returns:** JSON with created group details (id, name, handle, description)
+
+> **Required OAuth scopes:** `usergroups:write`
+
+### 11. usergroups_update:
+Update an existing user group's metadata.
+
+- **Parameters:**
+  - `usergroup_id` (string, required): ID of the user group (e.g., "S1234567890").
+  - `name` (string, optional): New name for the group.
+  - `handle` (string, optional): New mention handle.
+  - `description` (string, optional): New description.
+  - `channels` (string, optional): New default channels (comma-separated IDs). This replaces existing default channels.
+
+- **Returns:** JSON with updated group details
+
+> **Required OAuth scopes:** `usergroups:write`
+
+### 12. usergroups_users_update:
+Update the members of a user group. This replaces all existing members.
+
+- **Parameters:**
+  - `usergroup_id` (string, required): ID of the user group (e.g., "S1234567890").
+  - `users` (string, required): Comma-separated user IDs to set as members (e.g., "U123,U456,U789").
+
+- **Returns:** JSON with updated group details including new user list
+
+> **Required OAuth scopes:** `usergroups:write`
+
+### 13. usergroups_me:
+Manage your user group membership: list groups you're in, join a group, or leave a group.
+
+- **Parameters:**
+  - `action` (string, required): Action to perform - `list` to see your groups, `join` to add yourself, `leave` to remove yourself.
+  - `usergroup_id` (string, optional): ID of the user group (e.g., "S1234567890"). Required for `join` and `leave` actions.
+
+- **Returns:**
+  - For `list`: CSV with groups you're a member of
+  - For `join`/`leave`: JSON with result message and updated group info
+
+> **Required OAuth scopes:** `usergroups:read` (for list), `usergroups:read` + `usergroups:write` (for join/leave)
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -180,7 +243,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 | `SLACK_MCP_GOVSLACK`              | No        | `nil`                     | Set to `true` to enable [GovSlack](https://slack.com/solutions/govslack) mode. Routes API calls to `slack-gov.com` endpoints instead of `slack.com` for FedRAMP-compliant government workspaces.                                                                                          |
-| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`. |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
 

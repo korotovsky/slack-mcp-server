@@ -25,14 +25,19 @@ type MCPServer struct {
 }
 
 const (
-	ToolConversationsHistory       = "conversations_history"
-	ToolConversationsReplies       = "conversations_replies"
-	ToolConversationsAddMessage    = "conversations_add_message"
-	ToolReactionsAdd               = "reactions_add"
-	ToolReactionsRemove            = "reactions_remove"
-	ToolAttachmentGetData          = "attachment_get_data"
+	ToolConversationsHistory        = "conversations_history"
+	ToolConversationsReplies        = "conversations_replies"
+	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolReactionsAdd                = "reactions_add"
+	ToolReactionsRemove             = "reactions_remove"
+	ToolAttachmentGetData           = "attachment_get_data"
 	ToolConversationsSearchMessages = "conversations_search_messages"
-	ToolChannelsList               = "channels_list"
+	ToolChannelsList                = "channels_list"
+	ToolUsergroupsList              = "usergroups_list"
+	ToolUsergroupsMe                = "usergroups_me"
+	ToolUsergroupsCreate            = "usergroups_create"
+	ToolUsergroupsUpdate            = "usergroups_update"
+	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
 )
 
 var ValidToolNames = []string{
@@ -44,6 +49,11 @@ var ValidToolNames = []string{
 	ToolAttachmentGetData,
 	ToolConversationsSearchMessages,
 	ToolChannelsList,
+	ToolUsergroupsList,
+	ToolUsergroupsMe,
+	ToolUsergroupsCreate,
+	ToolUsergroupsUpdate,
+	ToolUsergroupsUsersUpdate,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -283,6 +293,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	), conversationsHandler.UsersSearchHandler)
 
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
+	usergroupsHandler := handler.NewUsergroupsHandler(provider, logger)
 
 	if shouldAddTool(ToolChannelsList, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolChannelsList,
@@ -304,6 +315,102 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
 		),
 	), channelsHandler.ChannelsHandler)
+	}
+
+	// User groups tools
+	if shouldAddTool(ToolUsergroupsList, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsergroupsList,
+			mcp.WithDescription("List all user groups (subteams) in the Slack workspace. User groups are mention groups like @engineering or @design that notify all members. Use this to discover available groups, check group membership counts, or find a group's ID before joining/updating it. Returns CSV with columns: id, name, handle, description, user_count, is_external."),
+			mcp.WithTitleAnnotation("List User Groups"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithBoolean("include_users",
+				mcp.Description("Include list of user IDs in each group. Default is false."),
+				mcp.DefaultBool(false),
+			),
+			mcp.WithBoolean("include_count",
+				mcp.Description("Include user count for each group. Default is true."),
+				mcp.DefaultBool(true),
+			),
+			mcp.WithBoolean("include_disabled",
+				mcp.Description("Include disabled/archived groups. Default is false."),
+				mcp.DefaultBool(false),
+			),
+		), usergroupsHandler.UsergroupsListHandler)
+	}
+
+	if shouldAddTool(ToolUsergroupsMe, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsergroupsMe,
+			mcp.WithDescription("Manage your own user group membership. Use action='list' to see which groups you belong to. Use action='join' with a usergroup_id to add yourself to a group (e.g., to receive @mentions). Use action='leave' with a usergroup_id to remove yourself. This is the easiest way to join/leave groups without needing to know the full member list."),
+			mcp.WithTitleAnnotation("My User Groups"),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("Action to perform: 'list' returns CSV of groups you're a member of, 'join' adds you to a group, 'leave' removes you from a group."),
+			),
+			mcp.WithString("usergroup_id",
+				mcp.Description("ID of the user group (starts with 'S', e.g., 'S0123456789'). Required for 'join' and 'leave' actions. Get IDs from usergroups_list."),
+			),
+		), usergroupsHandler.UsergroupsMeHandler)
+	}
+
+	if shouldAddTool(ToolUsergroupsCreate, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsergroupsCreate,
+			mcp.WithDescription("Create a new user group (mention group) in the Slack workspace. After creation, use usergroups_users_update to add members, or users can join themselves with usergroups_me. The handle becomes the @mention (e.g., handle='engineering' creates @engineering)."),
+			mcp.WithTitleAnnotation("Create User Group"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("name",
+				mcp.Required(),
+				mcp.Description("Display name of the user group (e.g., 'Engineering Team', 'Design Squad')."),
+			),
+			mcp.WithString("handle",
+				mcp.Description("The @mention handle without the @ symbol (e.g., 'engineering' for @engineering). Keep it short and lowercase. If omitted, Slack auto-generates one from the name."),
+			),
+			mcp.WithString("description",
+				mcp.Description("Purpose or description shown in group details (e.g., 'Backend and frontend engineers')."),
+			),
+			mcp.WithString("channels",
+				mcp.Description("Comma-separated channel IDs where this group is commonly mentioned. Members get suggestions to join these channels."),
+			),
+		), usergroupsHandler.UsergroupsCreateHandler)
+	}
+
+	if shouldAddTool(ToolUsergroupsUpdate, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsergroupsUpdate,
+			mcp.WithDescription("Update a user group's metadata: name, handle (@mention), description, or default channels. Does NOT change members - use usergroups_users_update for that. At least one field must be provided."),
+			mcp.WithTitleAnnotation("Update User Group"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("usergroup_id",
+				mcp.Required(),
+				mcp.Description("ID of the user group to update (starts with 'S', e.g., 'S0123456789'). Get IDs from usergroups_list."),
+			),
+			mcp.WithString("name",
+				mcp.Description("New display name for the group."),
+			),
+			mcp.WithString("handle",
+				mcp.Description("New @mention handle (without @). Changing this changes how users mention the group."),
+			),
+			mcp.WithString("description",
+				mcp.Description("New description for the group."),
+			),
+			mcp.WithString("channels",
+				mcp.Description("New default channel IDs (comma-separated). Replaces existing default channels."),
+			),
+		), usergroupsHandler.UsergroupsUpdateHandler)
+	}
+
+	if shouldAddTool(ToolUsergroupsUsersUpdate, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsergroupsUsersUpdate,
+			mcp.WithDescription("Replace all members of a user group with a new list. WARNING: This completely replaces the member list - any user not in the 'users' parameter will be removed. To add/remove just yourself, use usergroups_me instead. To add a single user without removing others, first get current members from usergroups_list with include_users=true, then call this with the combined list."),
+			mcp.WithTitleAnnotation("Update User Group Members"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("usergroup_id",
+				mcp.Required(),
+				mcp.Description("ID of the user group (starts with 'S', e.g., 'S0123456789'). Get IDs from usergroups_list."),
+			),
+			mcp.WithString("users",
+				mcp.Required(),
+				mcp.Description("Comma-separated user IDs that will become the COMPLETE member list (e.g., 'U0123456789,U9876543210'). All current members not in this list will be removed."),
+			),
+		), usergroupsHandler.UsergroupsUsersUpdateHandler)
 	}
 
 	logger.Info("Authenticating with Slack API...",
