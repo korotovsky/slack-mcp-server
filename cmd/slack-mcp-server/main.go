@@ -58,6 +58,24 @@ func main() {
 		)
 	}
 
+	editMessageToolEnv := os.Getenv("SLACK_MCP_EDIT_MESSAGE_TOOL")
+	err = validateToolConfig(editMessageToolEnv)
+	if err != nil {
+		logger.Fatal("error in SLACK_MCP_EDIT_MESSAGE_TOOL",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
+
+	deleteMessageToolEnv := os.Getenv("SLACK_MCP_DELETE_MESSAGE_TOOL")
+	err = validateToolConfig(deleteMessageToolEnv)
+	if err != nil {
+		logger.Fatal("error in SLACK_MCP_DELETE_MESSAGE_TOOL",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
+
 	err = server.ValidateEnabledTools(enabledTools)
 	if err != nil {
 		logger.Fatal("error in SLACK_MCP_ENABLED_TOOLS",
