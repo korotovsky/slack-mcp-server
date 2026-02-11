@@ -189,14 +189,14 @@ Manage your user group membership: list groups you're in, join a group, or leave
 ### 14. conversations_unreads
 Get unread messages across all channels efficiently. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (Slack Connect) > internal channels.
 
-> **Note**: For browser tokens (`xoxc`/`xoxd`), uses the fast `client.counts` API. For OAuth tokens (`xoxp`), falls back to iterating channels via `conversations.info` (slower but functional). Not available with bot tokens (`xoxb`).
+> **Note:** This tool works best with browser session tokens (`xoxc`/`xoxd`), which use the efficient `client.counts` API. For standard OAuth tokens (`xoxp`), a fallback method using `conversations.info` is used, which requires one API call per channel and may be slower for large workspaces. Not available with bot tokens (`xoxb`).
 
 - **Parameters:**
   - `include_messages` (boolean, default: true): If true, returns the actual unread messages. If false, returns only a summary of channels with unreads.
   - `channel_types` (string, default: "all"): Filter by channel type: `all`, `dm` (direct messages), `group_dm` (group DMs), `partner` (externally shared channels), `internal` (regular workspace channels).
   - `max_channels` (number, default: 50): Maximum number of channels to fetch unreads from.
   - `max_messages_per_channel` (number, default: 10): Maximum messages to fetch per channel.
-  - `mentions_only` (boolean, default: false): If true, only returns channels where you have @mentions. Only available with browser tokens.
+  - `mentions_only` (boolean, default: false): If true, only returns channels where you have @mentions. Note: This filter only works with browser tokens; OAuth tokens will return all unread channels.
 
 ### 15. conversations_mark
 Mark a channel or DM as read.

@@ -196,6 +196,9 @@ type SlackAPI interface {
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
+	// Used to get channel info (for unread counts with xoxp tokens)
+	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
+
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
@@ -429,6 +432,10 @@ func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, 
 
 func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
 	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
+}
+
+func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
+	return c.slackClient.GetConversationInfoContext(ctx, input)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {

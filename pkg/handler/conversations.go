@@ -16,6 +16,7 @@ import (
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
+	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -634,14 +635,22 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 
 	params := ch.parseParamsToolUnreads(request)
 
-	// Call ClientCounts to get unread status for all channels efficiently
-	// This uses the undocumented client.counts API which returns HasUnreads for all channels
+	// Try ClientCounts first (works with xoxc/xoxd browser tokens)
 	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
 	if err != nil {
+		// Check if this is a token type error - fall back to conversations.info approach
+		if strings.Contains(err.Error(), "not_allowed_token_type") {
+			ch.logger.Info("ClientCounts not available for this token type, using conversations.info fallback")
+			return ch.getUnreadsViaConversationsInfo(ctx, params)
+		}
 		ch.logger.Error("ClientCounts failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to get client counts: %v", err)
 	}
 
+	return ch.processClientCountsResponse(ctx, params, counts)
+}
+
+func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context, params *unreadsParams, counts edge.ClientCountsResponse) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("Got counts data",
 		zap.Int("channels", len(counts.Channels)),
 		zap.Int("mpims", len(counts.MPIMs)),
@@ -811,6 +820,121 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 	ch.logger.Debug("Fetched unread messages", zap.Int("total", len(allMessages)))
 
 	return marshalMessagesToCSV(allMessages)
+}
+
+func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Context, params *unreadsParams) (*mcp.CallToolResult, error) {
+	usersMap := ch.apiProvider.ProvideUsersMap()
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+
+	var unreadChannels []UnreadChannel
+	checkedCount := 0
+
+	for channelID, cached := range channelsMaps.Channels {
+		if checkedCount >= params.maxChannels*2 {
+			break
+		}
+
+		channelType := ch.categorizeChannelForFallback(cached)
+		if params.channelTypes != "all" && channelType != params.channelTypes {
+			continue
+		}
+
+		checkedCount++
+
+		info, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+			ChannelID: channelID,
+		})
+		if err != nil {
+			ch.logger.Debug("Failed to get conversation info",
+				zap.String("channel", channelID),
+				zap.Error(err))
+			continue
+		}
+
+		if info.UnreadCount == 0 {
+			continue
+		}
+
+		channelName := ch.getChannelDisplayNameForFallback(cached, channelType, usersMap)
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   channelID,
+			ChannelName: channelName,
+			ChannelType: channelType,
+			UnreadCount: info.UnreadCount,
+			LastRead:    info.LastRead,
+			Latest:      "",
+		})
+
+		if len(unreadChannels) >= params.maxChannels {
+			break
+		}
+	}
+
+	ch.sortChannelsByPriority(unreadChannels)
+
+	ch.logger.Debug("Found unread channels via fallback", zap.Int("count", len(unreadChannels)))
+
+	if !params.includeMessages {
+		return ch.marshalUnreadChannelsToCSV(unreadChannels)
+	}
+
+	var allMessages []Message
+	for _, uc := range unreadChannels {
+		historyParams := slack.GetConversationHistoryParameters{
+			ChannelID: uc.ChannelID,
+			Oldest:    uc.LastRead,
+			Limit:     params.maxMessagesPerChannel,
+			Inclusive: false,
+		}
+
+		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		if err != nil {
+			ch.logger.Warn("Failed to get history for channel",
+				zap.String("channel", uc.ChannelID),
+				zap.Error(err))
+			continue
+		}
+
+		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)
+		allMessages = append(allMessages, channelMessages...)
+	}
+
+	ch.logger.Debug("Fetched unread messages via fallback", zap.Int("total", len(allMessages)))
+
+	return marshalMessagesToCSV(allMessages)
+}
+
+func (ch *ConversationsHandler) categorizeChannelForFallback(cached provider.Channel) string {
+	if cached.IsIM {
+		return "dm"
+	}
+	if cached.IsMpIM {
+		return "group_dm"
+	}
+	if cached.IsExtShared {
+		return "partner"
+	}
+	return "internal"
+}
+
+func (ch *ConversationsHandler) getChannelDisplayNameForFallback(cached provider.Channel, channelType string, usersMap *provider.UsersCache) string {
+	switch channelType {
+	case "dm":
+		if cached.User != "" {
+			if u, ok := usersMap.Users[cached.User]; ok {
+				return "@" + u.Name
+			}
+			return "@" + cached.User
+		}
+		return cached.ID
+	default:
+		name := cached.Name
+		if !strings.HasPrefix(name, "#") && channelType != "group_dm" {
+			return "#" + name
+		}
+		return name
+	}
 }
 
 // ConversationsMarkHandler marks a channel as read up to a specific timestamp
