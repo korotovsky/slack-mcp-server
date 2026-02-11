@@ -647,6 +647,14 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		zap.Int("mpims", len(counts.MPIMs)),
 		zap.Int("ims", len(counts.IMs)))
 
+	// Check if ClientCounts returned empty results (happens with xoxp/xoxb tokens)
+	// If so, fall back to using conversations.info per-channel approach
+	totalCounts := len(counts.Channels) + len(counts.MPIMs) + len(counts.IMs)
+	if totalCounts == 0 {
+		ch.logger.Info("ClientCounts returned empty results, falling back to xoxp-compatible approach using conversations.info")
+		return ch.getUnreadsUsingConversationsInfo(ctx, params)
+	}
+
 	// Get users map and channels map for resolving names
 	usersMap := ch.apiProvider.ProvideUsersMap()
 	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
@@ -802,6 +810,143 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 
 		// Update unread count
 		uc.UnreadCount = len(history.Messages)
+
+		// Convert messages
+		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)
+		allMessages = append(allMessages, channelMessages...)
+	}
+
+	ch.logger.Debug("Fetched unread messages", zap.Int("total", len(allMessages)))
+
+	return marshalMessagesToCSV(allMessages)
+}
+
+// getUnreadsUsingConversationsInfo is a fallback for xoxp/xoxb tokens
+// It iterates through all channels and uses conversations.info to check unread_count
+func (ch *ConversationsHandler) getUnreadsUsingConversationsInfo(ctx context.Context, params *unreadsParams) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("Using conversations.info fallback for unread detection")
+
+	// Get users map and channels map for resolving names
+	usersMap := ch.apiProvider.ProvideUsersMap()
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+
+	var unreadChannels []UnreadChannel
+
+	// Iterate through all cached channels
+	for channelID, channel := range channelsMaps.Channels {
+		// Determine channel type
+		var channelType string
+		var channelName string
+
+		if channel.IsIM {
+			channelType = "dm"
+			// Get display name for DM
+			if channel.User != "" {
+				if u, ok := usersMap.Users[channel.User]; ok {
+					channelName = "@" + u.Name
+				} else {
+					channelName = "@" + channel.User
+				}
+			} else {
+				channelName = channelID
+			}
+		} else if channel.IsMpIM {
+			channelType = "group_dm"
+			channelName = channel.Name
+		} else if channel.IsExtShared {
+			channelType = "partner"
+			name := channel.Name
+			if strings.HasPrefix(name, "#") {
+				channelName = name
+			} else {
+				channelName = "#" + name
+			}
+		} else {
+			channelType = "internal"
+			name := channel.Name
+			if strings.HasPrefix(name, "#") {
+				channelName = name
+			} else {
+				channelName = "#" + name
+			}
+		}
+
+		// Filter by requested channel types
+		if params.channelTypes != "all" && channelType != params.channelTypes {
+			continue
+		}
+
+		// Call conversations.info to get unread count
+		convInfo, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+			ChannelID: channelID,
+		})
+		if err != nil {
+			ch.logger.Warn("Failed to get conversation info",
+				zap.String("channel", channelID),
+				zap.Error(err))
+			continue
+		}
+
+		// Check if channel has unreads
+		// We only include channels with actual unread messages
+		if convInfo.UnreadCount == 0 {
+			continue
+		}
+
+		// Priority Inbox: skip channels without @mentions if requested
+		// Note: With xoxp tokens, we don't have access to mention counts,
+		// so we can't filter by mentions_only. Log a warning and skip this filter.
+		if params.mentionsOnly {
+			ch.logger.Warn("mentions_only filter is not supported with xoxp/xoxb tokens, ignoring filter")
+		}
+
+		unreadChannels = append(unreadChannels, UnreadChannel{
+			ChannelID:   channelID,
+			ChannelName: channelName,
+			ChannelType: channelType,
+			UnreadCount: convInfo.UnreadCount,
+			LastRead:    "", // Not available via conversations.info
+			Latest:      "", // Not available via conversations.info
+		})
+
+		// Check if we've reached max channels limit
+		if len(unreadChannels) >= params.maxChannels {
+			break
+		}
+	}
+
+	// Sort by priority: DMs > group_dm > partner > internal
+	ch.sortChannelsByPriority(unreadChannels)
+
+	// Limit channels (in case we exceeded during iteration)
+	if len(unreadChannels) > params.maxChannels {
+		unreadChannels = unreadChannels[:params.maxChannels]
+	}
+
+	ch.logger.Debug("Found unread channels using conversations.info", zap.Int("count", len(unreadChannels)))
+
+	// If not including messages, just return channel summary
+	if !params.includeMessages {
+		return ch.marshalUnreadChannelsToCSV(unreadChannels)
+	}
+
+	// Fetch messages for each unread channel
+	var allMessages []Message
+
+	for _, uc := range unreadChannels {
+		// Without last_read timestamp, we fetch recent messages up to the limit
+		historyParams := slack.GetConversationHistoryParameters{
+			ChannelID: uc.ChannelID,
+			Limit:     params.maxMessagesPerChannel,
+		}
+
+		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		if err != nil {
+			ch.logger.Warn("Failed to get history for channel",
+				zap.String("channel", uc.ChannelID),
+				zap.Error(err))
+			continue
+		}
 
 		// Convert messages
 		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)

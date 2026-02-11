@@ -156,6 +156,7 @@ type SlackAPI interface {
 
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
+	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
@@ -348,6 +349,12 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	}
 
 	return c.slackClient.GetConversationsContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
+	// Use standard slack client for OAuth tokens (xoxp/xoxb)
+	// Note: This is primarily used for the xoxp fallback in ConversationsUnreadsHandler
+	return c.slackClient.GetConversationInfoContext(ctx, input)
 }
 
 func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
