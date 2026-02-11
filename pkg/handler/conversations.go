@@ -624,55 +624,6 @@ func isChannelAllowed(channel string) bool {
 	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
 }
 
-func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
-	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
-		return channel, nil
-	}
-
-	// First attempt: try to resolve from current cache
-	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-	chn, ok := channelsMaps.ChannelsInv[channel]
-	if ok {
-		return channelsMaps.Channels[chn].ID, nil
-	}
-
-	// Channel not found - try refreshing cache and retry once
-	ch.logger.Debug("Channel not found in cache, attempting refresh",
-		zap.String("channel", channel))
-
-	refreshErr := ch.apiProvider.ForceRefreshChannels(ctx)
-	wasRateLimited := errors.Is(refreshErr, provider.ErrRefreshRateLimited)
-
-	if refreshErr != nil && !wasRateLimited {
-		ch.logger.Error("Failed to refresh channels cache",
-			zap.String("channel", channel),
-			zap.Error(refreshErr))
-		return "", fmt.Errorf("channel %q not found and cache refresh failed: %w", channel, refreshErr)
-	}
-
-	// If rate-limited, cache wasn't refreshed - no point in a second lookup
-	if wasRateLimited {
-		ch.logger.Warn("Channel not found; cache refresh was rate-limited",
-			zap.String("channel", channel))
-		return "", fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channel)
-	}
-
-	// Second attempt after successful refresh
-	channelsMaps = ch.apiProvider.ProvideChannelsMaps()
-	chn, ok = channelsMaps.ChannelsInv[channel]
-	if !ok {
-		ch.logger.Error("Channel not found even after cache refresh",
-			zap.String("channel", channel))
-		return "", fmt.Errorf("channel %q not found", channel)
-	}
-
-	ch.logger.Debug("Channel found after cache refresh",
-		zap.String("channel", channel),
-		zap.String("channel_id", channelsMaps.Channels[chn].ID))
-
-	return channelsMaps.Channels[chn].ID, nil
-}
-
 func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack.Message, channel string, includeActivity bool) []Message {
 	usersMap := ch.apiProvider.ProvideUsersMap()
 	var messages []Message
@@ -847,8 +798,7 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 			}
 			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
 		}
-		// Use resolveChannelID which includes refresh-on-error logic
-		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
+		resolvedChannel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 		if err != nil {
 			return nil, err
 		}
@@ -887,7 +837,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		ch.logger.Error("channel_id missing in add-message params")
 		return nil, errors.New("channel_id must be a string")
 	}
-	channel, err := ch.resolveChannelID(ctx, channel)
+	channel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
@@ -948,7 +898,7 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 	if channel == "" {
 		return nil, errors.New("channel_id is required")
 	}
-	channel, err := ch.resolveChannelID(ctx, channel)
+	channel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
