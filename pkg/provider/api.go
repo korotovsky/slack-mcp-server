@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -201,6 +202,7 @@ type SlackAPI interface {
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
+	SearchChannels(ctx context.Context, query string) ([]slack.Channel, error)
 
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
@@ -435,6 +437,42 @@ func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBo
 
 func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error) {
 	return c.edgeClient.UsersSearch(ctx, query, count)
+}
+
+func (c *MCPSlackClient) SearchChannels(ctx context.Context, query string) ([]slack.Channel, error) {
+	edgeChannels, err := c.edgeClient.SearchChannels(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert from rusq/slack.Channel to slack-go/slack.Channel
+	var channels []slack.Channel
+	for _, ec := range edgeChannels {
+		channels = append(channels, slack.Channel{
+			IsGeneral: ec.IsGeneral,
+			GroupConversation: slack.GroupConversation{
+				Conversation: slack.Conversation{
+					ID:             ec.ID,
+					IsIM:           ec.IsIM,
+					IsMpIM:         ec.IsMpIM,
+					IsPrivate:      ec.IsPrivate,
+					NameNormalized: ec.NameNormalized,
+					NumMembers:     ec.NumMembers,
+				},
+				Name:       ec.Name,
+				IsArchived: ec.IsArchived,
+				Members:    ec.Members,
+				Topic: slack.Topic{
+					Value: ec.Topic.Value,
+				},
+				Purpose: slack.Purpose{
+					Value: ec.Purpose.Value,
+				},
+			},
+		})
+	}
+
+	return channels, nil
 }
 
 func (c *MCPSlackClient) GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error) {
@@ -1069,6 +1107,146 @@ func (ap *ApiProvider) ProvideUsersMap() *UsersCache {
 func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
 	// Atomic load - no lock needed, snapshot is immutable
 	return ap.channelsSnapshot.Load()
+}
+
+// ResolveChannelByName resolves a channel name (e.g., "#general") to its channel ID.
+// For names that don't start with "#" or "@", returns the input unchanged (assumed to be an ID).
+// Resolution strategy:
+// 1. Check local cache first
+// 2. If not found, try ForceRefreshChannels (respects rate limiting)
+// 3. For Enterprise Grid with browser tokens (xoxc/xoxd), if still not found,
+//    use the SearchChannels edge API as a fallback and update the cache
+func (ap *ApiProvider) ResolveChannelByName(ctx context.Context, channelName string) (string, error) {
+	// If not a name reference, return as-is (assume it's already an ID)
+	if !strings.HasPrefix(channelName, "#") && !strings.HasPrefix(channelName, "@") {
+		return channelName, nil
+	}
+
+	// First attempt: try to resolve from current cache
+	channelsMaps := ap.ProvideChannelsMaps()
+	if channelID, ok := channelsMaps.ChannelsInv[channelName]; ok {
+		return channelsMaps.Channels[channelID].ID, nil
+	}
+
+	// Channel not found in cache - try refreshing
+	ap.logger.Debug("Channel not found in cache, attempting refresh",
+		zap.String("channel", channelName))
+
+	refreshErr := ap.ForceRefreshChannels(ctx)
+	wasRateLimited := errors.Is(refreshErr, ErrRefreshRateLimited)
+
+	if refreshErr != nil && !wasRateLimited {
+		ap.logger.Error("Failed to refresh channels cache",
+			zap.String("channel", channelName),
+			zap.Error(refreshErr))
+		return "", fmt.Errorf("channel %q not found and cache refresh failed: %w", channelName, refreshErr)
+	}
+
+	// Second attempt after refresh (if not rate-limited)
+	if !wasRateLimited {
+		channelsMaps = ap.ProvideChannelsMaps()
+		if channelID, ok := channelsMaps.ChannelsInv[channelName]; ok {
+			ap.logger.Debug("Channel found after cache refresh",
+				zap.String("channel", channelName),
+				zap.String("channel_id", channelsMaps.Channels[channelID].ID))
+			return channelsMaps.Channels[channelID].ID, nil
+		}
+	}
+
+	// Enterprise Grid fallback: use SearchChannels edge API
+	// This handles cases where GetConversationsContext with xoxc/xoxd tokens
+	// returns channels without proper names
+	client, ok := ap.client.(*MCPSlackClient)
+	if ok && client != nil && client.IsEnterprise() && !client.IsOAuth() {
+		ap.logger.Debug("Attempting Enterprise Grid fallback via SearchChannels",
+			zap.String("channel", channelName))
+
+		// Strip the # prefix for the search query
+		searchQuery := strings.TrimPrefix(channelName, "#")
+		channels, err := ap.client.SearchChannels(ctx, searchQuery)
+		if err != nil {
+			ap.logger.Error("SearchChannels fallback failed",
+				zap.String("channel", channelName),
+				zap.Error(err))
+			// Don't fail here - fall through to the final error
+		} else {
+			// Look for an exact name match in the search results
+			for _, ch := range channels {
+				foundName := "#" + ch.NameNormalized
+				if foundName == channelName || "#"+ch.Name == channelName {
+					ap.logger.Debug("Channel found via SearchChannels fallback",
+						zap.String("channel", channelName),
+						zap.String("channel_id", ch.ID))
+
+					// Add to cache for future lookups
+					ap.addChannelToCache(ch)
+
+					return ch.ID, nil
+				}
+			}
+			ap.logger.Debug("No exact match found in SearchChannels results",
+				zap.String("channel", channelName),
+				zap.Int("results_count", len(channels)))
+		}
+	}
+
+	// Final failure
+	if wasRateLimited {
+		ap.logger.Warn("Channel not found; cache refresh was rate-limited",
+			zap.String("channel", channelName))
+		return "", fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channelName)
+	}
+
+	ap.logger.Error("Channel not found after all resolution attempts",
+		zap.String("channel", channelName))
+	return "", fmt.Errorf("channel %q not found", channelName)
+}
+
+// addChannelToCache adds a single channel to the cache snapshot.
+// This is used to update the cache with channels found via SearchChannels fallback.
+func (ap *ApiProvider) addChannelToCache(slackChannel slack.Channel) {
+	// Map the slack.Channel to our Channel type
+	usersMap := ap.ProvideUsersMap().Users
+	ch := mapChannel(
+		slackChannel.ID,
+		slackChannel.Name,
+		slackChannel.NameNormalized,
+		slackChannel.Topic.Value,
+		slackChannel.Purpose.Value,
+		slackChannel.User,
+		slackChannel.Members,
+		slackChannel.NumMembers,
+		slackChannel.IsIM,
+		slackChannel.IsMpIM,
+		slackChannel.IsPrivate,
+		usersMap,
+	)
+
+	// Create a new snapshot with the added channel
+	// We need to copy the existing snapshot since it's immutable
+	oldSnapshot := ap.channelsSnapshot.Load()
+	newSnapshot := &ChannelsCache{
+		Channels:    make(map[string]Channel, len(oldSnapshot.Channels)+1),
+		ChannelsInv: make(map[string]string, len(oldSnapshot.ChannelsInv)+1),
+	}
+
+	// Copy existing entries
+	for k, v := range oldSnapshot.Channels {
+		newSnapshot.Channels[k] = v
+	}
+	for k, v := range oldSnapshot.ChannelsInv {
+		newSnapshot.ChannelsInv[k] = v
+	}
+
+	// Add the new channel
+	newSnapshot.Channels[ch.ID] = ch
+	newSnapshot.ChannelsInv[ch.Name] = ch.ID
+
+	ap.channelsSnapshot.Store(newSnapshot)
+
+	ap.logger.Debug("Added channel to cache",
+		zap.String("channel_id", ch.ID),
+		zap.String("channel_name", ch.Name))
 }
 
 func (ap *ApiProvider) IsReady() (bool, error) {
