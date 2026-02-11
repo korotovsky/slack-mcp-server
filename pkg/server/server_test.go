@@ -1,10 +1,20 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestShouldAddTool_ReadOnly_EmptyEnabledTools(t *testing.T) {
@@ -270,6 +280,105 @@ func TestShouldAddTool_WriteTool_Attachment(t *testing.T) {
 
 		result := shouldAddTool(ToolAttachmentGetData, []string{ToolAttachmentGetData}, "SLACK_MCP_ATTACHMENT_TOOL")
 		assert.True(t, result, "attachment_get_data should be registered when explicitly in enabledTools")
+	})
+}
+
+// setupMCPClientServer creates an MCP server with the given options and tool handler,
+// wires up a client via stdio pipes, and returns the connected client.
+func setupMCPClientServer(t *testing.T, opts []server.ServerOption, toolHandler server.ToolHandlerFunc) *client.Client {
+	t.Helper()
+
+	mcpSrv := server.NewMCPServer("test", "1.0.0", opts...)
+	mcpSrv.AddTool(mcp.NewTool("test_tool",
+		mcp.WithDescription("A test tool"),
+	), toolHandler)
+
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	stdioSrv := server.NewStdioServer(mcpSrv)
+	go func() {
+		_ = stdioSrv.Listen(ctx, serverReader, serverWriter)
+	}()
+
+	var logBuf bytes.Buffer
+	tr := transport.NewIO(clientReader, clientWriter, io.NopCloser(&logBuf))
+	err := tr.Start(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { tr.Close() })
+
+	c := client.NewClient(tr)
+
+	var initReq mcp.InitializeRequest
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	_, err = c.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	return c
+}
+
+func TestIntegrationErrorRecoveryMiddleware(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("handler error is converted to isError tool result", func(t *testing.T) {
+		c := setupMCPClientServer(t,
+			[]server.ServerOption{server.WithToolHandlerMiddleware(buildErrorRecoveryMiddleware(logger))},
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, fmt.Errorf("simulated tool error: invalid channel ID")
+			},
+		)
+
+		var callReq mcp.CallToolRequest
+		callReq.Params.Name = "test_tool"
+		result, err := c.CallTool(context.Background(), callReq)
+
+		require.NoError(t, err, "should not return a JSON-RPC error")
+		require.NotNil(t, result)
+		assert.True(t, result.IsError, "result should have isError=true")
+		require.Len(t, result.Content, 1)
+		textContent, ok := result.Content[0].(mcp.TextContent)
+		require.True(t, ok, "content should be TextContent")
+		assert.Contains(t, textContent.Text, "simulated tool error: invalid channel ID")
+	})
+
+	t.Run("without middleware handler error becomes JSON-RPC error", func(t *testing.T) {
+		c := setupMCPClientServer(t,
+			nil, // no error recovery middleware
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, fmt.Errorf("simulated tool error: invalid channel ID")
+			},
+		)
+
+		var callReq mcp.CallToolRequest
+		callReq.Params.Name = "test_tool"
+		result, err := c.CallTool(context.Background(), callReq)
+
+		assert.Error(t, err, "should return a JSON-RPC error without middleware")
+		assert.Nil(t, result)
+	})
+
+	t.Run("successful tool call passes through unchanged", func(t *testing.T) {
+		c := setupMCPClientServer(t,
+			[]server.ServerOption{server.WithToolHandlerMiddleware(buildErrorRecoveryMiddleware(logger))},
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultText("all good"), nil
+			},
+		)
+
+		var callReq mcp.CallToolRequest
+		callReq.Params.Name = "test_tool"
+		result, err := c.CallTool(context.Background(), callReq)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.False(t, result.IsError, "successful result should not have isError=true")
+		require.Len(t, result.Content, 1)
+		textContent, ok := result.Content[0].(mcp.TextContent)
+		require.True(t, ok)
+		assert.Equal(t, "all good", textContent.Text)
 	})
 }
 
