@@ -624,10 +624,6 @@ func isChannelAllowed(channel string) bool {
 	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
 }
 
-func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
-	return ch.apiProvider.ResolveChannelByName(ctx, channel)
-}
-
 func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack.Message, channel string, includeActivity bool) []Message {
 	usersMap := ch.apiProvider.ProvideUsersMap()
 	var messages []Message
@@ -802,8 +798,7 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 			}
 			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
 		}
-		// Use resolveChannelID which includes refresh-on-error logic
-		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
+		resolvedChannel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 		if err != nil {
 			return nil, err
 		}
@@ -842,7 +837,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		ch.logger.Error("channel_id missing in add-message params")
 		return nil, errors.New("channel_id must be a string")
 	}
-	channel, err := ch.resolveChannelID(ctx, channel)
+	channel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
@@ -903,7 +898,7 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 	if channel == "" {
 		return nil, errors.New("channel_id is required")
 	}
-	channel, err := ch.resolveChannelID(ctx, channel)
+	channel, err := ch.apiProvider.ResolveChannelByName(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
