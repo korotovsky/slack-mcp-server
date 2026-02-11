@@ -25,20 +25,24 @@ type MCPServer struct {
 }
 
 const (
-	ToolConversationsHistory       = "conversations_history"
-	ToolConversationsReplies       = "conversations_replies"
-	ToolConversationsAddMessage    = "conversations_add_message"
-	ToolReactionsAdd               = "reactions_add"
-	ToolReactionsRemove            = "reactions_remove"
-	ToolAttachmentGetData          = "attachment_get_data"
+	ToolConversationsHistory        = "conversations_history"
+	ToolConversationsReplies        = "conversations_replies"
+	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsEditMessage    = "conversations_edit_message"
+	ToolConversationsDeleteMessage  = "conversations_delete_message"
+	ToolReactionsAdd                = "reactions_add"
+	ToolReactionsRemove             = "reactions_remove"
+	ToolAttachmentGetData           = "attachment_get_data"
 	ToolConversationsSearchMessages = "conversations_search_messages"
-	ToolChannelsList               = "channels_list"
+	ToolChannelsList                = "channels_list"
 )
 
 var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsEditMessage,
+	ToolConversationsDeleteMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -167,6 +171,46 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
 		),
 	), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsEditMessage, enabledTools, "SLACK_MCP_EDIT_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsEditMessage,
+		mcp.WithDescription("Edit an existing message in a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and message_ts."),
+		mcp.WithTitleAnnotation("Edit Message"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("message_ts",
+			mcp.Required(),
+			mcp.Description("Timestamp of the message to edit, in format 1234567890.123456."),
+		),
+		mcp.WithString("text",
+			mcp.Required(),
+			mcp.Description("New message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+		),
+		mcp.WithString("content_type",
+			mcp.DefaultString("text/markdown"),
+			mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+		),
+	), conversationsHandler.ConversationsEditMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteMessage, enabledTools, "SLACK_MCP_DELETE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteMessage,
+		mcp.WithDescription("Delete a message from a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and message_ts."),
+		mcp.WithTitleAnnotation("Delete Message"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("message_ts",
+			mcp.Required(),
+			mcp.Description("Timestamp of the message to delete, in format 1234567890.123456."),
+		),
+	), conversationsHandler.ConversationsDeleteMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
