@@ -110,6 +110,48 @@ func getMinRefreshInterval() time.Duration {
 	return defaultMinRefreshInterval
 }
 
+// validateAuthAndGetTeamID performs auth validation on startup and returns the TeamID.
+// This ensures tokens are valid before proceeding and enables cache namespacing
+// to prevent cache contamination when using multiple Slack workspaces.
+// Returns an error if authentication fails - the server should not start with invalid credentials.
+func validateAuthAndGetTeamID(authProvider auth.Provider, logger *zap.Logger) (string, error) {
+	xoxpToken := os.Getenv("SLACK_MCP_XOXP_TOKEN")
+	xoxcToken := os.Getenv("SLACK_MCP_XOXC_TOKEN")
+	xoxdToken := os.Getenv("SLACK_MCP_XOXD_TOKEN")
+	if xoxpToken == "demo" || (xoxcToken == "demo" && xoxdToken == "demo") {
+		return "demo", nil
+	}
+
+	httpClient := transport.ProvideHTTPClient(authProvider.Cookies(), logger)
+	slackOpts := []slack.Option{slack.OptionHTTPClient(httpClient)}
+	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
+		slackOpts = append(slackOpts, slack.OptionAPIURL("https://slack-gov.com/api/"))
+	}
+	slackClient := slack.New(authProvider.SlackToken(), slackOpts...)
+
+	authResp, err := slackClient.AuthTest()
+	if err != nil {
+		return "", err
+	}
+
+	logger.Info("Authenticated to Slack",
+		zap.String("team", authResp.Team),
+		zap.String("team_id", authResp.TeamID),
+		zap.String("user", authResp.User))
+
+	return authResp.TeamID, nil
+}
+
+// getCachePathWithTeamID returns a cache file path prefixed with TeamID for workspace isolation.
+// If TeamID is empty, returns the default filename without prefix.
+func getCachePathWithTeamID(teamID, filename string) string {
+	cacheDir := getCacheDir()
+	if teamID != "" {
+		return filepath.Join(cacheDir, teamID+"_"+filename)
+	}
+	return filepath.Join(cacheDir, filename)
+}
+
 type UsersCache struct {
 	Users    map[string]slack.User `json:"users"`
 	UsersInv map[string]string     `json:"users_inv"`
@@ -510,16 +552,19 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		err    error
 	)
 
+	teamID, err := validateAuthAndGetTeamID(authProvider, logger)
+	if err != nil {
+		logger.Fatal("Authentication failed - check your Slack tokens", zap.Error(err))
+	}
+
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		cacheDir := getCacheDir()
-		usersCache = filepath.Join(cacheDir, "users_cache.json")
+		usersCache = getCachePathWithTeamID(teamID, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		cacheDir := getCacheDir()
-		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
+		channelsCache = getCachePathWithTeamID(teamID, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -567,16 +612,19 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		err    error
 	)
 
+	teamID, err := validateAuthAndGetTeamID(authProvider, logger)
+	if err != nil {
+		logger.Fatal("Authentication failed - check your Slack tokens", zap.Error(err))
+	}
+
 	usersCache := os.Getenv("SLACK_MCP_USERS_CACHE")
 	if usersCache == "" {
-		cacheDir := getCacheDir()
-		usersCache = filepath.Join(cacheDir, "users_cache.json")
+		usersCache = getCachePathWithTeamID(teamID, "users_cache.json")
 	}
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		cacheDir := getCacheDir()
-		channelsCache = filepath.Join(cacheDir, "channels_cache_v2.json")
+		channelsCache = getCachePathWithTeamID(teamID, "channels_cache_v2.json")
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
