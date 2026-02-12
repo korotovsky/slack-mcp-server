@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
@@ -52,11 +53,21 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, err
 	}
 
-	var channelList []Channel
+	// wait for provider readiness
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
-		return nil, err
+	for {
+		if ready, _ := ch.apiProvider.IsReady(); ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			ch.logger.Error("Timeout waiting for API provider to be ready")
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			ch.logger.Debug("continue waiting")
+		}
 	}
 
 	ar, err := ch.apiProvider.Slack().AuthTest()
@@ -77,6 +88,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 	channels := ch.apiProvider.ProvideChannelsMaps().Channels
 	ch.logger.Debug("Retrieved channels from provider", zap.Int("count", len(channels)))
 
+	var channelList []Channel
 	for _, channel := range channels {
 		channelList = append(channelList, Channel{
 			ID:          channel.ID,
@@ -105,9 +117,21 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ChannelsHandler called")
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
-		return nil, err
+	// wait for provider readiness
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for {
+		if ready, _ := ch.apiProvider.IsReady(); ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			ch.logger.Error("Timeout waiting for API provider to be ready")
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			ch.logger.Debug("continue waiting")
+		}
 	}
 
 	sortType := request.GetString("sort", "popularity")
