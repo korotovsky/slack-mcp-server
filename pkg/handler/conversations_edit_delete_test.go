@@ -109,10 +109,10 @@ func TestUnitEditMessage_ContentTypeDefaults(t *testing.T) {
 
 func TestUnitEditMessage_TimestampValidation(t *testing.T) {
 	tests := []struct {
-		name       string
-		messageTs  string
-		wantDot    bool
-		wantEmpty  bool
+		name      string
+		messageTs string
+		wantDot   bool
+		wantEmpty bool
 	}{
 		{"valid timestamp", "1234567890.123456", true, false},
 		{"shorter fraction", "1234567890.12", true, false},
@@ -388,10 +388,10 @@ func TestUnitDeleteMessage_TimestampValidation(t *testing.T) {
 
 func TestUnitEditMessage_ChannelRestriction(t *testing.T) {
 	tests := []struct {
-		name       string
-		envValue   string
-		channel    string
-		wantAllow  bool
+		name      string
+		envValue  string
+		channel   string
+		wantAllow bool
 	}{
 		{"true allows any channel", "true", "C123", true},
 		{"1 allows any channel", "1", "C123", true},
@@ -411,10 +411,10 @@ func TestUnitEditMessage_ChannelRestriction(t *testing.T) {
 
 func TestUnitDeleteMessage_ChannelRestriction(t *testing.T) {
 	tests := []struct {
-		name       string
-		envValue   string
-		channel    string
-		wantAllow  bool
+		name      string
+		envValue  string
+		channel   string
+		wantAllow bool
 	}{
 		{"true allows any channel", "true", "C123", true},
 		{"1 allows any channel", "1", "C123", true},

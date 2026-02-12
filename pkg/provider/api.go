@@ -186,16 +186,16 @@ type ApiProvider struct {
 	minRefreshInterval time.Duration
 
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
-	usersSnapshot atomic.Pointer[UsersCache]
-	usersCachePath string
-	usersReady     bool
+	usersSnapshot          atomic.Pointer[UsersCache]
+	usersCachePath         string
+	usersReady             bool
 	lastForcedUsersRefresh time.Time
 	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
-	channelsSnapshot atomic.Pointer[ChannelsCache]
-	channelsCachePath string
-	channelsReady     bool
+	channelsSnapshot          atomic.Pointer[ChannelsCache]
+	channelsCachePath         string
+	channelsReady             bool
 	lastForcedChannelsRefresh time.Time
 	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
 }
