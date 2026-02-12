@@ -296,7 +296,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	// Bot tokens (xoxb) don't support unread tracking, so exclude them (same pattern as search tool).
 	if !provider.IsBotToken() {
 		s.AddTool(mcp.NewTool("conversations_unreads",
-			mcp.WithDescription("Get unread messages across all channels. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (ext-*) > internal channels."),
+			mcp.WithDescription("Get unread messages across all channels. With browser session tokens (xoxc/xoxd), uses a single API call for complete results. With OAuth user tokens (xoxp), scans a subset of channels per type (limited by max_channels) — results may be partial on large workspaces. Results are prioritized: DMs > group DMs > partner channels > internal channels."),
 			mcp.WithTitleAnnotation("Get Unread Messages"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithBoolean("include_messages",
