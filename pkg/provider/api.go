@@ -171,7 +171,7 @@ type Channel struct {
 	IsMpIM      bool     `json:"mpim"`
 	IsIM        bool     `json:"im"`
 	IsPrivate   bool     `json:"private"`
-	IsExtShared bool     `json:"is_ext_shared"` // Shared with external organizations
+	IsExtShared bool     `json:"is_ext_shared"`     // Shared with external organizations
 	User        string   `json:"user,omitempty"`    // User ID for IM channels
 	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
@@ -206,6 +206,7 @@ type SlackAPI interface {
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
 	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
+	GetMutedChannels(ctx context.Context) (map[string]bool, error)
 
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
@@ -238,16 +239,16 @@ type ApiProvider struct {
 	minRefreshInterval time.Duration
 
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
-	usersSnapshot atomic.Pointer[UsersCache]
-	usersCachePath string
-	usersReady     bool
+	usersSnapshot          atomic.Pointer[UsersCache]
+	usersCachePath         string
+	usersReady             bool
 	lastForcedUsersRefresh time.Time
 	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
-	channelsSnapshot atomic.Pointer[ChannelsCache]
-	channelsCachePath string
-	channelsReady     bool
+	channelsSnapshot          atomic.Pointer[ChannelsCache]
+	channelsCachePath         string
+	channelsReady             bool
 	lastForcedChannelsRefresh time.Time
 	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
 }
@@ -448,6 +449,10 @@ func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count in
 
 func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error) {
 	return c.edgeClient.ClientCounts(ctx)
+}
+
+func (c *MCPSlackClient) GetMutedChannels(ctx context.Context) (map[string]bool, error) {
+	return c.edgeClient.GetMutedChannels(ctx)
 }
 
 func (c *MCPSlackClient) GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error) {
