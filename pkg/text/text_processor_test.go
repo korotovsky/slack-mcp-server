@@ -2,6 +2,8 @@ package text
 
 import (
 	"testing"
+
+	"github.com/slack-go/slack"
 )
 
 func TestIsUnfurlingEnabled(t *testing.T) {
@@ -103,6 +105,125 @@ func TestIsUnfurlingEnabled(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("opt=%q text=%q → got %v; want %v",
 					tt.opt, tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnitAttachmentToText(t *testing.T) {
+	tests := []struct {
+		name string
+		att  slack.Attachment
+		want string
+	}{
+		{
+			name: "title and text only",
+			att: slack.Attachment{
+				Title: "Alert fired",
+				Text:  "CPU usage exceeded 90%",
+			},
+			want: "Title: Alert fired; Text: CPU usage exceeded 90%",
+		},
+		{
+			name: "title with title link",
+			att: slack.Attachment{
+				Title:     "Runbook entry",
+				TitleLink: "https://example.com/runbook/cpu-alerts",
+			},
+			want: "Title: Runbook entry [https://example.com/runbook/cpu-alerts]",
+		},
+		{
+			name: "fields only",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "severity", Value: "warning", Short: true},
+					{Title: "region", Value: "us-east-1", Short: true},
+				},
+			},
+			want: "severity: warning; region: us-east-1",
+		},
+		{
+			name: "field with empty title",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "", Value: "some standalone value"},
+				},
+			},
+			want: "some standalone value",
+		},
+		{
+			name: "field with empty value",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "status", Value: ""},
+				},
+			},
+			want: "status",
+		},
+		{
+			name: "title text and fields together",
+			att: slack.Attachment{
+				Title: "Build failed",
+				Text:  "Compilation error in main package",
+				Fields: []slack.AttachmentField{
+					{Title: "branch", Value: "feature-xyz", Short: true},
+					{Title: "status", Value: "failed", Short: true},
+					{Title: "duration", Value: "3m42s", Short: true},
+				},
+			},
+			want: "Title: Build failed; Text: Compilation error in main package; branch: feature-xyz; status: failed; duration: 3m42s",
+		},
+		{
+			name: "fields with multiline values are flattened",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "Status", Value: "Line one\nLine two"},
+				},
+			},
+			want: "Status: Line one Line two",
+		},
+		{
+			name: "fallback used when no other content",
+			att: slack.Attachment{
+				Fallback: "Alert triggered: check the dashboard for details",
+			},
+			want: "Alert triggered: check the dashboard for details",
+		},
+		{
+			name: "fallback ignored when other content present",
+			att: slack.Attachment{
+				Fallback: "This should not appear",
+				Title:    "Real title",
+			},
+			want: "Title: Real title",
+		},
+		{
+			name: "empty attachment",
+			att:  slack.Attachment{},
+			want: "",
+		},
+		{
+			name: "full attachment with all fields",
+			att: slack.Attachment{
+				Title:      "Deploy notification",
+				TitleLink:  "https://example.com/deploys/123",
+				AuthorName: "CI Bot",
+				Pretext:    "New deployment started",
+				Text:       "Deploying v2.5.0 to production",
+				Fields: []slack.AttachmentField{
+					{Title: "target", Value: "staging", Short: true},
+					{Title: "version", Value: "2.5.0", Short: true},
+				},
+			},
+			want: "Title: Deploy notification [https://example.com/deploys/123]; Author: CI Bot; Pretext: New deployment started; Text: Deploying v2.5.0 to production; target: staging; version: 2.5.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AttachmentToText(tt.att)
+			if got != tt.want {
+				t.Errorf("AttachmentToText() = %q, want %q", got, tt.want)
 			}
 		})
 	}
