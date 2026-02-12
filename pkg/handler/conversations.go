@@ -648,14 +648,23 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		}
 	}
 
-	// Try ClientCounts first (works with xoxc/xoxd browser tokens)
+	// Route based on token type:
+	// - xoxc/xoxd (browser session): use fast client.counts API
+	// - xoxp (OAuth user): fall back to conversations.info/history approach
+	// - xoxb (bot): not supported — unreads is a user-level concept
+	if ch.apiProvider.IsOAuth() {
+		if ch.apiProvider.IsBotToken() {
+			return nil, fmt.Errorf(
+				"conversations_unreads requires a user token (xoxp) or browser session tokens (xoxc/xoxd); " +
+					"bot tokens (xoxb) do not support unread tracking",
+			)
+		}
+		ch.logger.Info("OAuth token detected, using conversations.info fallback for unreads")
+		return ch.getUnreadsViaConversationsInfo(ctx, params)
+	}
+
 	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
 	if err != nil {
-		// Check if this is a token type error - fall back to conversations.info approach
-		if strings.Contains(err.Error(), "not_allowed_token_type") {
-			ch.logger.Info("ClientCounts not available for this token type, using conversations.info fallback")
-			return ch.getUnreadsViaConversationsInfo(ctx, params)
-		}
 		ch.logger.Error("ClientCounts failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to get client counts: %v", err)
 	}
