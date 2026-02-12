@@ -51,6 +51,63 @@ func AttachmentToText(att slack.Attachment) string {
 	return result
 }
 
+// FilesToText extracts text metadata from email file attachments.
+// Format separators are chosen to survive filterSpecialChars
+// (e.g. "," instead of ";", " at " instead of "@").
+func FilesToText(files []slack.File) string {
+	var parts []string
+
+	for _, f := range files {
+		if f.Filetype != "email" && f.Mode != "email" {
+			continue
+		}
+
+		var emailParts []string
+
+		if len(f.From) > 0 {
+			if s := formatEmailUser(f.From[0]); s != "" {
+				emailParts = append(emailParts, "From: "+s)
+			}
+		}
+
+		if len(f.Cc) > 0 {
+			var ccParts []string
+			for _, c := range f.Cc {
+				if s := formatEmailUser(c); s != "" {
+					ccParts = append(ccParts, s)
+				}
+			}
+			if len(ccParts) > 0 {
+				emailParts = append(emailParts, "CC: "+strings.Join(ccParts, "/"))
+			}
+		}
+
+		if f.Subject != "" {
+			emailParts = append(emailParts, fmt.Sprintf("Subject: %s", f.Subject))
+		} else if f.Title != "" {
+			emailParts = append(emailParts, fmt.Sprintf("Subject: %s", f.Title))
+		}
+
+		if len(emailParts) > 0 {
+			parts = append(parts, "Email, "+strings.Join(emailParts, ", "))
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func formatEmailUser(u slack.EmailFileUserInfo) string {
+	addr := strings.ReplaceAll(u.Address, "@", " at ")
+	if u.Name != "" && addr != "" {
+		return u.Name + " - " + addr
+	} else if u.Name != "" {
+		return u.Name
+	} else if addr != "" {
+		return addr
+	}
+	return ""
+}
+
 func AttachmentsTo2CSV(msgText string, attachments []slack.Attachment) string {
 	if len(attachments) == 0 {
 		return ""
