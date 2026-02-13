@@ -55,6 +55,9 @@ func (cl *Client) ClientCounts(ctx context.Context) (ClientCountsResponse, error
 	if err := cl.ParseResponse(&r, resp); err != nil {
 		return ClientCountsResponse{}, err
 	}
+	if err := r.validate("client.counts"); err != nil {
+		return ClientCountsResponse{}, err
+	}
 	return r, nil
 }
 
