@@ -32,6 +32,8 @@ const (
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
 	ToolConversationsSearchMessages = "conversations_search_messages"
+	ToolConversationsUnreads        = "conversations_unreads"
+	ToolConversationsMark           = "conversations_mark"
 	ToolChannelsList                = "channels_list"
 	ToolUsergroupsList              = "usergroups_list"
 	ToolUsergroupsMe                = "usergroups_me"
@@ -48,6 +50,8 @@ var ValidToolNames = []string{
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
 	ToolConversationsSearchMessages,
+	ToolConversationsUnreads,
+	ToolConversationsMark,
 	ToolChannelsList,
 	ToolUsergroupsList,
 	ToolUsergroupsMe,
@@ -292,50 +296,55 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		),
 	), conversationsHandler.UsersSearchHandler)
 
-	// Register unreads tool - gets all unread messages across channels efficiently
-	s.AddTool(mcp.NewTool("conversations_unreads",
-		mcp.WithDescription("Get unread messages across all channels. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (ext-*) > internal channels."),
-		mcp.WithTitleAnnotation("Get Unread Messages"),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithBoolean("include_messages",
-			mcp.Description("If true (default), returns the actual unread messages. If false, returns only a summary of channels with unreads."),
-			mcp.DefaultBool(true),
-		),
-		mcp.WithString("channel_types",
-			mcp.Description("Filter by channel type: 'all' (default), 'dm' (direct messages), 'group_dm' (group DMs), 'partner' (ext-* channels), 'internal' (other channels)."),
-			mcp.DefaultString("all"),
-		),
-		mcp.WithNumber("max_channels",
-			mcp.Description("Maximum number of channels to fetch unreads from. Default is 50."),
-			mcp.DefaultNumber(50),
-		),
-		mcp.WithNumber("max_messages_per_channel",
-			mcp.Description("Maximum messages to fetch per channel. Default is 10."),
-			mcp.DefaultNumber(10),
-		),
-		mcp.WithBoolean("mentions_only",
-			mcp.Description("If true, only returns channels where you have @mentions. Default is false."),
-			mcp.DefaultBool(false),
-		),
-		mcp.WithBoolean("include_muted",
-			mcp.Description("If true, includes muted channels in results. Default is false (muted channels are excluded, matching Slack app behavior)."),
-			mcp.DefaultBool(false),
-		),
-	), conversationsHandler.ConversationsUnreadsHandler)
+	// Register unreads tool - gets all unread messages across channels efficiently.
+	// Bot tokens (xoxb) don't support unread tracking, so exclude them (same pattern as search tool).
+	if !provider.IsBotToken() && shouldAddTool(ToolConversationsUnreads, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsUnreads,
+			mcp.WithDescription("Get unread messages across all channels. With browser session tokens (xoxc/xoxd), uses a single API call for complete results. With OAuth user tokens (xoxp), scans a subset of channels per type (limited by max_channels) — results may be partial on large workspaces. Results are prioritized: DMs > group DMs > partner channels > internal channels."),
+			mcp.WithTitleAnnotation("Get Unread Messages"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithBoolean("include_messages",
+				mcp.Description("If true (default), returns the actual unread messages. If false, returns only a summary of channels with unreads."),
+				mcp.DefaultBool(true),
+			),
+			mcp.WithString("channel_types",
+				mcp.Description("Filter by channel type: 'all' (default), 'dm' (direct messages), 'group_dm' (group DMs), 'partner' (ext-* channels), 'internal' (other channels)."),
+				mcp.DefaultString("all"),
+			),
+			mcp.WithNumber("max_channels",
+				mcp.Description("Maximum number of channels to fetch unreads from. Default is 50."),
+				mcp.DefaultNumber(50),
+			),
+			mcp.WithNumber("max_messages_per_channel",
+				mcp.Description("Maximum messages to fetch per channel. Default is 10."),
+				mcp.DefaultNumber(10),
+			),
+			mcp.WithBoolean("mentions_only",
+				mcp.Description("If true, only returns channels where you have @mentions. Default is false."),
+				mcp.DefaultBool(false),
+			),
+			mcp.WithBoolean("include_muted",
+				mcp.Description("If true, includes muted channels in results. Default is false (muted channels are excluded, matching Slack app behavior)."),
+				mcp.DefaultBool(false),
+			),
+		), conversationsHandler.ConversationsUnreadsHandler)
+	}
 
 	// Register mark tool - marks a channel as read
-	s.AddTool(mcp.NewTool("conversations_mark",
-		mcp.WithDescription("Mark a channel or DM as read. If no timestamp is provided, marks all messages as read."),
-		mcp.WithTitleAnnotation("Mark as Read"),
-		mcp.WithDestructiveHintAnnotation(false),
-		mcp.WithString("channel_id",
-			mcp.Required(),
-			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... (e.g., #general, @username)."),
-		),
-		mcp.WithString("ts",
-			mcp.Description("Timestamp of the message to mark as read up to. If not provided, marks all messages as read."),
-		),
-	), conversationsHandler.ConversationsMarkHandler)
+	if shouldAddTool(ToolConversationsMark, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsMark,
+			mcp.WithDescription("Mark a channel or DM as read. If no timestamp is provided, marks all messages as read."),
+			mcp.WithTitleAnnotation("Mark as Read"),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... (e.g., #general, @username)."),
+			),
+			mcp.WithString("ts",
+				mcp.Description("Timestamp of the message to mark as read up to. If not provided, marks all messages as read."),
+			),
+		), conversationsHandler.ConversationsMarkHandler)
+	}
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 	usergroupsHandler := handler.NewUsergroupsHandler(provider, logger)
 

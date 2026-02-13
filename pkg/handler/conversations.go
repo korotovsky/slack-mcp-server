@@ -120,6 +120,7 @@ type unreadsParams struct {
 	mentionsOnly          bool
 	includeMuted          bool
 	mutedChannels         map[string]bool // populated at runtime from Slack prefs
+	mutedUnavailable      bool            // true when muted channels could not be fetched (e.g. xoxp token)
 }
 
 type markParams struct {
@@ -642,20 +643,30 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		mutedChannels, err := ch.apiProvider.Slack().GetMutedChannels(ctx)
 		if err != nil {
 			ch.logger.Warn("Failed to fetch muted channels, proceeding without mute filter", zap.Error(err))
+			params.mutedUnavailable = true
 		} else if len(mutedChannels) > 0 {
 			params.mutedChannels = mutedChannels
 			ch.logger.Debug("Loaded muted channels", zap.Int("count", len(mutedChannels)))
 		}
 	}
 
-	// Try ClientCounts first (works with xoxc/xoxd browser tokens)
+	// Route based on token type:
+	// - xoxc/xoxd (browser session): use fast client.counts API
+	// - xoxp (OAuth user): fall back to conversations.info/history approach
+	// - xoxb (bot): not supported — unreads is a user-level concept
+	if ch.apiProvider.IsOAuth() {
+		if ch.apiProvider.IsBotToken() {
+			return nil, fmt.Errorf(
+				"conversations_unreads requires a user token (xoxp) or browser session tokens (xoxc/xoxd); " +
+					"bot tokens (xoxb) do not support unread tracking",
+			)
+		}
+		ch.logger.Info("OAuth token detected, using conversations.info fallback for unreads")
+		return ch.getUnreadsViaConversationsInfo(ctx, params)
+	}
+
 	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
 	if err != nil {
-		// Check if this is a token type error - fall back to conversations.info approach
-		if strings.Contains(err.Error(), "not_allowed_token_type") {
-			ch.logger.Info("ClientCounts not available for this token type, using conversations.info fallback")
-			return ch.getUnreadsViaConversationsInfo(ctx, params)
-		}
 		ch.logger.Error("ClientCounts failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to get client counts: %v", err)
 	}
@@ -896,66 +907,94 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 
 func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Context, params *unreadsParams) (*mcp.CallToolResult, error) {
 	usersMap := ch.apiProvider.ProvideUsersMap()
-	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+
+	// Define channel type groups in priority order.
+	// conversations.list returns channels in creation order (NOT by activity),
+	// so we scan each type independently with its own budget/scan cap.
+	type typeGroup struct {
+		slackTypes  []string // conversations.list "types" parameter values
+		channelType string   // our internal type label
+		budget      int      // max unread channels to return for this group
+		isDM        bool     // DMs get unread_count directly from conversations.info
+	}
+
+	// Allocate budgets: DMs get the full max_channels allocation,
+	// MPIMs and channels each get half. Each type group scans up to
+	// budget*2 channels to find unreads (see scanTypeGroupForUnreads).
+	dmBudget := params.maxChannels
+	mpimBudget := params.maxChannels / 2
+	channelBudget := params.maxChannels / 2
+
+	groups := []typeGroup{
+		{slackTypes: []string{"im"}, channelType: "dm", budget: dmBudget, isDM: true},
+		{slackTypes: []string{"mpim"}, channelType: "group_dm", budget: mpimBudget, isDM: false},
+		{slackTypes: []string{"public_channel", "private_channel"}, channelType: "", budget: channelBudget, isDM: false},
+	}
 
 	var unreadChannels []UnreadChannel
-	checkedCount := 0
+	totalAPIcalls := 0
+	totalScanned := 0
 
-	for channelID, cached := range channelsMaps.Channels {
-		if checkedCount >= params.maxChannels*2 {
-			break
+	for _, group := range groups {
+		// Apply channel_types filter: skip groups that don't match the requested filter.
+		if params.channelTypes != "all" {
+			match := false
+			switch params.channelTypes {
+			case "dm":
+				match = group.channelType == "dm"
+			case "group_dm":
+				match = group.channelType == "group_dm"
+			case "internal", "partner":
+				// Both internal and partner channels come from public/private channel types
+				match = group.channelType == ""
+			}
+			if !match {
+				continue
+			}
 		}
 
-		// Skip muted channels (unless include_muted is set)
-		if params.mutedChannels[channelID] {
-			continue
-		}
-
-		channelType := ch.categorizeChannelForFallback(cached)
-		if params.channelTypes != "all" && channelType != params.channelTypes {
-			continue
-		}
-
-		checkedCount++
-
-		info, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
-			ChannelID: channelID,
-		})
-		if err != nil {
-			ch.logger.Debug("Failed to get conversation info",
-				zap.String("channel", channelID),
-				zap.Error(err))
-			continue
-		}
-
-		if info.UnreadCount == 0 {
-			continue
-		}
-
-		channelName := ch.getChannelDisplayNameForFallback(cached, channelType, usersMap)
-
-		unreadChannels = append(unreadChannels, UnreadChannel{
-			ChannelID:   channelID,
-			ChannelName: channelName,
-			ChannelType: channelType,
-			UnreadCount: info.UnreadCount,
-			LastRead:    info.LastRead,
-			Latest:      "",
-		})
-
-		if len(unreadChannels) >= params.maxChannels {
-			break
-		}
+		found, apiCalls, scanned := ch.scanTypeGroupForUnreads(ctx, params, usersMap, group.slackTypes, group.channelType, group.budget, group.isDM)
+		unreadChannels = append(unreadChannels, found...)
+		totalAPIcalls += apiCalls
+		totalScanned += scanned
 	}
 
 	ch.sortChannelsByPriority(unreadChannels)
 
-	ch.logger.Debug("Found unread channels via fallback", zap.Int("count", len(unreadChannels)))
+	ch.logger.Info("Found unread channels via xoxp fallback",
+		zap.Int("count", len(unreadChannels)),
+		zap.Int("scanned", totalScanned),
+		zap.Int("apiCalls", totalAPIcalls))
+
+	// Prepend a note about xoxp limitations so the LLM understands
+	// these results may be partial.
+	mutedNote := ""
+	if params.mutedUnavailable && !params.includeMuted {
+		mutedNote = "Muted channel filtering is unavailable with xoxp tokens; results may include muted channels. "
+	}
+	xoxpNote := fmt.Sprintf(
+		"[xoxp token: scanned %d channels (%d API calls), found %d with unreads. %s"+
+			"Results may be incomplete — increase max_channels for broader coverage, "+
+			"or use xoxc/xoxd browser tokens for complete results.]\n\n",
+		totalScanned, totalAPIcalls, len(unreadChannels), mutedNote,
+	)
 
 	if !params.includeMessages {
-		return ch.marshalUnreadChannelsToCSV(unreadChannels)
+		result, err := ch.marshalUnreadChannelsToCSV(unreadChannels)
+		if err != nil {
+			return nil, err
+		}
+		// Prepend the xoxp note to the CSV output
+		if len(result.Content) > 0 {
+			if tc, ok := result.Content[0].(mcp.TextContent); ok {
+				tc.Text = xoxpNote + tc.Text
+				result.Content[0] = tc
+			}
+		}
+		return result, nil
 	}
 
+	// Fetch actual unread messages for each discovered channel
 	var allMessages []Message
 	for _, uc := range unreadChannels {
 		historyParams := slack.GetConversationHistoryParameters{
@@ -979,35 +1018,236 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 
 	ch.logger.Debug("Fetched unread messages via fallback", zap.Int("total", len(allMessages)))
 
-	return marshalMessagesToCSV(allMessages)
+	result, err := marshalMessagesToCSV(allMessages)
+	if err != nil {
+		return nil, err
+	}
+	// Prepend the xoxp note to the messages CSV output
+	if len(result.Content) > 0 {
+		if tc, ok := result.Content[0].(mcp.TextContent); ok {
+			tc.Text = xoxpNote + tc.Text
+			result.Content[0] = tc
+		}
+	}
+	return result, nil
 }
 
-func (ch *ConversationsHandler) categorizeChannelForFallback(cached provider.Channel) string {
-	if cached.IsIM {
-		return "dm"
+// scanTypeGroupForUnreads fetches channels of the given Slack types via conversations.list
+// and checks each for unreads via conversations.info.
+//
+// conversations.list does NOT sort by activity — it returns channels in creation order.
+// Unread channels can appear anywhere in the list, so we scan up to a capped number
+// per type group to keep API call count bounded (each channel costs 1-2 API calls).
+//
+// Returns the discovered unread channels, total API calls made, and channels scanned.
+func (ch *ConversationsHandler) scanTypeGroupForUnreads(
+	ctx context.Context,
+	params *unreadsParams,
+	usersMap *provider.UsersCache,
+	slackTypes []string,
+	groupType string,
+	budget int,
+	isDM bool,
+) ([]UnreadChannel, int, int) {
+	var unreadChannels []UnreadChannel
+	apiCalls := 0
+	scanned := 0
+
+	// conversations.list returns channels in creation order (not by activity),
+	// so unread channels can appear anywhere. We scan up to budget*2 channels
+	// per type group — a trade-off between coverage and API call count.
+	// Each channel costs 1 API call (DMs: conversations.info returns
+	// unread_count directly) or up to 2 calls (non-DMs: conversations.info
+	// for last_read + conversations.history to detect new messages).
+	//
+	// With the default max_channels=50, this gives:
+	//   DMs:      scan up to 100 channels (~100 API calls)
+	//   MPIMs:    scan up to  50 channels (~100 API calls)
+	//   Channels: scan up to  50 channels (~100 API calls)
+	//   Total:    ~300 API calls max (vs ~2000+ unbounded)
+	maxScan := budget * 2
+	if maxScan < 50 {
+		maxScan = 50
 	}
-	if cached.IsMpIM {
-		return "group_dm"
+
+	cursor := ""
+	for {
+		if len(unreadChannels) >= budget {
+			break
+		}
+		if maxScan > 0 && scanned >= maxScan {
+			break
+		}
+
+		// Fetch a page of channels from conversations.list
+		listParams := &slack.GetConversationsParameters{
+			Types:           slackTypes,
+			Limit:           200,
+			ExcludeArchived: true,
+			Cursor:          cursor,
+		}
+
+		channels, nextCursor, err := ch.apiProvider.Slack().GetConversationsContext(ctx, listParams)
+		apiCalls++
+		if err != nil {
+			ch.logger.Warn("Failed to list conversations for type group",
+				zap.Strings("types", slackTypes),
+				zap.Error(err))
+			break
+		}
+
+		if len(channels) == 0 {
+			break
+		}
+
+		for _, channel := range channels {
+			if len(unreadChannels) >= budget {
+				break
+			}
+			if maxScan > 0 && scanned >= maxScan {
+				break
+			}
+
+			// Skip muted channels
+			if params.mutedChannels[channel.ID] {
+				continue
+			}
+
+			scanned++
+
+			// Get full channel info including last_read and latest
+			info, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+				ChannelID: channel.ID,
+			})
+			apiCalls++
+			if err != nil {
+				ch.logger.Debug("Failed to get conversation info",
+					zap.String("channel", channel.ID),
+					zap.Error(err))
+				continue
+			}
+
+			// Determine if channel has unreads
+			hasUnreads := false
+			unreadCount := 0
+
+			if isDM {
+				// DMs: conversations.info returns unread_count directly
+				if info.UnreadCount > 0 {
+					hasUnreads = true
+					unreadCount = info.UnreadCount
+				}
+			} else {
+				// Channels/groups/MPIMs: conversations.info does NOT return
+				// unread_count or latest message for xoxp tokens. Use last_read
+				// with conversations.history to detect unreads.
+				//
+				// last_read values:
+				//   ""                    → never visited (skip — noise on large workspaces)
+				//   "0000000000.000000"   → never read (Slack sentinel, treat as "never visited")
+				//   "<timestamp>"         → last read position
+				lastRead := info.LastRead
+				neverVisited := lastRead == "" || lastRead == "0000000000.000000"
+
+				if neverVisited && groupType != "group_dm" {
+					// For regular channels: skip if never visited/read. On large
+					// workspaces this includes hundreds of auto-joined or dormant
+					// channels — skip to avoid flooding results with stale unreads.
+					// MPIMs are always intentional (someone added you), so check them.
+					continue
+				}
+
+				if neverVisited {
+					lastRead = "0" // normalize sentinel to valid oldest param
+				}
+
+				historyParams := slack.GetConversationHistoryParameters{
+					ChannelID: channel.ID,
+					Oldest:    lastRead,
+					Limit:     params.maxMessagesPerChannel,
+					Inclusive: false,
+				}
+				history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+				apiCalls++
+				if err != nil {
+					ch.logger.Debug("Failed to get history for unread check",
+						zap.String("channel", channel.ID),
+						zap.Error(err))
+				} else if len(history.Messages) > 0 {
+					hasUnreads = true
+					unreadCount = len(history.Messages)
+				}
+			}
+
+			if !hasUnreads {
+				continue
+			}
+
+			// Determine channel type and display name
+			channelType := groupType
+			if channelType == "" {
+				// For public/private channels, categorize as internal or partner
+				if info.IsExtShared {
+					channelType = "partner"
+				} else {
+					channelType = "internal"
+				}
+			}
+
+			// Apply channel_types filter for internal vs partner
+			if params.channelTypes != "all" && params.channelTypes != channelType {
+				continue
+			}
+
+			channelName := ch.getChannelDisplayName(info, channelType, usersMap)
+
+			latestTs := ""
+			if info.Latest != nil {
+				latestTs = info.Latest.Timestamp
+			}
+
+			unreadChannels = append(unreadChannels, UnreadChannel{
+				ChannelID:   channel.ID,
+				ChannelName: channelName,
+				ChannelType: channelType,
+				UnreadCount: unreadCount,
+				LastRead:    info.LastRead,
+				Latest:      latestTs,
+			})
+		}
+
+		// Move to next page if available
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
 	}
-	if cached.IsExtShared {
-		return "partner"
-	}
-	return "internal"
+
+	ch.logger.Debug("Scanned type group",
+		zap.Strings("types", slackTypes),
+		zap.Int("scanned", scanned),
+		zap.Int("found", len(unreadChannels)),
+		zap.Int("apiCalls", apiCalls))
+
+	return unreadChannels, apiCalls, scanned
 }
 
-func (ch *ConversationsHandler) getChannelDisplayNameForFallback(cached provider.Channel, channelType string, usersMap *provider.UsersCache) string {
+// getChannelDisplayName returns a human-readable name for a channel from conversations.info data.
+func (ch *ConversationsHandler) getChannelDisplayName(info *slack.Channel, channelType string, usersMap *provider.UsersCache) string {
 	switch channelType {
 	case "dm":
-		if cached.User != "" {
-			if u, ok := usersMap.Users[cached.User]; ok {
+		if info.User != "" {
+			if u, ok := usersMap.Users[info.User]; ok {
 				return "@" + u.Name
 			}
-			return "@" + cached.User
+			return "@" + info.User
 		}
-		return cached.ID
+		return info.ID
+	case "group_dm":
+		return info.Name
 	default:
-		name := cached.Name
-		if !strings.HasPrefix(name, "#") && channelType != "group_dm" {
+		name := info.Name
+		if !strings.HasPrefix(name, "#") {
 			return "#" + name
 		}
 		return name
