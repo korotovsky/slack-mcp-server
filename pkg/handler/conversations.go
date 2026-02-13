@@ -120,6 +120,7 @@ type unreadsParams struct {
 	mentionsOnly          bool
 	includeMuted          bool
 	mutedChannels         map[string]bool // populated at runtime from Slack prefs
+	mutedUnavailable      bool            // true when muted channels could not be fetched (e.g. xoxp token)
 }
 
 type markParams struct {
@@ -642,6 +643,7 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		mutedChannels, err := ch.apiProvider.Slack().GetMutedChannels(ctx)
 		if err != nil {
 			ch.logger.Warn("Failed to fetch muted channels, proceeding without mute filter", zap.Error(err))
+			params.mutedUnavailable = true
 		} else if len(mutedChannels) > 0 {
 			params.mutedChannels = mutedChannels
 			ch.logger.Debug("Loaded muted channels", zap.Int("count", len(mutedChannels)))
@@ -966,11 +968,15 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 
 	// Prepend a note about xoxp limitations so the LLM understands
 	// these results may be partial.
+	mutedNote := ""
+	if params.mutedUnavailable && !params.includeMuted {
+		mutedNote = "Muted channel filtering is unavailable with xoxp tokens; results may include muted channels. "
+	}
 	xoxpNote := fmt.Sprintf(
-		"[xoxp token: scanned %d channels (%d API calls), found %d with unreads. "+
+		"[xoxp token: scanned %d channels (%d API calls), found %d with unreads. %s"+
 			"Results may be incomplete — increase max_channels for broader coverage, "+
 			"or use xoxc/xoxd browser tokens for complete results.]\n\n",
-		totalScanned, totalAPIcalls, len(unreadChannels),
+		totalScanned, totalAPIcalls, len(unreadChannels), mutedNote,
 	)
 
 	if !params.includeMessages {

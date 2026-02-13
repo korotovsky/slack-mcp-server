@@ -49,6 +49,9 @@ func (cl *Client) GetMutedChannels(ctx context.Context) (map[string]bool, error)
 	if err := cl.ParseResponse(&prefsResp, resp); err != nil {
 		return nil, err
 	}
+	if err := prefsResp.validate("users.prefs.get"); err != nil {
+		return nil, err
+	}
 
 	// The all_notifications_prefs value is a JSON-encoded string inside the
 	// prefs map. Unmarshal it to get per-channel notification settings.
