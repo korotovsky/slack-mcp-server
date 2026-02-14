@@ -41,20 +41,20 @@ var validFilterKeys = map[string]struct{}{
 }
 
 type Message struct {
-	MsgID     string `json:"msgID"`
-	UserID    string `json:"userID"`
-	UserName  string `json:"userUser"`
-	RealName  string `json:"realName"`
-	Channel   string `json:"channelID"`
-	ThreadTs  string `json:"ThreadTs"`
-	Text      string `json:"text"`
-	Time      string `json:"time"`
-	Reactions string `json:"reactions,omitempty"`
-	BotName   string `json:"botName,omitempty"`
-	FileCount int    `json:"fileCount,omitempty"`
-	AttachmentIDs   string `json:"attachmentIDs,omitempty"`
-	HasMedia  bool   `json:"hasMedia,omitempty"`
-	Cursor    string `json:"cursor"`
+	MsgID         string `json:"msgID"`
+	UserID        string `json:"userID"`
+	UserName      string `json:"userUser"`
+	RealName      string `json:"realName"`
+	Channel       string `json:"channelID"`
+	ThreadTs      string `json:"ThreadTs"`
+	Text          string `json:"text"`
+	Time          string `json:"time"`
+	Reactions     string `json:"reactions,omitempty"`
+	BotName       string `json:"botName,omitempty"`
+	FileCount     int    `json:"fileCount,omitempty"`
+	AttachmentIDs string `json:"attachmentIDs,omitempty"`
+	HasMedia      bool   `json:"hasMedia,omitempty"`
+	Cursor        string `json:"cursor"`
 }
 
 type User struct {
@@ -591,9 +591,19 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
 
-	messages := ch.convertMessagesFromSearch(messagesRes.Matches)
-	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
+	matches := messagesRes.Matches
+	if isSafeSearchEnabled() {
+		matches = filterSafeSearch(matches)
+	}
+
+	messages := ch.convertMessagesFromSearch(matches)
+	if len(messagesRes.Matches) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
+
+		if len(messages) == 0 {
+			// No messages after filtering; create a dummy message to hold the cursor
+			messages = append(messages, Message{})
+		}
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
@@ -618,6 +628,22 @@ func isChannelAllowedForConfig(channel, config string) bool {
 		}
 	}
 	return isNegated
+}
+
+func isSafeSearchEnabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("SLACK_MCP_SAFE_SEARCH")))
+	return val == "true" || val == "1" || val == "yes"
+}
+
+func filterSafeSearch(messages []slack.SearchMessage) []slack.SearchMessage {
+	filtered := make([]slack.SearchMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Channel.IsPrivate || msg.Channel.IsMPIM || strings.HasPrefix(msg.Channel.ID, "D") {
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
 }
 
 func isChannelAllowed(channel string) bool {
@@ -722,19 +748,19 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		attachmentIDsStr := strings.Join(attachmentIDs, ",")
 
 		messages = append(messages, Message{
-			MsgID:     msg.Timestamp,
-			UserID:    msg.User,
-			UserName:  userName,
-			RealName:  realName,
-			Text:      text.ProcessText(msgText),
-			Channel:   channel,
-			ThreadTs:  msg.ThreadTimestamp,
-			Time:      timestamp,
-			Reactions: reactionsString,
-			BotName:   botName,
-			FileCount: fileCount,
-			AttachmentIDs:   attachmentIDsStr,
-			HasMedia:  hasMedia,
+			MsgID:         msg.Timestamp,
+			UserID:        msg.User,
+			UserName:      userName,
+			RealName:      realName,
+			Text:          text.ProcessText(msgText),
+			Channel:       channel,
+			ThreadTs:      msg.ThreadTimestamp,
+			Time:          timestamp,
+			Reactions:     reactionsString,
+			BotName:       botName,
+			FileCount:     fileCount,
+			AttachmentIDs: attachmentIDsStr,
+			HasMedia:      hasMedia,
 		})
 	}
 
@@ -1027,6 +1053,12 @@ func (ch *ConversationsHandler) parseParamsToolUsersSearch(request mcp.CallToolR
 func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (*searchParams, error) {
 	rawQuery := strings.TrimSpace(req.GetString("search_query", ""))
 	freeText, filters := splitQuery(rawQuery)
+
+	if isSafeSearchEnabled() {
+		if im := req.GetString("filter_in_im_or_mpim", ""); im != "" {
+			return nil, errors.New("filter_in_im_or_mpim is not allowed when SLACK_MCP_SAFE_SEARCH is enabled")
+		}
+	}
 
 	if req.GetBool("filter_threads_only", false) {
 		addFilter(filters, "is", "thread")
