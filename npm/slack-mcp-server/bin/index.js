@@ -25,6 +25,9 @@ function resolveBinaryPath() {
         if (process.env.SLACK_MCP_XOXP_TOKEN === '${user_config.xoxp_token}') {
             process.env.SLACK_MCP_XOXP_TOKEN = '';
         }
+        if (process.env.SLACK_MCP_XOXB_TOKEN === '${user_config.xoxb_token}') {
+            process.env.SLACK_MCP_XOXB_TOKEN = '';
+        }
         if (process.env.SLACK_MCP_ADD_MESSAGE_TOOL === '${user_config.add_message_tool}') {
             process.env.SLACK_MCP_ADD_MESSAGE_TOOL = '';
         }

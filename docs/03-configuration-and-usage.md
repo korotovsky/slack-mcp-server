@@ -258,9 +258,10 @@ docker-compose up -d
 
 ### Console Arguments
 
-| Argument              | Required ? | Description                                                              |
-|-----------------------|------------|--------------------------------------------------------------------------|
-| `--transport` or `-t` | Yes        | Select transport for the MCP Server, possible values are: `stdio`, `sse` |
+| Argument                    | Required ? | Description                                                                                                                                                                                                         |
+|-----------------------------|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--transport` or `-t`       | Yes        | Select transport for the MCP Server, possible values are: `stdio`, `sse`                                                                                                                                            |
+| `--enabled-tools` or `-e`   | No         | Comma-separated list of tools to register. If not set, all tools are registered. Runtime permissions (e.g., `SLACK_MCP_ADD_MESSAGE_TOOL`) are still enforced. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 ### Environment Variables
 
@@ -278,9 +279,88 @@ docker-compose up -d
 | `SLACK_MCP_SERVER_CA`             | No        | `nil`                     | Path to CA certificate                                                                                                                                                                                                                                                                    |
 | `SLACK_MCP_SERVER_CA_TOOLKIT`     | No        | `nil`                     | Inject HTTPToolkit CA certificate to root trust-store for MitM debugging                                                                                                                                                                                                                  |
 | `SLACK_MCP_SERVER_CA_INSECURE`    | No        | `false`                   | Trust all insecure requests (NOT RECOMMENDED)                                                                                                                                                                                                                                             |
-| `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` by setting it to true for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones, while an empty value disables posting by default. |
-| `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When the `conversations_add_message` tool is enabled, any new message sent will automatically be marked as read.                                                                                                                                                                          |
+| `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` by setting it to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When `conversations_add_message` is enabled (via `SLACK_MCP_ADD_MESSAGE_TOOL` or `SLACK_MCP_ENABLED_TOOLS`), setting this to `true` will automatically mark sent messages as read.                                                                                                        |
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_USERS_CACHE`           | No        | `.users_cache.json`       | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup.                                                                                                                                                                                |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `.channels_cache_v2.json` | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup.                                                                                                                                                                          |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var to be set OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
+
+### Tool Registration and Permissions
+
+#### Overview
+
+Tools are controlled at two levels:
+- **Registration** (`SLACK_MCP_ENABLED_TOOLS`) — determines which tools are visible to MCP clients
+- **Runtime permissions** (tool-specific env vars like `SLACK_MCP_ADD_MESSAGE_TOOL`) — channel restrictions for write tools
+
+Write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) are **not registered by default** to prevent accidental exposure. To enable them, you must either:
+1. Set their specific environment variable (e.g., `SLACK_MCP_ADD_MESSAGE_TOOL`), or
+2. Explicitly list them in `SLACK_MCP_ENABLED_TOOLS`
+
+Usergroups tools (`usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`) are **registered by default**. They require appropriate OAuth scopes (`usergroups:read` for read operations, `usergroups:write` for write operations).
+
+#### Examples
+
+**Example 1: Read-only mode (default)**
+
+By default, only read-only tools are available. No write tools are registered.
+
+```json
+{
+  "env": {
+    "SLACK_MCP_XOXP_TOKEN": "xoxp-..."
+  }
+}
+```
+
+**Example 2: Enable messaging to specific channels**
+
+Use `SLACK_MCP_ADD_MESSAGE_TOOL` to enable messaging with channel restrictions:
+
+```json
+{
+  "env": {
+    "SLACK_MCP_XOXP_TOKEN": "xoxp-...",
+    "SLACK_MCP_ADD_MESSAGE_TOOL": "C123456789,C987654321"
+  }
+}
+```
+
+**Example 3: Enable messaging without channel restrictions**
+
+Use `SLACK_MCP_ENABLED_TOOLS` to register write tools without restrictions:
+
+```json
+{
+  "env": {
+    "SLACK_MCP_XOXP_TOKEN": "xoxp-...",
+    "SLACK_MCP_ENABLED_TOOLS": "conversations_history,conversations_add_message,reactions_add"
+  }
+}
+```
+
+**Example 4: Minimal read-only setup**
+
+Expose only specific tools:
+
+```json
+{
+  "env": {
+    "SLACK_MCP_XOXP_TOKEN": "xoxp-...",
+    "SLACK_MCP_ENABLED_TOOLS": "channels_list,conversations_history"
+  }
+}
+```
+
+#### Behavior Matrix
+
+| `ENABLED_TOOLS` | Tool-specific env var | Write tool registered? | Channel restrictions |
+|-----------------|----------------------|------------------------|---------------------|
+| empty/not set   | not set              | No                     | N/A                 |
+| empty/not set   | `true`               | Yes                    | None                |
+| empty/not set   | `C123,C456`          | Yes                    | Only listed channels |
+| includes tool   | not set              | Yes                    | None                |
+| includes tool   | `C123,C456`          | Yes                    | Only listed channels |
+| excludes tool   | any                  | No                     | N/A                 |

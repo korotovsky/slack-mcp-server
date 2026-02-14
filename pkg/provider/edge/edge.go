@@ -64,6 +64,15 @@ var (
 	ErrNoToken  = errors.New("token is empty")
 )
 
+// getSlackBaseDomain returns the base domain for Slack API endpoints.
+// Returns "slack-gov.com" if SLACK_MCP_GOVSLACK=true, otherwise "slack.com".
+func getSlackBaseDomain() string {
+	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
+		return "slack-gov.com"
+	}
+	return "slack.com"
+}
+
 func NewWithClient(workspaceName string, teamID string, token string, cl *http.Client, opt ...Option) (*Client, error) {
 	if teamID == "" {
 		return nil, ErrNoTeamID
@@ -79,8 +88,8 @@ func NewWithClient(workspaceName string, teamID string, token string, cl *http.C
 		cl:           cl,
 		token:        token,
 		teamID:       teamID,
-		webclientAPI: fmt.Sprintf("https://%s.slack.com/api/", workspaceName),
-		edgeAPI:      fmt.Sprintf("https://edgeapi.slack.com/cache/%s/", teamID),
+		webclientAPI: fmt.Sprintf("https://%s.%s/api/", workspaceName, getSlackBaseDomain()),
+		edgeAPI:      fmt.Sprintf("https://edgeapi.%s/cache/%s/", getSlackBaseDomain(), teamID),
 		tape:         tape,
 	}, nil
 }
@@ -118,7 +127,7 @@ func NewWithInfo(info *slack.AuthTestResponse, prov auth.Provider, opt ...Option
 		token:        prov.SlackToken(),
 		teamID:       info.TeamID,
 		webclientAPI: info.URL + "api/",
-		edgeAPI:      fmt.Sprintf("https://edgeapi.slack.com/cache/%s/", info.TeamID),
+		edgeAPI:      fmt.Sprintf("https://edgeapi.%s/cache/%s/", getSlackBaseDomain(), info.TeamID),
 		tape:         nopTape{},
 	}
 

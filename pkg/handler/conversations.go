@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -25,6 +26,7 @@ import (
 const (
 	defaultConversationsNumericLimit    = 50
 	defaultConversationsExpressionLimit = "1d"
+	maxFileSizeBytes                    = 5 * 1024 * 1024 // 5MB limit
 )
 
 var validFilterKeys = map[string]struct{}{
@@ -39,22 +41,36 @@ var validFilterKeys = map[string]struct{}{
 }
 
 type Message struct {
-	MsgID     string `json:"msgID"`
-	UserID    string `json:"userID"`
-	UserName  string `json:"userUser"`
-	RealName  string `json:"realName"`
-	Channel   string `json:"channelID"`
-	ThreadTs  string `json:"ThreadTs"`
-	Text      string `json:"text"`
-	Time      string `json:"time"`
-	Reactions string `json:"reactions,omitempty"`
-	Cursor    string `json:"cursor"`
+	MsgID         string `json:"msgID"`
+	UserID        string `json:"userID"`
+	UserName      string `json:"userUser"`
+	RealName      string `json:"realName"`
+	Channel       string `json:"channelID"`
+	ThreadTs      string `json:"ThreadTs"`
+	Text          string `json:"text"`
+	Time          string `json:"time"`
+	Reactions     string `json:"reactions,omitempty"`
+	BotName       string `json:"botName,omitempty"`
+	FileCount     int    `json:"fileCount,omitempty"`
+	AttachmentIDs string `json:"attachmentIDs,omitempty"`
+	HasMedia      bool   `json:"hasMedia,omitempty"`
+	Cursor        string `json:"cursor"`
 }
 
 type User struct {
 	UserID   string `json:"userID"`
 	UserName string `json:"userName"`
 	RealName string `json:"realName"`
+}
+
+type UserSearchResult struct {
+	UserID      string `csv:"UserID"`
+	UserName    string `csv:"UserName"`
+	RealName    string `csv:"RealName"`
+	DisplayName string `csv:"DisplayName"`
+	Email       string `csv:"Email"`
+	Title       string `csv:"Title"`
+	DMChannelID string `csv:"DMChannelID"`
 }
 
 type conversationParams struct {
@@ -77,6 +93,21 @@ type addMessageParams struct {
 	threadTs    string
 	text        string
 	contentType string
+}
+
+type addReactionParams struct {
+	channel   string
+	timestamp string
+	emoji     string
+}
+
+type filesGetParams struct {
+	fileID string
+}
+
+type usersSearchParams struct {
+	query string
+	limit int
 }
 
 type ConversationsHandler struct {
@@ -155,7 +186,13 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolAddMessage(request)
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolAddMessage(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-message params", zap.Error(err))
 		return nil, err
@@ -230,11 +267,232 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	return marshalMessagesToCSV(messages)
 }
 
+// ReactionsAddHandler adds an emoji reaction to a message
+func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolReaction(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
+		return nil, err
+	}
+
+	itemRef := slack.ItemRef{
+		Channel:   params.channel,
+		Timestamp: params.timestamp,
+	}
+
+	ch.logger.Debug("Adding reaction to Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+		zap.String("emoji", params.emoji),
+	)
+
+	err = ch.apiProvider.Slack().AddReactionContext(ctx, params.emoji, itemRef)
+	if err != nil {
+		ch.logger.Error("Slack AddReactionContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully added :%s: reaction to message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+// ReactionsRemoveHandler removes an emoji reaction from a message
+func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolReaction(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
+		return nil, err
+	}
+
+	itemRef := slack.ItemRef{
+		Channel:   params.channel,
+		Timestamp: params.timestamp,
+	}
+
+	ch.logger.Debug("Removing reaction from Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+		zap.String("emoji", params.emoji),
+	)
+
+	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	if err != nil {
+		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("UsersSearchHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolUsersSearch(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse users-search params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Searching for users",
+		zap.String("query", params.query),
+		zap.Int("limit", params.limit),
+	)
+
+	users, err := ch.apiProvider.SearchUsers(ctx, params.query, params.limit)
+	if err != nil {
+		ch.logger.Error("UsersSearch failed", zap.Error(err))
+		return nil, fmt.Errorf("users search failed: %w", err)
+	}
+
+	channelsMap := ch.apiProvider.ProvideChannelsMaps()
+
+	results := make([]UserSearchResult, 0, len(users))
+	for _, user := range users {
+		if user.Deleted {
+			continue
+		}
+
+		dmChannelID := ""
+		for _, ch := range channelsMap.Channels {
+			if ch.IsIM && ch.User == user.ID {
+				dmChannelID = ch.ID
+				break
+			}
+		}
+
+		results = append(results, UserSearchResult{
+			UserID:      user.ID,
+			UserName:    user.Name,
+			RealName:    user.RealName,
+			DisplayName: user.Profile.DisplayName,
+			Email:       user.Profile.Email,
+			Title:       user.Profile.Title,
+			DMChannelID: dmChannelID,
+		})
+	}
+
+	if len(results) == 0 {
+		return mcp.NewToolResultText("No users found matching the query."), nil
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&results)
+	if err != nil {
+		ch.logger.Error("Failed to marshal users to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolFilesGet(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse attachment_get_data params", zap.Error(err))
+		return nil, err
+	}
+
+	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
+	if err != nil {
+		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	if fileInfo.Size > maxFileSizeBytes {
+		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxFileSizeBytes)
+	}
+
+	var buf bytes.Buffer
+	downloadURL := fileInfo.URLPrivateDownload
+	if downloadURL == "" {
+		downloadURL = fileInfo.URLPrivate
+	}
+	if downloadURL == "" {
+		return nil, errors.New("file has no downloadable URL")
+	}
+
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	if err != nil {
+		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	content := buf.Bytes()
+	encoding := "none"
+	var contentStr string
+
+	if isTextMimetype(fileInfo.Mimetype) {
+		contentStr = string(content)
+	} else {
+		contentStr = base64.StdEncoding.EncodeToString(content)
+		encoding = "base64"
+	}
+
+	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"encoding":"%s","content":"%s"}`,
+		fileInfo.ID,
+		escapeJSON(fileInfo.Name),
+		escapeJSON(fileInfo.Mimetype),
+		len(content),
+		encoding,
+		escapeJSON(contentStr))
+
+	return mcp.NewToolResultText(result), nil
+}
+
+func isTextMimetype(mimetype string) bool {
+	if strings.HasPrefix(mimetype, "text/") {
+		return true
+	}
+	textMimetypes := map[string]bool{
+		"application/json":       true,
+		"application/xml":        true,
+		"application/javascript": true,
+		"application/x-yaml":     true,
+		"application/x-sh":       true,
+	}
+	return textMimetypes[mimetype]
+}
+
+func escapeJSON(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
+
 // ConversationsHistoryHandler streams conversation history as CSV
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(request)
+	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse history params", zap.Error(err))
 		return nil, err
@@ -275,7 +533,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(request)
+	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse replies params", zap.Error(err))
 		return nil, err
@@ -351,24 +609,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	return marshalMessagesToCSV(messages)
 }
 
-func isSafeSearchEnabled() bool {
-	val := strings.ToLower(strings.TrimSpace(os.Getenv("SLACK_MCP_SAFE_SEARCH")))
-	return val == "true" || val == "1" || val == "yes"
-}
-
-func filterSafeSearch(messages []slack.SearchMessage) []slack.SearchMessage {
-	filtered := make([]slack.SearchMessage, 0, len(messages))
-	for _, msg := range messages {
-		if msg.Channel.IsPrivate || msg.Channel.IsMPIM || strings.HasPrefix(msg.Channel.ID, "D") {
-			continue
-		}
-		filtered = append(filtered, msg)
-	}
-	return filtered
-}
-
-func isChannelAllowed(channel string) bool {
-	config := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+func isChannelAllowedForConfig(channel, config string) bool {
 	if config == "" || config == "true" || config == "1" {
 		return true
 	}
@@ -386,7 +627,76 @@ func isChannelAllowed(channel string) bool {
 			}
 		}
 	}
-	return !isNegated
+	return isNegated
+}
+
+func isSafeSearchEnabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("SLACK_MCP_SAFE_SEARCH")))
+	return val == "true" || val == "1" || val == "yes"
+}
+
+func filterSafeSearch(messages []slack.SearchMessage) []slack.SearchMessage {
+	filtered := make([]slack.SearchMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Channel.IsPrivate || msg.Channel.IsMPIM || strings.HasPrefix(msg.Channel.ID, "D") {
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
+func isChannelAllowed(channel string) bool {
+	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
+}
+
+func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
+	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
+		return channel, nil
+	}
+
+	// First attempt: try to resolve from current cache
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+	chn, ok := channelsMaps.ChannelsInv[channel]
+	if ok {
+		return channelsMaps.Channels[chn].ID, nil
+	}
+
+	// Channel not found - try refreshing cache and retry once
+	ch.logger.Debug("Channel not found in cache, attempting refresh",
+		zap.String("channel", channel))
+
+	refreshErr := ch.apiProvider.ForceRefreshChannels(ctx)
+	wasRateLimited := errors.Is(refreshErr, provider.ErrRefreshRateLimited)
+
+	if refreshErr != nil && !wasRateLimited {
+		ch.logger.Error("Failed to refresh channels cache",
+			zap.String("channel", channel),
+			zap.Error(refreshErr))
+		return "", fmt.Errorf("channel %q not found and cache refresh failed: %w", channel, refreshErr)
+	}
+
+	// If rate-limited, cache wasn't refreshed - no point in a second lookup
+	if wasRateLimited {
+		ch.logger.Warn("Channel not found; cache refresh was rate-limited",
+			zap.String("channel", channel))
+		return "", fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channel)
+	}
+
+	// Second attempt after successful refresh
+	channelsMaps = ch.apiProvider.ProvideChannelsMaps()
+	chn, ok = channelsMaps.ChannelsInv[channel]
+	if !ok {
+		ch.logger.Error("Channel not found even after cache refresh",
+			zap.String("channel", channel))
+		return "", fmt.Errorf("channel %q not found", channel)
+	}
+
+	ch.logger.Debug("Channel found after cache refresh",
+		zap.String("channel", channel),
+		zap.String("channel_id", channelsMaps.Channels[chn].ID))
+
+	return channelsMaps.Channels[chn].ID, nil
 }
 
 func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack.Message, channel string, includeActivity bool) []Message {
@@ -395,7 +705,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 	warn := false
 
 	for _, msg := range slackMessages {
-		if (msg.SubType != "" && msg.SubType != "bot_message") && !includeActivity {
+		if (msg.SubType != "" && msg.SubType != "bot_message" && msg.SubType != "thread_broadcast") && !includeActivity {
 			continue
 		}
 
@@ -423,16 +733,34 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		}
 		reactionsString := strings.Join(reactionParts, "|")
 
+		botName := ""
+		if msg.BotProfile != nil && msg.BotProfile.Name != "" {
+			botName = msg.BotProfile.Name
+		}
+
+		fileCount := len(msg.Files)
+		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
+
+		var attachmentIDs []string
+		for _, f := range msg.Files {
+			attachmentIDs = append(attachmentIDs, f.ID)
+		}
+		attachmentIDsStr := strings.Join(attachmentIDs, ",")
+
 		messages = append(messages, Message{
-			MsgID:     msg.Timestamp,
-			UserID:    msg.User,
-			UserName:  userName,
-			RealName:  realName,
-			Text:      text.ProcessText(msgText),
-			Channel:   channel,
-			ThreadTs:  msg.ThreadTimestamp,
-			Time:      timestamp,
-			Reactions: reactionsString,
+			MsgID:         msg.Timestamp,
+			UserID:        msg.User,
+			UserName:      userName,
+			RealName:      realName,
+			Text:          text.ProcessText(msgText),
+			Channel:       channel,
+			ThreadTs:      msg.ThreadTimestamp,
+			Time:          timestamp,
+			Reactions:     reactionsString,
+			BotName:       botName,
+			FileCount:     fileCount,
+			AttachmentIDs: attachmentIDsStr,
+			HasMedia:      hasMedia,
 		})
 	}
 
@@ -471,6 +799,8 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 
 		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
 
+		hasMedia := hasImageBlocks(msg.Blocks)
+
 		messages = append(messages, Message{
 			MsgID:     msg.Timestamp,
 			UserID:    msg.User,
@@ -481,6 +811,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 			ThreadTs:  threadTs,
 			Time:      timestamp,
 			Reactions: "",
+			HasMedia:  hasMedia,
 		})
 	}
 
@@ -495,7 +826,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 	return messages
 }
 
-func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToolRequest) (*conversationParams, error) {
+func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context, request mcp.CallToolRequest) (*conversationParams, error) {
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
 		ch.logger.Error("channel_id missing in conversations params")
@@ -542,13 +873,12 @@ func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToo
 			}
 			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
 		}
-		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			ch.logger.Error("Channel not found in synced cache", zap.String("channel", channel))
-			return nil, fmt.Errorf("channel %q not found in synced cache. Try to remove old cache file and restart MCP Server", channel)
+		// Use resolveChannelID which includes refresh-on-error logic
+		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
+		if err != nil {
+			return nil, err
 		}
-		channel = channelsMaps.Channels[chn].ID
+		channel = resolvedChannel
 	}
 
 	return &conversationParams{
@@ -561,16 +891,21 @@ func (ch *ConversationsHandler) parseParamsToolConversations(request mcp.CallToo
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRequest) (*addMessageParams, error) {
+func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
 	if toolConfig == "" {
-		ch.logger.Error("Add-message tool disabled by default")
-		return nil, errors.New(
-			"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming." +
-				"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels" +
-				"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890'" +
-				"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
-		)
+		if !strings.Contains(enabledTools, "conversations_add_message") {
+			ch.logger.Error("Add-message tool disabled by default")
+			return nil, errors.New(
+				"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming. " +
+					"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+					"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
+					"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
+			)
+		}
+		toolConfig = "true"
 	}
 
 	channel := request.GetString("channel_id", "")
@@ -578,14 +913,10 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		ch.logger.Error("channel_id missing in add-message params")
 		return nil, errors.New("channel_id must be a string")
 	}
-	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
-		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			ch.logger.Error("Channel not found", zap.String("channel", channel))
-			return nil, fmt.Errorf("channel %q not found", channel)
-		}
-		channel = channelsMaps.Channels[chn].ID
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
 	}
 	if !isChannelAllowed(channel) {
 		ch.logger.Warn("Add-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
@@ -598,7 +929,11 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
-	msgText := request.GetString("payload", "")
+	msgText := request.GetString("text", "")
+	if msgText == "" {
+		// Backward compatibility with "payload" parameter
+		msgText = request.GetString("payload", "")
+	}
 	if msgText == "" {
 		ch.logger.Error("Message text missing")
 		return nil, errors.New("text must be a string")
@@ -615,6 +950,103 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(request mcp.CallToolRe
 		threadTs:    threadTs,
 		text:        msgText,
 		contentType: contentType,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, request mcp.CallToolRequest) (*addReactionParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !strings.Contains(enabledTools, "reactions_add") && !strings.Contains(enabledTools, "reactions_remove") {
+			ch.logger.Error("Reactions tool disabled by default")
+			return nil, errors.New(
+				"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
+					"To enable them, set the SLACK_MCP_REACTION_TOOL environment variable to true, 1, or comma separated list of channels " +
+					"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_REACTION_TOOL=C1234567890,D0987654321', 'SLACK_MCP_REACTION_TOOL=!C1234567890' " +
+					"to enable all except one or 'SLACK_MCP_REACTION_TOOL=true' for all channels and DMs",
+			)
+		}
+		toolConfig = "true"
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+	if !isChannelAllowedForConfig(channel, toolConfig) {
+		ch.logger.Warn("Reactions tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("reactions tools are not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		return nil, errors.New("timestamp is required")
+	}
+
+	emoji := strings.Trim(request.GetString("emoji", ""), ":")
+	if emoji == "" {
+		return nil, errors.New("emoji is required")
+	}
+
+	return &addReactionParams{
+		channel:   channel,
+		timestamp: timestamp,
+		emoji:     emoji,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_ATTACHMENT_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !strings.Contains(enabledTools, "attachment_get_data") {
+			ch.logger.Error("Attachment tool disabled by default")
+			return nil, errors.New(
+				"by default, the attachment_get_data tool is disabled. " +
+					"To enable it, set the SLACK_MCP_ATTACHMENT_TOOL environment variable to true or 1",
+			)
+		}
+		toolConfig = "true"
+	}
+	if toolConfig != "true" && toolConfig != "1" && toolConfig != "yes" {
+		ch.logger.Error("Attachment tool disabled", zap.String("config", toolConfig))
+		return nil, errors.New("SLACK_MCP_ATTACHMENT_TOOL must be set to 'true', '1', or 'yes' to enable")
+	}
+
+	fileID := request.GetString("file_id", "")
+	if fileID == "" {
+		return nil, errors.New("file_id is required")
+	}
+
+	return &filesGetParams{
+		fileID: fileID,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolUsersSearch(request mcp.CallToolRequest) (*usersSearchParams, error) {
+	query := strings.TrimSpace(request.GetString("query", ""))
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+
+	limit := request.GetInt("limit", 10)
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	return &usersSearchParams{
+		query: query,
+		limit: limit,
 	}, nil
 }
 
@@ -717,10 +1149,15 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 	}, nil
 }
 
+// Slack user IDs may begin with U or W: https://docs.slack.dev/changelog/2016/08/11/user-id-format-changes
+func isSlackUserIDPrefix(s string) bool {
+	return strings.HasPrefix(s, "U") || strings.HasPrefix(s, "W")
+}
+
 func (ch *ConversationsHandler) paramFormatUser(raw string) (string, error) {
 	users := ch.apiProvider.ProvideUsersMap()
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "U") {
+	if isSlackUserIDPrefix(raw) {
 		u, ok := users.Users[raw]
 		if !ok {
 			return "", fmt.Errorf("user %q not found", raw)
@@ -1033,4 +1470,13 @@ func buildQuery(freeText []string, filters map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+func hasImageBlocks(blocks slack.Blocks) bool {
+	for _, block := range blocks.BlockSet {
+		if block.BlockType() == slack.MBTImage {
+			return true
+		}
+	}
+	return false
 }
