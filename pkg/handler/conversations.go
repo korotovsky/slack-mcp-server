@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gocarina/gocsv"
+	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
@@ -934,6 +935,7 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 	var unreadChannels []UnreadChannel
 	totalAPIcalls := 0
 	totalScanned := 0
+	totalRateLimited := 0
 
 	for _, group := range groups {
 		// Apply channel_types filter: skip groups that don't match the requested filter.
@@ -953,10 +955,11 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 			}
 		}
 
-		found, apiCalls, scanned := ch.scanTypeGroupForUnreads(ctx, params, usersMap, group.slackTypes, group.channelType, group.budget, group.isDM)
+		found, apiCalls, scanned, rateLimited := ch.scanTypeGroupForUnreads(ctx, params, usersMap, group.slackTypes, group.channelType, group.budget, group.isDM)
 		unreadChannels = append(unreadChannels, found...)
 		totalAPIcalls += apiCalls
 		totalScanned += scanned
+		totalRateLimited += rateLimited
 	}
 
 	ch.sortChannelsByPriority(unreadChannels)
@@ -964,7 +967,8 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 	ch.logger.Info("Found unread channels via xoxp fallback",
 		zap.Int("count", len(unreadChannels)),
 		zap.Int("scanned", totalScanned),
-		zap.Int("apiCalls", totalAPIcalls))
+		zap.Int("apiCalls", totalAPIcalls),
+		zap.Int("rateLimited", totalRateLimited))
 
 	// Prepend a note about xoxp limitations so the LLM understands
 	// these results may be partial.
@@ -972,11 +976,15 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 	if params.mutedUnavailable && !params.includeMuted {
 		mutedNote = "Muted channel filtering is unavailable with xoxp tokens; results may include muted channels. "
 	}
+	rateLimitNote := ""
+	if totalRateLimited > 0 {
+		rateLimitNote = fmt.Sprintf("WARNING: %d channels were skipped due to Slack rate limiting (even after retries) — results are degraded. Try again after a brief cooldown. ", totalRateLimited)
+	}
 	xoxpNote := fmt.Sprintf(
-		"[xoxp token: scanned %d channels (%d API calls), found %d with unreads. %s"+
+		"[xoxp token: scanned %d channels (%d API calls), found %d with unreads. %s%s"+
 			"Results may be incomplete — increase max_channels for broader coverage, "+
 			"or use xoxc/xoxd browser tokens for complete results.]\n\n",
-		totalScanned, totalAPIcalls, len(unreadChannels), mutedNote,
+		totalScanned, totalAPIcalls, len(unreadChannels), rateLimitNote, mutedNote,
 	)
 
 	if !params.includeMessages {
@@ -1032,6 +1040,17 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 	return result, nil
 }
 
+// slackRetryAfter checks if an error is a Slack rate limit error and returns
+// the retry-after duration. Returns 0 for non-rate-limit errors.
+// Used as the retryAfter callback for limiter.CallWithRetry.
+func slackRetryAfter(err error) time.Duration {
+	var rle *slack.RateLimitedError
+	if errors.As(err, &rle) {
+		return rle.RetryAfter
+	}
+	return 0
+}
+
 // scanTypeGroupForUnreads fetches channels of the given Slack types via conversations.list
 // and checks each for unreads via conversations.info.
 //
@@ -1039,7 +1058,8 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 // Unread channels can appear anywhere in the list, so we scan up to a capped number
 // per type group to keep API call count bounded (each channel costs 1-2 API calls).
 //
-// Returns the discovered unread channels, total API calls made, and channels scanned.
+// Returns the discovered unread channels, total API calls made, channels scanned,
+// and the number of channels skipped due to rate limiting.
 func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 	ctx context.Context,
 	params *unreadsParams,
@@ -1048,10 +1068,16 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 	groupType string,
 	budget int,
 	isDM bool,
-) ([]UnreadChannel, int, int) {
+) ([]UnreadChannel, int, int, int) {
 	var unreadChannels []UnreadChannel
 	apiCalls := 0
 	scanned := 0
+	rateLimited := 0
+
+	// Proactive rate limiter for conversations.info (Tier 3: ~50 req/min).
+	// Without this, the scan fires requests as fast as the network allows,
+	// triggering cascading 429s that silently skip channels.
+	rl := limiter.Tier3.Limiter()
 
 	// conversations.list returns channels in creation order (not by activity),
 	// so unread channels can appear anywhere. We scan up to budget*2 channels
@@ -1115,15 +1141,28 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 
 			scanned++
 
-			// Get full channel info including last_read and latest
-			info, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
-				ChannelID: channel.ID,
+			// Get full channel info including last_read and latest.
+			// Uses rate limiting + retry to avoid cascading 429 errors
+			// that silently skip channels (see: slack-go does NOT auto-retry
+			// on *RateLimitedError for standard client methods).
+			info, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.Channel, error) {
+				return ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+					ChannelID: channel.ID,
+				})
 			})
 			apiCalls++
 			if err != nil {
-				ch.logger.Debug("Failed to get conversation info",
-					zap.String("channel", channel.ID),
-					zap.Error(err))
+				var rle *slack.RateLimitedError
+				if errors.As(err, &rle) {
+					rateLimited++
+					ch.logger.Warn("Rate limited on conversation info (retries exhausted)",
+						zap.String("channel", channel.ID),
+						zap.Duration("retryAfter", rle.RetryAfter))
+				} else {
+					ch.logger.Debug("Failed to get conversation info",
+						zap.String("channel", channel.ID),
+						zap.Error(err))
+				}
 				continue
 			}
 
@@ -1167,12 +1206,22 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 					Limit:     params.maxMessagesPerChannel,
 					Inclusive: false,
 				}
-				history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+				history, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.GetConversationHistoryResponse, error) {
+					return ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+				})
 				apiCalls++
 				if err != nil {
-					ch.logger.Debug("Failed to get history for unread check",
-						zap.String("channel", channel.ID),
-						zap.Error(err))
+					var rle *slack.RateLimitedError
+					if errors.As(err, &rle) {
+						rateLimited++
+						ch.logger.Warn("Rate limited on conversation history (retries exhausted)",
+							zap.String("channel", channel.ID),
+							zap.Duration("retryAfter", rle.RetryAfter))
+					} else {
+						ch.logger.Debug("Failed to get history for unread check",
+							zap.String("channel", channel.ID),
+							zap.Error(err))
+					}
 				} else if len(history.Messages) > 0 {
 					hasUnreads = true
 					unreadCount = len(history.Messages)
@@ -1227,9 +1276,10 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 		zap.Strings("types", slackTypes),
 		zap.Int("scanned", scanned),
 		zap.Int("found", len(unreadChannels)),
-		zap.Int("apiCalls", apiCalls))
+		zap.Int("apiCalls", apiCalls),
+		zap.Int("rateLimited", rateLimited))
 
-	return unreadChannels, apiCalls, scanned
+	return unreadChannels, apiCalls, scanned, rateLimited
 }
 
 // getChannelDisplayName returns a human-readable name for a channel from conversations.info data.
