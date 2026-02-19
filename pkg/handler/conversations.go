@@ -1003,6 +1003,7 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 	}
 
 	// Fetch actual unread messages for each discovered channel
+	rl := limiter.Tier3.Limiter()
 	var allMessages []Message
 	for _, uc := range unreadChannels {
 		historyParams := slack.GetConversationHistoryParameters{
@@ -1012,7 +1013,9 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 			Inclusive: false,
 		}
 
-		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		history, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.GetConversationHistoryResponse, error) {
+			return ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		})
 		if err != nil {
 			ch.logger.Warn("Failed to get history for channel",
 				zap.String("channel", uc.ChannelID),
