@@ -202,6 +202,11 @@ type SlackAPI interface {
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
 
+	// Used to list only channels the calling user is a member of (users.conversations).
+	// For xoxp tokens this is more efficient than conversations.list because it excludes
+	// non-member public channels and closed DMs that cannot have unreads.
+	GetConversationsForUserContext(ctx context.Context, params *slack.GetConversationsForUserParameters) ([]slack.Channel, string, error)
+
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
@@ -401,6 +406,10 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	}
 
 	return c.slackClient.GetConversationsContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetConversationsForUserContext(ctx context.Context, params *slack.GetConversationsForUserParameters) ([]slack.Channel, string, error) {
+	return c.slackClient.GetConversationsForUserContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
