@@ -39,6 +39,10 @@ func AttachmentToText(att slack.Attachment) string {
 		parts = append(parts, fmt.Sprintf("Footer: %s @ %s", att.Footer, ts))
 	}
 
+	if blocksText := BlocksToText(att.Blocks); blocksText != "" {
+		parts = append(parts, fmt.Sprintf("Blocks: %s", blocksText))
+	}
+
 	result := strings.Join(parts, "; ")
 
 	result = strings.ReplaceAll(result, "\n", " ")
@@ -49,6 +53,102 @@ func AttachmentToText(att slack.Attachment) string {
 	result = strings.TrimSpace(result)
 
 	return result
+}
+
+// BlocksToText extracts text content from Slack Block Kit structures.
+func BlocksToText(blocks slack.Blocks) string {
+	if len(blocks.BlockSet) == 0 {
+		return ""
+	}
+
+	var parts []string
+
+	for _, block := range blocks.BlockSet {
+		switch b := block.(type) {
+		case *slack.HeaderBlock:
+			if b.Text != nil && b.Text.Text != "" {
+				parts = append(parts, b.Text.Text)
+			}
+		case *slack.SectionBlock:
+			if b.Text != nil && b.Text.Text != "" {
+				parts = append(parts, b.Text.Text)
+			}
+			for _, field := range b.Fields {
+				if field != nil && field.Text != "" {
+					parts = append(parts, field.Text)
+				}
+			}
+		case *slack.RichTextBlock:
+			if t := richTextBlockToText(b); t != "" {
+				parts = append(parts, t)
+			}
+		case *slack.ContextBlock:
+			for _, elem := range b.ContextElements.Elements {
+				if txt, ok := elem.(*slack.TextBlockObject); ok && txt != nil && txt.Text != "" {
+					parts = append(parts, txt.Text)
+				}
+			}
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func richTextBlockToText(rtb *slack.RichTextBlock) string {
+	var parts []string
+
+	for _, elem := range rtb.Elements {
+		if t := richTextElementToText(elem); t != "" {
+			parts = append(parts, t)
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func richTextElementToText(elem slack.RichTextElement) string {
+	switch e := elem.(type) {
+	case *slack.RichTextSection:
+		return richTextSectionToText(e)
+	case *slack.RichTextList:
+		var parts []string
+		for _, listElem := range e.Elements {
+			if t := richTextElementToText(listElem); t != "" {
+				parts = append(parts, t)
+			}
+		}
+		return strings.Join(parts, " ")
+	case *slack.RichTextQuote:
+		return richTextSectionToText((*slack.RichTextSection)(e))
+	case *slack.RichTextPreformatted:
+		return richTextSectionToText(&e.RichTextSection)
+	}
+	return ""
+}
+
+func richTextSectionToText(section *slack.RichTextSection) string {
+	var parts []string
+
+	for _, elem := range section.Elements {
+		switch e := elem.(type) {
+		case *slack.RichTextSectionTextElement:
+			if e.Text != "" {
+				parts = append(parts, e.Text)
+			}
+		case *slack.RichTextSectionLinkElement:
+			if e.Text != "" {
+				parts = append(parts, e.Text)
+			} else if e.URL != "" {
+				parts = append(parts, e.URL)
+			}
+		case *slack.RichTextSectionBroadcastElement:
+			if e.Range != "" {
+				parts = append(parts, "@"+e.Range)
+			}
+		}
+	}
+
+	return strings.Join(parts, "")
 }
 
 func AttachmentsTo2CSV(msgText string, attachments []slack.Attachment) string {
