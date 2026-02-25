@@ -154,6 +154,19 @@ func NewConversationsHandlerWithOAuth(tokenStorage oauth.TokenStorage, logger *z
 	}
 }
 
+// getEffectiveClient returns a Slack client for the current request.
+// In OAuth mode, creates a per-user client from the request context.
+// In legacy mode, checks provider readiness and returns the shared client.
+func (ch *ConversationsHandler) getEffectiveClient(ctx context.Context) (*slack.Client, error) {
+	if ch.oauthEnabled {
+		return ch.getSlackClient(ctx)
+	}
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		return nil, err
+	}
+	return ch.apiProvider.SlackClient(), nil
+}
+
 // getSlackClient creates a Slack client for the current request (OAuth mode)
 // Returns user client by default
 func (h *ConversationsHandler) getSlackClient(ctx context.Context) (*slack.Client, error) {
@@ -346,21 +359,10 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
-	// Get Slack client (OAuth or legacy)
 	// Note: Bot posting is disabled - users always post as themselves
-	var slackClient *slack.Client
-	if ch.oauthEnabled {
-		var err error
-		slackClient, err = ch.getSlackClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// provider readiness
-		if ready, err := ch.apiProvider.IsReady(); !ready {
-			ch.logger.Error("API provider not ready", zap.Error(err))
-			return nil, err
-		}
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	params, err := ch.parseParamsToolAddMessage(ctx, request)
@@ -406,11 +408,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	)
 
 	var respChannel, respTimestamp string
-	if ch.oauthEnabled {
-		respChannel, respTimestamp, err = slackClient.PostMessageContext(ctx, params.channel, options...)
-	} else {
-		respChannel, respTimestamp, err = ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
-	}
+	respChannel, respTimestamp, err = slackClient.PostMessageContext(ctx, params.channel, options...)
 	if err != nil {
 		ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
 		return nil, err
@@ -418,12 +416,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
 	if toolConfig == "1" || toolConfig == "true" || toolConfig == "yes" {
-		var markErr error
-		if ch.oauthEnabled {
-			markErr = slackClient.MarkConversationContext(ctx, params.channel, respTimestamp)
-		} else {
-			markErr = ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
-		}
+		markErr := slackClient.MarkConversationContext(ctx, params.channel, respTimestamp)
 		if markErr != nil {
 			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(markErr))
 		}
@@ -438,15 +431,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		Inclusive: true,
 	}
 
-	var history *slack.GetConversationHistoryResponse
-	if ch.oauthEnabled {
-		if slackClient == nil {
-			return nil, fmt.Errorf("slack client is nil in OAuth mode")
-		}
-		history, err = slackClient.GetConversationHistoryContext(ctx, &historyParams)
-	} else {
-		history, err = ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
-	}
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
 		return nil, err
@@ -465,9 +450,8 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -488,7 +472,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().AddReactionContext(ctx, params.emoji, itemRef)
+	err = slackClient.AddReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack AddReactionContext failed", zap.Error(err))
 		return nil, err
@@ -501,9 +485,8 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -524,7 +507,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	err = slackClient.RemoveReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
 		return nil, err
@@ -601,8 +584,8 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -612,7 +595,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
+	fileInfo, _, _, err := slackClient.GetFileInfoContext(ctx, params.fileID, 0, 0)
 	if err != nil {
 		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
 		return nil, err
@@ -631,7 +614,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, errors.New("file has no downloadable URL")
 	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	err = slackClient.GetFileContext(ctx, downloadURL, &buf)
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
@@ -686,14 +669,9 @@ func escapeJSON(s string) string {
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))
 
-	// Get Slack client (OAuth or legacy)
-	var slackClient *slack.Client
-	if ch.oauthEnabled {
-		client, err := ch.getSlackClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-		slackClient = client
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	params, err := ch.parseParamsToolConversations(ctx, slackClient, request)
@@ -718,15 +696,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		Inclusive: false,
 	}
 
-	var history *slack.GetConversationHistoryResponse
-	if ch.oauthEnabled {
-		if slackClient == nil {
-			return nil, fmt.Errorf("slack client is nil in OAuth mode")
-		}
-		history, err = slackClient.GetConversationHistoryContext(ctx, &historyParams)
-	} else {
-		history, err = ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
-	}
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
 		return nil, err
@@ -750,14 +720,9 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))
 
-	// Get Slack client (OAuth or legacy)
-	var slackClient *slack.Client
-	if ch.oauthEnabled {
-		client, err := ch.getSlackClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-		slackClient = client
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	params, err := ch.parseParamsToolConversations(ctx, slackClient, request)
@@ -781,14 +746,7 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		Inclusive: false,
 	}
 
-	var replies []slack.Message
-	var hasMore bool
-	var nextCursor string
-	if ch.oauthEnabled {
-		replies, hasMore, nextCursor, err = slackClient.GetConversationRepliesContext(ctx, &repliesParams)
-	} else {
-		replies, hasMore, nextCursor, err = ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &repliesParams)
-	}
+	replies, hasMore, nextCursor, err := slackClient.GetConversationRepliesContext(ctx, &repliesParams)
 	if err != nil {
 		ch.logger.Error("GetConversationRepliesContext failed", zap.Error(err))
 		return nil, err
@@ -805,14 +763,9 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsSearchHandler called", zap.Any("params", request.Params))
 
-	// Get Slack client (OAuth or legacy)
-	var slackClient *slack.Client
-	if ch.oauthEnabled {
-		client, err := ch.getSlackClient(ctx)
-		if err != nil {
-			return nil, err
-		}
-		slackClient = client
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check if search_query is a Slack message URL
@@ -840,12 +793,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		Page:          params.page,
 	}
 
-	var messagesRes *slack.SearchMessages
-	if ch.oauthEnabled {
-		messagesRes, _, err = slackClient.SearchContext(ctx, params.query, searchParams)
-	} else {
-		messagesRes, _, err = ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
-	}
+	messagesRes, _, err := slackClient.SearchContext(ctx, params.query, searchParams)
 	if err != nil {
 		ch.logger.Error("Slack SearchContext failed", zap.Error(err))
 		return nil, err
@@ -1140,7 +1088,12 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 		unreadChannels[i].UnreadCount = len(history.Messages)
 
 		// Convert messages
-		channelMessages := ch.convertMessagesFromHistory(history.Messages, unreadChannels[i].ChannelName, false)
+		slackClient, clientErr := ch.getEffectiveClient(ctx)
+		if clientErr != nil {
+			ch.logger.Warn("Failed to get effective client for message conversion", zap.Error(clientErr))
+			continue
+		}
+		channelMessages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, unreadChannels[i].ChannelName, false)
 		allMessages = append(allMessages, channelMessages...)
 	}
 
@@ -1266,7 +1219,12 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 			continue
 		}
 
-		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)
+		slackClient, clientErr := ch.getEffectiveClient(ctx)
+		if clientErr != nil {
+			ch.logger.Warn("Failed to get effective client for message conversion", zap.Error(clientErr))
+			continue
+		}
+		channelMessages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, uc.ChannelName, false)
 		allMessages = append(allMessages, channelMessages...)
 	}
 
@@ -2335,11 +2293,17 @@ func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, slack
 	}, nil
 }
 
+// isSlackUserIDPrefix checks if the string starts with a Slack user ID prefix.
+// Slack user IDs may begin with U or W: https://docs.slack.dev/changelog/2016/08/11/user-id-format-changes
+func isSlackUserIDPrefix(s string) bool {
+	return strings.HasPrefix(s, "U") || strings.HasPrefix(s, "W")
+}
+
 func (ch *ConversationsHandler) paramFormatUser(ctx context.Context, slackClient *slack.Client, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 
 	// Handle user ID directly
-	if strings.HasPrefix(raw, "U") || strings.HasPrefix(raw, "W") {
+	if isSlackUserIDPrefix(raw) {
 		return fmt.Sprintf("<@%s>", raw), nil
 	}
 
@@ -2870,18 +2834,7 @@ func (ch *ConversationsHandler) fetchSingleMessage(ctx context.Context, slackCli
 		Inclusive: true,
 	}
 
-	var history *slack.GetConversationHistoryResponse
-	var err error
-
-	if ch.oauthEnabled {
-		if slackClient == nil {
-			return nil, fmt.Errorf("slack client is nil in OAuth mode")
-		}
-		history, err = slackClient.GetConversationHistoryContext(ctx, &historyParams)
-	} else {
-		history, err = ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
-	}
-
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("Failed to fetch single message", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch message: %w", err)
