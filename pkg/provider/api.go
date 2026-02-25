@@ -171,6 +171,7 @@ type Channel struct {
 	IsMpIM      bool     `json:"mpim"`
 	IsIM        bool     `json:"im"`
 	IsPrivate   bool     `json:"private"`
+	IsExtShared bool     `json:"is_ext_shared"`     // Shared with external organizations
 	User        string   `json:"user,omitempty"`    // User ID for IM channels
 	Members     []string `json:"members,omitempty"` // Member IDs for the channel
 }
@@ -195,12 +196,22 @@ type SlackAPI interface {
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
+	// Used to get channel info (for unread counts with xoxp tokens)
+	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
+
 	// Used to get channels list from both Slack and Enterprise Grid versions
 	GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error)
+
+	// Used to list only channels the calling user is a member of (users.conversations).
+	// For xoxp tokens this is more efficient than conversations.list because it excludes
+	// non-member public channels and closed DMs that cannot have unreads.
+	GetConversationsForUserContext(ctx context.Context, params *slack.GetConversationsForUserParameters) ([]slack.Channel, string, error)
 
 	// Edge API methods
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
+	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
+	GetMutedChannels(ctx context.Context) (map[string]bool, error)
 
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
@@ -233,16 +244,16 @@ type ApiProvider struct {
 	minRefreshInterval time.Duration
 
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
-	usersSnapshot atomic.Pointer[UsersCache]
-	usersCachePath string
-	usersReady     bool
+	usersSnapshot          atomic.Pointer[UsersCache]
+	usersCachePath         string
+	usersReady             bool
 	lastForcedUsersRefresh time.Time
 	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
-	channelsSnapshot atomic.Pointer[ChannelsCache]
-	channelsCachePath string
-	channelsReady     bool
+	channelsSnapshot          atomic.Pointer[ChannelsCache]
+	channelsCachePath         string
+	channelsReady             bool
 	lastForcedChannelsRefresh time.Time
 	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
 }
@@ -397,6 +408,10 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	return c.slackClient.GetConversationsContext(ctx, params)
 }
 
+func (c *MCPSlackClient) GetConversationsForUserContext(ctx context.Context, params *slack.GetConversationsForUserParameters) ([]slack.Channel, string, error) {
+	return c.slackClient.GetConversationsForUserContext(ctx, params)
+}
+
 func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
 	return c.slackClient.GetConversationHistoryContext(ctx, params)
 }
@@ -429,12 +444,24 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
 }
 
+func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
+	return c.slackClient.GetConversationInfoContext(ctx, input)
+}
+
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
 }
 
 func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error) {
 	return c.edgeClient.UsersSearch(ctx, query, count)
+}
+
+func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error) {
+	return c.edgeClient.ClientCounts(ctx)
+}
+
+func (c *MCPSlackClient) GetMutedChannels(ctx context.Context) (map[string]bool, error) {
+	return c.edgeClient.GetMutedChannels(ctx)
 }
 
 func (c *MCPSlackClient) GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error) {
@@ -880,7 +907,7 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 							remappedChannel := mapChannel(
 								c.ID, "", "", c.Topic, c.Purpose,
 								c.User, c.Members, c.MemberCount,
-								c.IsIM, c.IsMpIM, c.IsPrivate,
+								c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
 								usersMap,
 							)
 							newSnapshot.Channels[c.ID] = remappedChannel
@@ -1003,6 +1030,7 @@ func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) 
 				channel.IsIM,
 				channel.IsMpIM,
 				channel.IsPrivate,
+				channel.IsExtShared,
 				ap.ProvideUsersMap().Users,
 			)
 			chans = append(chans, ch)
@@ -1148,7 +1176,7 @@ func mapChannel(
 	id, name, nameNormalized, topic, purpose, user string,
 	members []string,
 	numMembers int,
-	isIM, isMpIM, isPrivate bool,
+	isIM, isMpIM, isPrivate, isExtShared bool,
 	usersMap map[string]slack.User,
 ) Channel {
 	channelName := name
@@ -1212,6 +1240,7 @@ func mapChannel(
 		IsIM:        isIM,
 		IsMpIM:      isMpIM,
 		IsPrivate:   isPrivate,
+		IsExtShared: isExtShared,
 		User:        userID,
 		Members:     members,
 	}
