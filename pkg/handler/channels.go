@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/gocarina/gocsv"
+	"github.com/korotovsky/slack-mcp-server/pkg/oauth"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
@@ -25,11 +27,14 @@ type Channel struct {
 }
 
 type ChannelsHandler struct {
-	apiProvider *provider.ApiProvider
-	validTypes  map[string]bool
-	logger      *zap.Logger
+	apiProvider  *provider.ApiProvider // Legacy mode
+	tokenStorage oauth.TokenStorage    // OAuth mode
+	oauthEnabled bool
+	validTypes   map[string]bool
+	logger       *zap.Logger
 }
 
+// NewChannelsHandler creates handler for legacy mode
 func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ChannelsHandler {
 	validTypes := make(map[string]bool, len(provider.AllChanTypes))
 	for _, v := range provider.AllChanTypes {
@@ -37,10 +42,46 @@ func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *
 	}
 
 	return &ChannelsHandler{
-		apiProvider: apiProvider,
-		validTypes:  validTypes,
-		logger:      logger,
+		apiProvider:  apiProvider,
+		oauthEnabled: false,
+		validTypes:   validTypes,
+		logger:       logger,
 	}
+}
+
+// NewChannelsHandlerWithOAuth creates handler for OAuth mode
+func NewChannelsHandlerWithOAuth(tokenStorage oauth.TokenStorage, logger *zap.Logger) *ChannelsHandler {
+	validTypes := make(map[string]bool, len(provider.AllChanTypes))
+	for _, v := range provider.AllChanTypes {
+		validTypes[v] = true
+	}
+
+	return &ChannelsHandler{
+		tokenStorage: tokenStorage,
+		oauthEnabled: true,
+		validTypes:   validTypes,
+		logger:       logger,
+	}
+}
+
+// getSlackClient creates a Slack client for the current request (OAuth mode)
+func (ch *ChannelsHandler) getSlackClient(ctx context.Context) (*slack.Client, error) {
+	if !ch.oauthEnabled {
+		return nil, fmt.Errorf("OAuth not enabled")
+	}
+
+	userCtx, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("user context not found")
+	}
+
+	// Use token directly from context (already validated by middleware)
+	// Set API URL from auth.test response to support external tokens and GovSlack
+	opts := []slack.Option{}
+	if userCtx.URL != "" {
+		opts = append(opts, slack.OptionAPIURL(userCtx.URL+"api/"))
+	}
+	return slack.New(userCtx.AccessToken, opts...), nil
 }
 
 func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -105,6 +146,11 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ChannelsHandler called")
 
+	// In OAuth mode, we don't have apiProvider - fetch directly
+	if ch.oauthEnabled {
+		return ch.channelsHandlerOAuth(ctx, request)
+	}
+
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -122,38 +168,51 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		zap.Int("limit", limit),
 	)
 
+	// Validate limit
+	if limit < 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", limit)
+	}
+	if limit == 0 {
+		limit = 100
+		ch.logger.Debug("Limit not provided, using default", zap.Int("limit", limit))
+	}
+	if limit > 999 {
+		ch.logger.Warn("Limit exceeds maximum of 999, capping", zap.Int("requested", limit))
+		limit = 999
+	}
+
 	// MCP Inspector v0.14.0 has issues with Slice type
 	// introspection, so some type simplification makes sense here
 	channelTypes := []string{}
+	var invalidTypes []string
 	for _, t := range strings.Split(types, ",") {
 		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
 		if ch.validTypes[t] {
 			channelTypes = append(channelTypes, t)
-		} else if t != "" {
-			ch.logger.Warn("Invalid channel type ignored", zap.String("type", t))
+		} else {
+			invalidTypes = append(invalidTypes, t)
 		}
 	}
 
+	if len(invalidTypes) > 0 {
+		return nil, fmt.Errorf("invalid channel_types: %v. Valid types are: public_channel, private_channel, im, mpim", invalidTypes)
+	}
+
 	if len(channelTypes) == 0 {
-		ch.logger.Debug("No valid channel types provided, using defaults")
+		ch.logger.Debug("No channel types provided, using defaults")
 		channelTypes = append(channelTypes, provider.PubChanType)
 		channelTypes = append(channelTypes, provider.PrivateChanType)
 	}
 
 	ch.logger.Debug("Validated channel types", zap.Strings("types", channelTypes))
 
-	if limit == 0 {
-		limit = 100
-		ch.logger.Debug("Limit not provided, using default", zap.Int("limit", limit))
-	}
-	if limit > 999 {
-		ch.logger.Warn("Limit exceeds maximum, capping to 999", zap.Int("requested", limit))
-		limit = 999
-	}
-
 	var (
 		nextcur     string
 		channelList []Channel
+		err         error
 	)
 
 	allChannels := ch.apiProvider.ProvideChannelsMaps().Channels
@@ -164,11 +223,15 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 
 	var chans []provider.Channel
 
-	chans, nextcur = paginateChannels(
+	chans, nextcur, err = paginateChannels(
 		channels,
 		cursor,
 		limit,
 	)
+	if err != nil {
+		ch.logger.Error("Pagination error", zap.Error(err))
+		return nil, err
+	}
 
 	ch.logger.Debug("Pagination results",
 		zap.Int("returned_count", len(chans)),
@@ -255,7 +318,7 @@ func filterChannelsByTypes(channels map[string]provider.Channel, types []string)
 	return result
 }
 
-func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string) {
+func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string, error) {
 	logger := zap.L()
 
 	sort.Slice(channels, func(i, j int) bool {
@@ -264,25 +327,40 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 
 	startIndex := 0
 	if cursor != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(cursor); err == nil {
-			lastID := string(decoded)
-			for i, ch := range channels {
-				if ch.ID > lastID {
-					startIndex = i
-					break
-				}
-			}
-			logger.Debug("Decoded cursor",
-				zap.String("cursor", cursor),
-				zap.String("decoded_id", lastID),
-				zap.Int("start_index", startIndex),
-			)
-		} else {
+		decoded, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
 			logger.Warn("Failed to decode cursor",
 				zap.String("cursor", cursor),
 				zap.Error(err),
 			)
+			return nil, "", fmt.Errorf("invalid cursor: failed to decode base64: %w", err)
 		}
+		lastID := string(decoded)
+		// Validate that lastID looks like a channel ID
+		if len(lastID) < 2 || (lastID[0] != 'C' && lastID[0] != 'G' && lastID[0] != 'D' && lastID[0] != 'W') {
+			logger.Warn("Invalid cursor format: decoded value is not a valid channel ID",
+				zap.String("cursor", cursor),
+				zap.String("decoded", lastID),
+			)
+			return nil, "", fmt.Errorf("invalid cursor: decoded value %q is not a valid channel ID", lastID)
+		}
+		found := false
+		for i, ch := range channels {
+			if ch.ID > lastID {
+				startIndex = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Cursor points past the end of results
+			startIndex = len(channels)
+		}
+		logger.Debug("Decoded cursor",
+			zap.String("cursor", cursor),
+			zap.String("decoded_id", lastID),
+			zap.Int("start_index", startIndex),
+		)
 	}
 
 	endIndex := startIndex + limit
@@ -309,5 +387,121 @@ func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]
 		zap.Bool("has_more", nextCursor != ""),
 	)
 
-	return paged, nextCursor
+	return paged, nextCursor, nil
+}
+
+// channelsHandlerOAuth handles channel listing in OAuth mode
+func (ch *ChannelsHandler) channelsHandlerOAuth(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Get Slack client for this user
+	client, err := ch.getSlackClient(ctx)
+	if err != nil {
+		ch.logger.Error("Failed to get Slack client", zap.Error(err))
+		return nil, fmt.Errorf("authentication error: %w", err)
+	}
+
+	types := request.GetString("channel_types", "public_channel")
+	limit := request.GetInt("limit", 100)
+
+	ch.logger.Debug("OAuth mode: fetching channels",
+		zap.String("types", types),
+		zap.Int("limit", limit),
+	)
+
+	// Parse channel types
+	channelTypes := []string{}
+	for _, t := range strings.Split(types, ",") {
+		t = strings.TrimSpace(t)
+		if ch.validTypes[t] {
+			channelTypes = append(channelTypes, t)
+		}
+	}
+
+	if len(channelTypes) == 0 {
+		channelTypes = []string{"public_channel", "private_channel"}
+	}
+
+	// Fetch channels from Slack API
+	var allChannels []Channel
+	for _, chanType := range channelTypes {
+		params := &slack.GetConversationsParameters{
+			Types:           []string{chanType},
+			Limit:           limit,
+			ExcludeArchived: true,
+		}
+
+		channels, _, err := client.GetConversations(params)
+		if err != nil {
+			ch.logger.Error("Failed to get conversations", zap.Error(err))
+			return nil, fmt.Errorf("failed to get channels: %w", err)
+		}
+
+		for _, c := range channels {
+			name := "#" + c.Name
+			memberCount := c.NumMembers
+
+			// Handle DM channels - they have empty names but have a User field
+			if c.IsIM && c.User != "" {
+				// Fetch user info to get their display name
+				user, err := client.GetUserInfo(c.User)
+				if err != nil {
+					ch.logger.Debug("Failed to get user info for DM", zap.String("userID", c.User), zap.Error(err))
+					name = "@" + c.User // Fallback to user ID
+				} else if user != nil {
+					// Priority: RealName (full name) → DisplayName → Name (username)
+					// This provides more consistent formatting across users
+					if user.RealName != "" {
+						name = "@" + user.RealName
+					} else if user.Profile.DisplayName != "" {
+						name = "@" + user.Profile.DisplayName
+					} else {
+						name = "@" + user.Name
+					}
+				}
+				memberCount = 2 // 1:1 DMs always have exactly 2 members
+			} else if c.IsMpIM {
+				// Group DMs - use the purpose or a placeholder
+				if c.Purpose.Value != "" {
+					name = c.Purpose.Value
+				} else {
+					name = "Group DM"
+				}
+				// Get actual member count for group DMs
+				members, _, err := client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
+					ChannelID: c.ID,
+					Limit:     1000,
+				})
+				if err != nil {
+					ch.logger.Debug("Failed to get members for MPIM", zap.String("channelID", c.ID), zap.Error(err))
+				} else {
+					memberCount = len(members)
+				}
+			}
+
+			allChannels = append(allChannels, Channel{
+				ID:          c.ID,
+				Name:        name,
+				Topic:       c.Topic.Value,
+				Purpose:     c.Purpose.Value,
+				MemberCount: memberCount,
+			})
+		}
+	}
+
+	// Sort by popularity if requested
+	sortType := request.GetString("sort", "")
+	if sortType == "popularity" {
+		sort.Slice(allChannels, func(i, j int) bool {
+			return allChannels[i].MemberCount > allChannels[j].MemberCount
+		})
+	}
+
+	// Marshal to CSV
+	csvBytes, err := gocsv.MarshalBytes(&allChannels)
+	if err != nil {
+		ch.logger.Error("Failed to marshal to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Returning channels", zap.Int("count", len(allChannels)))
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }

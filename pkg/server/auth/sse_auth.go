@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/korotovsky/slack-mcp-server/pkg/oauth"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"go.uber.org/zap"
@@ -19,6 +20,11 @@ type authKey struct{}
 // withAuthKey adds an auth key to the context.
 func withAuthKey(ctx context.Context, auth string) context.Context {
 	return context.WithValue(ctx, authKey{}, auth)
+}
+
+// WithAuthKey is the exported version for use in OAuth middleware
+func WithAuthKey(ctx context.Context, auth string) context.Context {
+	return withAuthKey(ctx, auth)
 }
 
 // Authenticate checks if the request is authenticated based on the provided context.
@@ -140,5 +146,62 @@ func IsAuthenticated(ctx context.Context, transport string, logger *zap.Logger) 
 			zap.String("transport", transport),
 		)
 		return false, fmt.Errorf("unknown transport type: %s", transport)
+	}
+}
+
+// OAuthHTTPMiddleware wraps an HTTP handler with OAuth authentication.
+// It validates the Bearer token against Slack's auth.test endpoint and
+// returns 401 Unauthorized if the token is missing or invalid.
+func OAuthHTTPMiddleware(oauthMgr oauth.OAuthManager, logger *zap.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip authentication for OAuth and health endpoints
+			if strings.HasPrefix(r.URL.Path, "/oauth/") || r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Extract Authorization header
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				logger.Warn("Missing Authorization header",
+					zap.String("path", r.URL.Path),
+					zap.String("method", r.Method),
+				)
+				http.Error(w, "Unauthorized: missing Authorization header", http.StatusUnauthorized)
+				return
+			}
+
+			// Extract Bearer token
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token == authHeader {
+				// No "Bearer " prefix found
+				logger.Warn("Invalid Authorization header format",
+					zap.String("path", r.URL.Path),
+				)
+				http.Error(w, "Unauthorized: invalid Authorization header format (expected 'Bearer <token>')", http.StatusUnauthorized)
+				return
+			}
+
+			// Validate token against Slack
+			tokenInfo, err := oauthMgr.ValidateToken(token)
+			if err != nil {
+				logger.Warn("Invalid Slack token",
+					zap.String("path", r.URL.Path),
+					zap.Error(err),
+				)
+				http.Error(w, "Unauthorized: invalid Slack token", http.StatusUnauthorized)
+				return
+			}
+
+			logger.Debug("OAuth HTTP authentication successful",
+				zap.String("userID", tokenInfo.UserID),
+				zap.String("teamID", tokenInfo.TeamID),
+				zap.String("path", r.URL.Path),
+			)
+
+			// Token is valid, proceed with request
+			next.ServeHTTP(w, r)
+		})
 	}
 }

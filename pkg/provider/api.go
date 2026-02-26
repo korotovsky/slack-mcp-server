@@ -1117,6 +1117,14 @@ func (ap *ApiProvider) Slack() SlackAPI {
 	return ap.client
 }
 
+// SlackClient returns the underlying *slack.Client for direct API calls.
+func (ap *ApiProvider) SlackClient() *slack.Client {
+	if mcp, ok := ap.client.(*MCPSlackClient); ok {
+		return mcp.slackClient
+	}
+	return nil
+}
+
 func (ap *ApiProvider) IsBotToken() bool {
 	client, ok := ap.client.(*MCPSlackClient)
 	return ok && client != nil && client.IsBotToken()
