@@ -1,6 +1,6 @@
 module github.com/korotovsky/slack-mcp-server
 
-go 1.24.4
+go 1.25.0
 
 require (
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
@@ -13,12 +13,12 @@ require (
 	github.com/rusq/slackauth v0.7.1
 	github.com/rusq/slackdump/v3 v3.1.13
 	github.com/rusq/tagops v0.1.1
-	github.com/slack-go/slack v0.17.3
+	github.com/slack-go/slack v0.18.0
 	github.com/stretchr/testify v1.11.1
 	github.com/takara2314/slack-go-util v0.3.0
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.51.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.14.0
 )
