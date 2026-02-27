@@ -40,6 +40,7 @@ const (
 	ToolUsergroupsCreate            = "usergroups_create"
 	ToolUsergroupsUpdate            = "usergroups_update"
 	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
+	ToolUsersSearch                 = "users_search"
 )
 
 var ValidToolNames = []string{
@@ -58,6 +59,7 @@ var ValidToolNames = []string{
 	ToolUsergroupsCreate,
 	ToolUsergroupsUpdate,
 	ToolUsergroupsUsersUpdate,
+	ToolUsersSearch,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -282,19 +284,21 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 
-	s.AddTool(mcp.NewTool("users_search",
-		mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available."),
-		mcp.WithTitleAnnotation("Search Users"),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithString("query",
-			mcp.Required(),
-			mcp.Description("Search query - matches against real name, display name, username, or email."),
-		),
-		mcp.WithNumber("limit",
-			mcp.DefaultNumber(10),
-			mcp.Description("Maximum number of results to return (1-100). Default is 10."),
-		),
-	), conversationsHandler.UsersSearchHandler)
+	if shouldAddTool(ToolUsersSearch, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolUsersSearch,
+			mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available."),
+			mcp.WithTitleAnnotation("Search Users"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("query",
+				mcp.Required(),
+				mcp.Description("Search query - matches against real name, display name, username, or email."),
+			),
+			mcp.WithNumber("limit",
+				mcp.DefaultNumber(10),
+				mcp.Description("Maximum number of results to return (1-100). Default is 10."),
+			),
+		), conversationsHandler.UsersSearchHandler)
+	}
 
 	// Register unreads tool - gets all unread messages across channels efficiently.
 	// Bot tokens (xoxb) don't support unread tracking, so exclude them (same pattern as search tool).
