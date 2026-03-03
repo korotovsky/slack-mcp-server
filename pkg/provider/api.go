@@ -362,22 +362,30 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 			return c.slackClient.GetConversationsContext(ctx, params)
 		}
 
-		// Enterprise + non-OAuth: try edge API, fall back to standard API.
-		// Once the edge API fails, remember it so subsequent pagination calls
-		// go straight to the standard API instead of retrying edge each time.
+		// Enterprise + non-OAuth: try edge API first (for DMs, MPIMs, etc.),
+		// then supplement with standard API. The edge API may only return
+		// partial results (e.g., DMs succeed but SearchChannels fails on
+		// restricted teams), so we always merge both sources.
+		//
+		// The edge API returns all results in one shot (no pagination),
+		// while the standard API paginates. We fully paginate the standard
+		// API here and return a merged, deduplicated result set with an
+		// empty cursor so the caller doesn't need to re-paginate.
 		if !c.edgeFailed {
-			edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
-			if err != nil {
+			edgeChannels, _, edgeErr := c.edgeClient.GetConversationsContext(ctx, nil)
+			if edgeErr != nil {
 				c.edgeFailed = true
 				return c.slackClient.GetConversationsContext(ctx, params)
 			}
 
+			// Collect edge results into a map for deduplication.
+			seen := make(map[string]struct{}, len(edgeChannels))
 			var channels []slack.Channel
 			for _, ec := range edgeChannels {
 				if params != nil && params.ExcludeArchived && ec.IsArchived {
 					continue
 				}
-
+				seen[ec.ID] = struct{}{}
 				channels = append(channels, slack.Channel{
 					IsGeneral: ec.IsGeneral,
 					GroupConversation: slack.GroupConversation{
@@ -406,6 +414,33 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 						},
 					},
 				})
+			}
+
+			// Supplement with ALL pages from the standard API to fill gaps
+			// the edge API missed (e.g., public/private channels on
+			// restricted teams where SearchChannels returns an error).
+			stdParams := &slack.GetConversationsParameters{
+				Limit:           999,
+				ExcludeArchived: true,
+			}
+			if params != nil {
+				stdParams.Types = params.Types
+			}
+			for {
+				stdChannels, nextCur, stdErr := c.slackClient.GetConversationsContext(ctx, stdParams)
+				if stdErr != nil {
+					break // standard API failed; keep what edge gave us
+				}
+				for _, sc := range stdChannels {
+					if _, ok := seen[sc.ID]; !ok {
+						seen[sc.ID] = struct{}{}
+						channels = append(channels, sc)
+					}
+				}
+				if nextCur == "" {
+					break
+				}
+				stdParams.Cursor = nextCur
 			}
 
 			return channels, "", nil
