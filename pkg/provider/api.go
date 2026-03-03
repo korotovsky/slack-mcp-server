@@ -742,6 +742,9 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 				ap.logger.Warn("Failed to unmarshal users cache, will refetch",
 					zap.String("cache_file", ap.usersCachePath),
 					zap.Error(err))
+			} else if len(cachedUsers) == 0 {
+				ap.logger.Warn("Users cache is empty or null, will refetch",
+					zap.String("cache_file", ap.usersCachePath))
 			} else {
 				// Check cache TTL using file modification time
 				cacheValid := true
@@ -887,6 +890,9 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 				ap.logger.Warn("Failed to unmarshal channels cache, will refetch",
 					zap.String("cache_file", ap.channelsCachePath),
 					zap.Error(err))
+			} else if len(cachedChannels) == 0 {
+				ap.logger.Warn("Channels cache is empty or null, will refetch",
+					zap.String("cache_file", ap.channelsCachePath))
 			} else {
 				// Check cache TTL using file modification time
 				cacheValid := true
@@ -941,7 +947,10 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 	// Fetch fresh data from Slack API
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
-	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
+	if len(channels) == 0 {
+		ap.logger.Warn("No channels fetched from Slack API, not writing empty cache",
+			zap.String("cache_file", ap.channelsCachePath))
+	} else if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
 		if err := os.WriteFile(ap.channelsCachePath, data, 0644); err != nil {
