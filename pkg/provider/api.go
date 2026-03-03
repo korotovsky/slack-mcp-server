@@ -186,6 +186,8 @@ type SlackAPI interface {
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 	AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error
 	RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error
+	LeaveConversationContext(ctx context.Context, channelID string) (bool, error)
+	JoinConversationContext(ctx context.Context, channelID string) (*slack.Channel, string, []string, error)
 
 	// Used to get messages
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
@@ -350,6 +352,23 @@ func (c *MCPSlackClient) GetUsersInfo(users ...string) (*[]slack.User, error) {
 
 func (c *MCPSlackClient) MarkConversationContext(ctx context.Context, channel, ts string) error {
 	return c.slackClient.MarkConversationContext(ctx, channel, ts)
+}
+
+func (c *MCPSlackClient) LeaveConversationContext(ctx context.Context, channelID string) (bool, error) {
+	if c.isEnterprise && !c.isOAuth {
+		// Enterprise Grid + session tokens: use edge API which goes through
+		// the webclient endpoint and bypasses enterprise_is_restricted.
+		notInChannel, err := c.edgeClient.LeaveConversation(ctx, channelID)
+		if err == nil {
+			return notInChannel, nil
+		}
+		// Fall back to standard API if edge fails.
+	}
+	return c.slackClient.LeaveConversationContext(ctx, channelID)
+}
+
+func (c *MCPSlackClient) JoinConversationContext(ctx context.Context, channelID string) (*slack.Channel, string, []string, error) {
+	return c.slackClient.JoinConversationContext(ctx, channelID)
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {

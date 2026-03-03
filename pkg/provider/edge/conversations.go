@@ -113,3 +113,39 @@ func (cl *Client) ConversationsView(ctx context.Context, channelID string) (Conv
 	}
 	return r.ConversationsViewResponse, nil
 }
+
+type ConversationsLeaveRequest struct {
+	BaseRequest
+	Channel string `json:"channel"`
+}
+
+type ConversationsLeaveResponse struct {
+	baseResponse
+	NotInChannel bool `json:"not_in_channel,omitempty"`
+}
+
+func (cl *Client) LeaveConversation(ctx context.Context, channelID string) (bool, error) {
+	ctx, task := trace.NewTask(ctx, "LeaveConversation")
+	defer task.End()
+
+	form := ConversationsLeaveRequest{
+		BaseRequest: BaseRequest{Token: cl.token},
+		Channel:     channelID,
+	}
+
+	resp, err := cl.PostForm(ctx, "conversations.leave", values(form, true))
+	if err != nil {
+		return false, err
+	}
+
+	r := &ConversationsLeaveResponse{}
+	if err := cl.ParseResponse(r, resp); err != nil {
+		return false, err
+	}
+
+	if err := r.validate("conversations.leave"); err != nil {
+		return false, err
+	}
+
+	return r.NotInChannel, nil
+}

@@ -34,6 +34,8 @@ const (
 	ToolConversationsSearchMessages = "conversations_search_messages"
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
+	ToolConversationsLeave          = "conversations_leave"
+	ToolConversationsJoin           = "conversations_join"
 	ToolChannelsList                = "channels_list"
 	ToolUsergroupsList              = "usergroups_list"
 	ToolUsergroupsMe                = "usergroups_me"
@@ -53,6 +55,8 @@ var ValidToolNames = []string{
 	ToolConversationsSearchMessages,
 	ToolConversationsUnreads,
 	ToolConversationsMark,
+	ToolConversationsLeave,
+	ToolConversationsJoin,
 	ToolChannelsList,
 	ToolUsergroupsList,
 	ToolUsergroupsMe,
@@ -348,6 +352,30 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Timestamp of the message to mark as read up to. If not provided, marks all messages as read."),
 			),
 		), conversationsHandler.ConversationsMarkHandler)
+	}
+
+	if shouldAddTool(ToolConversationsLeave, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsLeave,
+			mcp.WithDescription("Leave a channel, group conversation, or DM. Cannot leave the #general channel."),
+			mcp.WithTitleAnnotation("Leave Channel"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... (e.g., #general, @username)."),
+			),
+		), conversationsHandler.ConversationsLeaveHandler)
+	}
+
+	if shouldAddTool(ToolConversationsJoin, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsJoin,
+			mcp.WithDescription("Join a public channel. Use channels_list or channels_me to find channel IDs."),
+			mcp.WithTitleAnnotation("Join Channel"),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... (e.g., #general)."),
+			),
+		), conversationsHandler.ConversationsJoinHandler)
 	}
 	channelsHandler := handler.NewChannelsHandler(provider, logger)
 	usergroupsHandler := handler.NewUsergroupsHandler(provider, logger)
