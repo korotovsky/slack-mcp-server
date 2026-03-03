@@ -1364,6 +1364,57 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 	return mcp.NewToolResultText(fmt.Sprintf("Marked %s as read up to %s", channel, ts)), nil
 }
 
+func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsLeaveHandler called", zap.Any("params", request.Params))
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, fmt.Errorf("channel_id is required")
+	}
+
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve channel: %w", err)
+	}
+
+	notInChannel, err := ch.apiProvider.Slack().LeaveConversationContext(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Failed to leave conversation", zap.Error(err))
+		return nil, fmt.Errorf("failed to leave conversation: %v", err)
+	}
+
+	if notInChannel {
+		ch.logger.Info("Was not in channel", zap.String("channel", channel))
+		return mcp.NewToolResultText(fmt.Sprintf("Not a member of %s", channel)), nil
+	}
+
+	ch.logger.Info("Left conversation", zap.String("channel", channel))
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully left %s", channel)), nil
+}
+
+func (ch *ConversationsHandler) ConversationsJoinHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsJoinHandler called", zap.Any("params", request.Params))
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, fmt.Errorf("channel_id is required")
+	}
+
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve channel: %w", err)
+	}
+
+	_, _, _, err = ch.apiProvider.Slack().JoinConversationContext(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Failed to join conversation", zap.Error(err))
+		return nil, fmt.Errorf("failed to join conversation: %v", err)
+	}
+
+	ch.logger.Info("Joined conversation", zap.String("channel", channel))
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully joined %s", channel)), nil
+}
+
 // sortChannelsByPriority sorts channels: DMs > group_dm > partner > internal
 func (ch *ConversationsHandler) sortChannelsByPriority(channels []UnreadChannel) {
 	priority := map[string]int{
