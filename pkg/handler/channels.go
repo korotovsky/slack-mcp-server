@@ -9,6 +9,7 @@ import (
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
+	"github.com/slack-go/slack"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -203,6 +204,94 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	csvBytes, err := gocsv.MarshalBytes(&channelList)
 	if err != nil {
 		ch.logger.Error("Failed to marshal channels to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ChannelsMeHandler called")
+
+	sortType := request.GetString("sort", "popularity")
+	types := request.GetString("channel_types", "public_channel,private_channel")
+	cursor := request.GetString("cursor", "")
+	limit := request.GetInt("limit", 0)
+
+	if limit == 0 {
+		limit = 100
+	}
+	if limit > 999 {
+		limit = 999
+	}
+
+	channelTypes := []string{}
+	for _, t := range strings.Split(types, ",") {
+		t = strings.TrimSpace(t)
+		if ch.validTypes[t] {
+			channelTypes = append(channelTypes, t)
+		}
+	}
+	if len(channelTypes) == 0 {
+		channelTypes = []string{provider.PubChanType, provider.PrivateChanType}
+	}
+
+	// Fetch channels the user is a member of via users.conversations API.
+	usersMap := ch.apiProvider.ProvideUsersMap().Users
+	var allChannels []provider.Channel
+	var apiCursor string
+	for {
+		params := &slack.GetConversationsForUserParameters{
+			Types:           channelTypes,
+			Limit:           200,
+			Cursor:          apiCursor,
+			ExcludeArchived: true,
+		}
+		channels, nextCursor, err := ch.apiProvider.Slack().GetConversationsForUserContext(ctx, params)
+		if err != nil {
+			ch.logger.Error("Failed to fetch user conversations", zap.Error(err))
+			return nil, fmt.Errorf("failed to fetch your channels: %v", err)
+		}
+
+		for _, c := range channels {
+			allChannels = append(allChannels, provider.MapChannelFromSlack(c, usersMap))
+		}
+
+		if nextCursor == "" {
+			break
+		}
+		apiCursor = nextCursor
+	}
+
+	ch.logger.Debug("Fetched member channels", zap.Int("count", len(allChannels)))
+
+	// Paginate results
+	paged, nextcur := paginateChannels(allChannels, cursor, limit)
+
+	var channelList []Channel
+	for _, channel := range paged {
+		channelList = append(channelList, Channel{
+			ID:          channel.ID,
+			Name:        channel.Name,
+			Topic:       channel.Topic,
+			Purpose:     channel.Purpose,
+			MemberCount: channel.MemberCount,
+		})
+	}
+
+	switch sortType {
+	case "popularity":
+		sort.Slice(channelList, func(i, j int) bool {
+			return channelList[i].MemberCount > channelList[j].MemberCount
+		})
+	}
+
+	if len(channelList) > 0 && nextcur != "" {
+		channelList[len(channelList)-1].Cursor = nextcur
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&channelList)
+	if err != nil {
 		return nil, err
 	}
 
