@@ -63,11 +63,15 @@ func (cl *Client) GetConversationsContext(ctx context.Context, _ *slack.GetConve
 		close(resultC)
 	}()
 
-	// create a map of channels that we have already seen
+	// Collect results from all goroutines. Individual failures are non-fatal:
+	// we keep channels from sources that succeeded. Only if every source fails
+	// (nothing collected) do we propagate the last error.
 	var seenChannels = make(map[string]struct{})
+	var lastErr error
 	for r := range resultC {
 		if r.Err != nil {
-			return nil, "", r.Err
+			lastErr = r.Err
+			continue
 		}
 		for _, c := range r.Channels {
 			if _, seen := seenChannels[c.ID]; !seen {
@@ -76,12 +80,16 @@ func (cl *Client) GetConversationsContext(ctx context.Context, _ *slack.GetConve
 			}
 		}
 	}
+	if len(channels) == 0 && lastErr != nil {
+		return nil, "", lastErr
+	}
 
-	// ClientCounts hopefully returns MPIM IDs that we haven't seen in the
-	// user boot response.
+	// ClientCounts returns MPIM IDs that we haven't seen in the user boot
+	// response. This is supplementary — failures here don't discard the
+	// channels we already collected.
 	cr, err := cl.ClientCounts(ctx)
 	if err != nil {
-		return nil, "", err
+		return channels, "", nil
 	}
 
 	// determine which mpims are already in the list, and which need to be
@@ -96,7 +104,7 @@ func (cl *Client) GetConversationsContext(ctx context.Context, _ *slack.GetConve
 	// getting the info on any MPIMs that we haven't seen yet.
 	mpims, err := cl.ConversationsGenericInfo(ctx, fetchIDs...)
 	if err != nil {
-		return nil, "", err
+		return channels, "", nil
 	}
 	channels = append(channels, mpims...)
 	return channels, "", nil
