@@ -1006,8 +1006,12 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 }
 
 func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) []Channel {
+	return ap.getChannelsMultiType(ctx, []string{channelType})
+}
+
+func (ap *ApiProvider) getChannelsMultiType(ctx context.Context, channelTypes []string) []Channel {
 	params := &slack.GetConversationsParameters{
-		Types:           []string{channelType},
+		Types:           channelTypes,
 		Limit:           999,
 		ExcludeArchived: true,
 	}
@@ -1027,8 +1031,8 @@ func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) 
 		}
 
 		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
-		ap.logger.Debug("Fetched channels for ",
-			zap.String("channelType", channelType),
+		ap.logger.Debug("Fetched channels",
+			zap.Strings("channelTypes", channelTypes),
 			zap.Int("count", len(channels)),
 		)
 		if err != nil {
@@ -1069,11 +1073,11 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		channelTypes = AllChanTypes
 	}
 
-	var chans []Channel
-	for _, t := range AllChanTypes {
-		var typeChannels = ap.GetChannelsType(ctx, t)
-		chans = append(chans, typeChannels...)
-	}
+	// Fetch all channel types in a single paginated call. The standard
+	// conversations.list API supports multiple types per request, and the edge
+	// API (Enterprise Grid + non-OAuth) returns all types regardless. This
+	// avoids making 4 separate API round-trips (one per type).
+	chans := ap.getChannelsMultiType(ctx, AllChanTypes)
 
 	// Build new snapshot with all fetched channels
 	newSnapshot := &ChannelsCache{
