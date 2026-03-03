@@ -228,10 +228,11 @@ type MCPSlackClient struct {
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
 
-	isEnterprise bool
-	isOAuth      bool
-	isBotToken   bool
-	teamEndpoint string
+	isEnterprise  bool
+	isOAuth       bool
+	isBotToken    bool
+	edgeFailed    bool // set when edge API fails; subsequent calls skip straight to standard API
+	teamEndpoint  string
 }
 
 type ApiProvider struct {
@@ -359,10 +360,16 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	if c.isEnterprise {
 		if c.isOAuth {
 			return c.slackClient.GetConversationsContext(ctx, params)
-		} else {
+		}
+
+		// Enterprise + non-OAuth: try edge API, fall back to standard API.
+		// Once the edge API fails, remember it so subsequent pagination calls
+		// go straight to the standard API instead of retrying edge each time.
+		if !c.edgeFailed {
 			edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
 			if err != nil {
-				return nil, "", err
+				c.edgeFailed = true
+				return c.slackClient.GetConversationsContext(ctx, params)
 			}
 
 			var channels []slack.Channel
@@ -403,6 +410,9 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 
 			return channels, "", nil
 		}
+
+		// Edge API previously failed — use standard API directly.
+		return c.slackClient.GetConversationsContext(ctx, params)
 	}
 
 	return c.slackClient.GetConversationsContext(ctx, params)
