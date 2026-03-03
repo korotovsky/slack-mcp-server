@@ -228,10 +228,11 @@ type MCPSlackClient struct {
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
 
-	isEnterprise bool
-	isOAuth      bool
-	isBotToken   bool
-	teamEndpoint string
+	isEnterprise  bool
+	isOAuth       bool
+	isBotToken    bool
+	edgeFailed    bool // set when edge API fails; subsequent calls skip straight to standard API
+	teamEndpoint  string
 }
 
 type ApiProvider struct {
@@ -359,18 +360,32 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 	if c.isEnterprise {
 		if c.isOAuth {
 			return c.slackClient.GetConversationsContext(ctx, params)
-		} else {
-			edgeChannels, _, err := c.edgeClient.GetConversationsContext(ctx, nil)
-			if err != nil {
-				return nil, "", err
+		}
+
+		// Enterprise + non-OAuth: try edge API first (for DMs, MPIMs, etc.),
+		// then supplement with standard API. The edge API may only return
+		// partial results (e.g., DMs succeed but SearchChannels fails on
+		// restricted teams), so we always merge both sources.
+		//
+		// The edge API returns all results in one shot (no pagination),
+		// while the standard API paginates. We fully paginate the standard
+		// API here and return a merged, deduplicated result set with an
+		// empty cursor so the caller doesn't need to re-paginate.
+		if !c.edgeFailed {
+			edgeChannels, _, edgeErr := c.edgeClient.GetConversationsContext(ctx, nil)
+			if edgeErr != nil {
+				c.edgeFailed = true
+				return c.slackClient.GetConversationsContext(ctx, params)
 			}
 
+			// Collect edge results into a map for deduplication.
+			seen := make(map[string]struct{}, len(edgeChannels))
 			var channels []slack.Channel
 			for _, ec := range edgeChannels {
 				if params != nil && params.ExcludeArchived && ec.IsArchived {
 					continue
 				}
-
+				seen[ec.ID] = struct{}{}
 				channels = append(channels, slack.Channel{
 					IsGeneral: ec.IsGeneral,
 					GroupConversation: slack.GroupConversation{
@@ -401,8 +416,38 @@ func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *sl
 				})
 			}
 
+			// Supplement with ALL pages from the standard API to fill gaps
+			// the edge API missed (e.g., public/private channels on
+			// restricted teams where SearchChannels returns an error).
+			stdParams := &slack.GetConversationsParameters{
+				Limit:           999,
+				ExcludeArchived: true,
+			}
+			if params != nil {
+				stdParams.Types = params.Types
+			}
+			for {
+				stdChannels, nextCur, stdErr := c.slackClient.GetConversationsContext(ctx, stdParams)
+				if stdErr != nil {
+					break // standard API failed; keep what edge gave us
+				}
+				for _, sc := range stdChannels {
+					if _, ok := seen[sc.ID]; !ok {
+						seen[sc.ID] = struct{}{}
+						channels = append(channels, sc)
+					}
+				}
+				if nextCur == "" {
+					break
+				}
+				stdParams.Cursor = nextCur
+			}
+
 			return channels, "", nil
 		}
+
+		// Edge API previously failed — use standard API directly.
+		return c.slackClient.GetConversationsContext(ctx, params)
 	}
 
 	return c.slackClient.GetConversationsContext(ctx, params)
@@ -732,6 +777,9 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 				ap.logger.Warn("Failed to unmarshal users cache, will refetch",
 					zap.String("cache_file", ap.usersCachePath),
 					zap.Error(err))
+			} else if len(cachedUsers) == 0 {
+				ap.logger.Warn("Users cache is empty or null, will refetch",
+					zap.String("cache_file", ap.usersCachePath))
 			} else {
 				// Check cache TTL using file modification time
 				cacheValid := true
@@ -877,6 +925,9 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 				ap.logger.Warn("Failed to unmarshal channels cache, will refetch",
 					zap.String("cache_file", ap.channelsCachePath),
 					zap.Error(err))
+			} else if len(cachedChannels) == 0 {
+				ap.logger.Warn("Channels cache is empty or null, will refetch",
+					zap.String("cache_file", ap.channelsCachePath))
 			} else {
 				// Check cache TTL using file modification time
 				cacheValid := true
@@ -931,7 +982,10 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 	// Fetch fresh data from Slack API
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
-	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
+	if len(channels) == 0 {
+		ap.logger.Warn("No channels fetched from Slack API, not writing empty cache",
+			zap.String("cache_file", ap.channelsCachePath))
+	} else if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
 		if err := os.WriteFile(ap.channelsCachePath, data, 0644); err != nil {
@@ -987,8 +1041,12 @@ func (ap *ApiProvider) GetSlackConnect(ctx context.Context) ([]slack.User, error
 }
 
 func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) []Channel {
+	return ap.getChannelsMultiType(ctx, []string{channelType})
+}
+
+func (ap *ApiProvider) getChannelsMultiType(ctx context.Context, channelTypes []string) []Channel {
 	params := &slack.GetConversationsParameters{
-		Types:           []string{channelType},
+		Types:           channelTypes,
 		Limit:           999,
 		ExcludeArchived: true,
 	}
@@ -1008,8 +1066,8 @@ func (ap *ApiProvider) GetChannelsType(ctx context.Context, channelType string) 
 		}
 
 		channels, nextcur, err = ap.client.GetConversationsContext(ctx, params)
-		ap.logger.Debug("Fetched channels for ",
-			zap.String("channelType", channelType),
+		ap.logger.Debug("Fetched channels",
+			zap.Strings("channelTypes", channelTypes),
 			zap.Int("count", len(channels)),
 		)
 		if err != nil {
@@ -1050,11 +1108,11 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		channelTypes = AllChanTypes
 	}
 
-	var chans []Channel
-	for _, t := range AllChanTypes {
-		var typeChannels = ap.GetChannelsType(ctx, t)
-		chans = append(chans, typeChannels...)
-	}
+	// Fetch all channel types in a single paginated call. The standard
+	// conversations.list API supports multiple types per request, and the edge
+	// API (Enterprise Grid + non-OAuth) returns all types regardless. This
+	// avoids making 4 separate API round-trips (one per type).
+	chans := ap.getChannelsMultiType(ctx, AllChanTypes)
 
 	// Build new snapshot with all fetched channels
 	newSnapshot := &ChannelsCache{
