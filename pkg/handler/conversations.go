@@ -16,6 +16,7 @@ import (
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
+	"github.com/korotovsky/slack-mcp-server/pkg/oauth"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
@@ -129,15 +130,169 @@ type markParams struct {
 	ts      string
 }
 type ConversationsHandler struct {
-	apiProvider *provider.ApiProvider
-	logger      *zap.Logger
+	apiProvider  *provider.ApiProvider // Legacy mode
+	tokenStorage oauth.TokenStorage    // OAuth mode
+	oauthEnabled bool
+	logger       *zap.Logger
 }
 
+// NewConversationsHandler creates handler for legacy mode
 func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ConversationsHandler {
 	return &ConversationsHandler{
-		apiProvider: apiProvider,
-		logger:      logger,
+		apiProvider:  apiProvider,
+		oauthEnabled: false,
+		logger:       logger,
 	}
+}
+
+// NewConversationsHandlerWithOAuth creates handler for OAuth mode
+func NewConversationsHandlerWithOAuth(tokenStorage oauth.TokenStorage, logger *zap.Logger) *ConversationsHandler {
+	return &ConversationsHandler{
+		tokenStorage: tokenStorage,
+		oauthEnabled: true,
+		logger:       logger,
+	}
+}
+
+// getEffectiveClient returns a Slack client for the current request.
+// In OAuth mode, creates a per-user client from the request context.
+// In legacy mode, checks provider readiness and returns the shared client.
+func (ch *ConversationsHandler) getEffectiveClient(ctx context.Context) (*slack.Client, error) {
+	if ch.oauthEnabled {
+		return ch.getSlackClient(ctx)
+	}
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		return nil, err
+	}
+	return ch.apiProvider.SlackClient(), nil
+}
+
+// getSlackClient creates a Slack client for the current request (OAuth mode)
+// Returns user client by default
+func (h *ConversationsHandler) getSlackClient(ctx context.Context) (*slack.Client, error) {
+	if !h.oauthEnabled {
+		return nil, fmt.Errorf("OAuth not enabled")
+	}
+
+	userCtx, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("user context not found")
+	}
+
+	// Use user token by default
+	// Set API URL from auth.test response to support external tokens and GovSlack
+	opts := []slack.Option{}
+	if userCtx.URL != "" {
+		opts = append(opts, slack.OptionAPIURL(userCtx.URL+"api/"))
+	}
+	return slack.New(userCtx.AccessToken, opts...), nil
+}
+
+// getBotSlackClient creates a Slack client using bot token (OAuth mode)
+// Returns error if bot token not available
+func (h *ConversationsHandler) getBotSlackClient(ctx context.Context) (*slack.Client, error) {
+	if !h.oauthEnabled {
+		return nil, fmt.Errorf("OAuth not enabled")
+	}
+
+	userCtx, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("user context not found")
+	}
+
+	if userCtx.BotToken == "" {
+		return nil, fmt.Errorf("bot token not available - add bot scopes to your Slack app")
+	}
+
+	// Use bot token
+	// Set API URL from auth.test response to support external tokens and GovSlack
+	opts := []slack.Option{}
+	if userCtx.URL != "" {
+		opts = append(opts, slack.OptionAPIURL(userCtx.URL+"api/"))
+	}
+	return slack.New(userCtx.BotToken, opts...), nil
+}
+
+// getProvider returns the provider (legacy mode) or error (OAuth mode)
+func (h *ConversationsHandler) getProvider() (*provider.ApiProvider, error) {
+	if h.oauthEnabled {
+		return nil, fmt.Errorf("use getSlackClient in OAuth mode")
+	}
+	return h.apiProvider, nil
+}
+
+// resolveChannelName resolves a channel name (e.g., "#general" or "@username") to a channel ID
+// using the Slack API. This is used in OAuth mode where there's no channel cache.
+func (h *ConversationsHandler) resolveChannelName(ctx context.Context, client *slack.Client, channelName string) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("slack client is nil")
+	}
+
+	// Handle @username for DMs
+	if strings.HasPrefix(channelName, "@") {
+		username := strings.TrimPrefix(channelName, "@")
+		if username == "" {
+			return "", fmt.Errorf("invalid channel name: '@' requires a username")
+		}
+		usernameLower := strings.ToLower(username)
+
+		// Look up user by name (case-insensitive matching)
+		users, err := client.GetUsersContext(ctx)
+		if err != nil {
+			return "", fmt.Errorf("failed to get users: %w", err)
+		}
+		for _, user := range users {
+			// Match against: username, display name, or real name (case-insensitive)
+			if strings.ToLower(user.Name) == usernameLower ||
+				strings.ToLower(user.Profile.DisplayName) == usernameLower ||
+				strings.ToLower(user.RealName) == usernameLower {
+				// Open a DM with this user
+				channel, _, _, err := client.OpenConversationContext(ctx, &slack.OpenConversationParameters{
+					Users: []string{user.ID},
+				})
+				if err != nil {
+					return "", fmt.Errorf("failed to open DM with user %s: %w", username, err)
+				}
+				if channel == nil {
+					return "", fmt.Errorf("failed to open DM with user %s: nil channel returned", username)
+				}
+				return channel.ID, nil
+			}
+		}
+		return "", fmt.Errorf("user %q not found (searched by username, display name, and real name)", username)
+	}
+
+	// Handle #channel-name
+	name := strings.TrimPrefix(channelName, "#")
+
+	// Search through public and private channels
+	channelTypes := []string{"public_channel", "private_channel"}
+	for _, chanType := range channelTypes {
+		cursor := ""
+		for {
+			params := &slack.GetConversationsParameters{
+				Types:  []string{chanType},
+				Limit:  200,
+				Cursor: cursor,
+			}
+			channels, nextCursor, err := client.GetConversationsContext(ctx, params)
+			if err != nil {
+				h.logger.Debug("Failed to get conversations", zap.String("type", chanType), zap.Error(err))
+				break
+			}
+			for _, c := range channels {
+				if c.Name == name {
+					return c.ID, nil
+				}
+			}
+			if nextCursor == "" {
+				break
+			}
+			cursor = nextCursor
+		}
+	}
+
+	return "", fmt.Errorf("channel %q not found", channelName)
 }
 
 // UsersResource streams a CSV of all users
@@ -204,9 +359,9 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	// Note: Bot posting is disabled - users always post as themselves
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -251,7 +406,9 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		zap.String("thread_ts", params.threadTs),
 		zap.String("content_type", params.contentType),
 	)
-	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
+
+	var respChannel, respTimestamp string
+	respChannel, respTimestamp, err = slackClient.PostMessageContext(ctx, params.channel, options...)
 	if err != nil {
 		ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
 		return nil, err
@@ -259,10 +416,9 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
 	if toolConfig == "1" || toolConfig == "true" || toolConfig == "yes" {
-		err := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
-		if err != nil {
-			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
-			return nil, err
+		markErr := slackClient.MarkConversationContext(ctx, params.channel, respTimestamp)
+		if markErr != nil {
+			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(markErr))
 		}
 	}
 
@@ -274,14 +430,19 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		Latest:    respTimestamp,
 		Inclusive: true,
 	}
-	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
 		return nil, err
 	}
+	if history == nil {
+		ch.logger.Error("GetConversationHistoryContext returned nil response")
+		return nil, fmt.Errorf("failed to get conversation history: nil response")
+	}
 	ch.logger.Debug("Fetched conversation history", zap.Int("message_count", len(history.Messages)))
 
-	messages := ch.convertMessagesFromHistory(history.Messages, historyParams.ChannelID, false)
+	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, historyParams.ChannelID, false)
 	return marshalMessagesToCSV(messages)
 }
 
@@ -289,9 +450,8 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -312,7 +472,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().AddReactionContext(ctx, params.emoji, itemRef)
+	err = slackClient.AddReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack AddReactionContext failed", zap.Error(err))
 		return nil, err
@@ -325,9 +485,8 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
 
-	// provider readiness
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -348,7 +507,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	err = slackClient.RemoveReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
 		return nil, err
@@ -425,8 +584,8 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -436,7 +595,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
+	fileInfo, _, _, err := slackClient.GetFileInfoContext(ctx, params.fileID, 0, 0)
 	if err != nil {
 		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
 		return nil, err
@@ -455,7 +614,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, errors.New("file has no downloadable URL")
 	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	err = slackClient.GetFileContext(ctx, downloadURL, &buf)
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
@@ -510,7 +669,12 @@ func escapeJSON(s string) string {
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(ctx, request)
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolConversations(ctx, slackClient, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse history params", zap.Error(err))
 		return nil, err
@@ -531,15 +695,20 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		Cursor:    params.cursor,
 		Inclusive: false,
 	}
-	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
 		return nil, err
 	}
+	if history == nil {
+		ch.logger.Error("GetConversationHistoryContext returned nil response")
+		return nil, fmt.Errorf("failed to get conversation history: nil response")
+	}
 
 	ch.logger.Debug("Fetched conversation history", zap.Int("message_count", len(history.Messages)))
 
-	messages := ch.convertMessagesFromHistory(history.Messages, params.channel, params.activity)
+	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, params.channel, params.activity)
 
 	if len(messages) > 0 && history.HasMore {
 		messages[len(messages)-1].Cursor = history.ResponseMetaData.NextCursor
@@ -551,7 +720,12 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolConversations(ctx, request)
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolConversations(ctx, slackClient, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse replies params", zap.Error(err))
 		return nil, err
@@ -571,14 +745,15 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		Cursor:    params.cursor,
 		Inclusive: false,
 	}
-	replies, hasMore, nextCursor, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &repliesParams)
+
+	replies, hasMore, nextCursor, err := slackClient.GetConversationRepliesContext(ctx, &repliesParams)
 	if err != nil {
 		ch.logger.Error("GetConversationRepliesContext failed", zap.Error(err))
 		return nil, err
 	}
 	ch.logger.Debug("Fetched conversation replies", zap.Int("count", len(replies)))
 
-	messages := ch.convertMessagesFromHistory(replies, params.channel, params.activity)
+	messages := ch.convertMessagesFromHistory(ctx, slackClient, replies, params.channel, params.activity)
 	if len(messages) > 0 && hasMore {
 		messages[len(messages)-1].Cursor = nextCursor
 	}
@@ -588,7 +763,22 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsSearchHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolSearch(request)
+	slackClient, err := ch.getEffectiveClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if search_query is a Slack message URL
+	rawQuery := strings.TrimSpace(request.GetString("search_query", ""))
+	if channelID, timestamp, ok := parseSlackMessageURL(rawQuery); ok {
+		ch.logger.Debug("Detected Slack message URL, fetching single message",
+			zap.String("channelID", channelID),
+			zap.String("timestamp", timestamp),
+		)
+		return ch.fetchSingleMessage(ctx, slackClient, channelID, timestamp)
+	}
+
+	params, err := ch.parseParamsToolSearch(ctx, slackClient, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse search params", zap.Error(err))
 		return nil, err
@@ -602,14 +792,15 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		Count:         params.limit,
 		Page:          params.page,
 	}
-	messagesRes, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
+
+	messagesRes, _, err := slackClient.SearchContext(ctx, params.query, searchParams)
 	if err != nil {
 		ch.logger.Error("Slack SearchContext failed", zap.Error(err))
 		return nil, err
 	}
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
 
-	messages := ch.convertMessagesFromSearch(messagesRes.Matches)
+	messages := ch.convertMessagesFromSearch(ctx, slackClient, messagesRes.Matches)
 	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
@@ -897,7 +1088,12 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 		unreadChannels[i].UnreadCount = len(history.Messages)
 
 		// Convert messages
-		channelMessages := ch.convertMessagesFromHistory(history.Messages, unreadChannels[i].ChannelName, false)
+		slackClient, clientErr := ch.getEffectiveClient(ctx)
+		if clientErr != nil {
+			ch.logger.Warn("Failed to get effective client for message conversion", zap.Error(clientErr))
+			continue
+		}
+		channelMessages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, unreadChannels[i].ChannelName, false)
 		allMessages = append(allMessages, channelMessages...)
 	}
 
@@ -1023,7 +1219,12 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 			continue
 		}
 
-		channelMessages := ch.convertMessagesFromHistory(history.Messages, uc.ChannelName, false)
+		slackClient, clientErr := ch.getEffectiveClient(ctx)
+		if clientErr != nil {
+			ch.logger.Warn("Failed to get effective client for message conversion", zap.Error(clientErr))
+			continue
+		}
+		channelMessages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, uc.ChannelName, false)
 		allMessages = append(allMessages, channelMessages...)
 	}
 
@@ -1463,8 +1664,31 @@ func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel st
 	return channelsMaps.Channels[chn].ID, nil
 }
 
-func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack.Message, channel string, includeActivity bool) []Message {
-	usersMap := ch.apiProvider.ProvideUsersMap()
+func (ch *ConversationsHandler) convertMessagesFromHistory(ctx context.Context, slackClient *slack.Client, slackMessages []slack.Message, channel string, includeActivity bool) []Message {
+	// Get users map (if available)
+	var usersMap map[string]slack.User
+	if !ch.oauthEnabled {
+		cache := ch.apiProvider.ProvideUsersMap()
+		usersMap = cache.Users
+	} else {
+		// OAuth mode: fetch user info from Slack API
+		// Collect all user IDs from messages AND from mentions in message text
+		var userIDs []string
+		userMentionRe := regexp.MustCompile(`<@(U[A-Z0-9]+)(?:\|[^>]*)?>`)
+		for _, msg := range slackMessages {
+			if msg.User != "" {
+				userIDs = append(userIDs, msg.User)
+			}
+			// Extract user IDs from mentions in the text
+			matches := userMentionRe.FindAllStringSubmatch(msg.Text, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					userIDs = append(userIDs, match[1])
+				}
+			}
+		}
+		usersMap = ch.fetchUsersForMessages(ctx, slackClient, userIDs)
+	}
 	var messages []Message
 	warn := false
 
@@ -1473,7 +1697,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			continue
 		}
 
-		userName, realName, ok := getUserInfo(msg.User, usersMap.Users)
+		userName, realName, ok := getUserInfo(msg.User, usersMap)
 
 		if !ok && msg.SubType == "bot_message" {
 			userName, realName, ok = getBotInfo(msg.Username)
@@ -1490,6 +1714,8 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		}
 
 		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
+		// Expand user mentions to display names
+		msgText = expandUserMentions(msgText, usersMap)
 
 		var reactionParts []string
 		for _, r := range msg.Reactions {
@@ -1528,24 +1754,53 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		})
 	}
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		if warn && errors.Is(err, provider.ErrUsersNotReady) {
-			ch.logger.Warn(
-				"WARNING: Slack users sync is not ready yet, you may experience some limited functionality and see UIDs instead of resolved names as well as unable to query users by their @handles. Users sync is part of channels sync and operations on channels depend on users collection (IM, MPIM). Please wait until users are synced and try again",
-				zap.Error(err),
-			)
+	if !ch.oauthEnabled {
+		if ready, err := ch.apiProvider.IsReady(); !ready {
+			if warn && errors.Is(err, provider.ErrUsersNotReady) {
+				ch.logger.Warn(
+					"WARNING: Slack users sync is not ready yet, you may experience some limited functionality and see UIDs instead of resolved names as well as unable to query users by their @handles. Users sync is part of channels sync and operations on channels depend on users collection (IM, MPIM). Please wait until users are synced and try again",
+					zap.Error(err),
+				)
+			}
 		}
 	}
 	return messages
 }
 
-func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.SearchMessage) []Message {
-	usersMap := ch.apiProvider.ProvideUsersMap()
+func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, slackClient *slack.Client, slackMessages []slack.SearchMessage) []Message {
+	// Get users map (if available)
+	var usersMap map[string]slack.User
+	if !ch.oauthEnabled {
+		cache := ch.apiProvider.ProvideUsersMap()
+		usersMap = cache.Users
+	} else {
+		// OAuth mode: fetch user info from Slack API
+		// Collect all user IDs from messages AND from mentions in message text
+		var userIDs []string
+		userMentionRe := regexp.MustCompile(`<@(U[A-Z0-9]+)(?:\|[^>]*)?>`)
+		for _, msg := range slackMessages {
+			if msg.User != "" {
+				userIDs = append(userIDs, msg.User)
+			}
+			// Also collect user IDs from DM channel names (they appear as user IDs like U1234)
+			if strings.HasPrefix(msg.Channel.Name, "U") {
+				userIDs = append(userIDs, msg.Channel.Name)
+			}
+			// Extract user IDs from mentions in the text
+			matches := userMentionRe.FindAllStringSubmatch(msg.Text, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					userIDs = append(userIDs, match[1])
+				}
+			}
+		}
+		usersMap = ch.fetchUsersForMessages(ctx, slackClient, userIDs)
+	}
 	var messages []Message
 	warn := false
 
 	for _, msg := range slackMessages {
-		userName, realName, ok := getUserInfo(msg.User, usersMap.Users)
+		userName, realName, ok := getUserInfo(msg.User, usersMap)
 
 		if !ok && msg.User == "" && msg.Username != "" {
 			userName, realName, ok = getBotInfo(msg.Username)
@@ -1562,6 +1817,32 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 		}
 
 		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
+		// Expand user mentions to display names (search API may already do this, but be safe)
+		msgText = expandUserMentions(msgText, usersMap)
+
+		// Format channel name properly
+		channelDisplay := fmt.Sprintf("#%s", msg.Channel.Name)
+		// Check if this is a DM (channel ID starts with D) or if the name looks like a user ID
+		if strings.HasPrefix(msg.Channel.ID, "D") || strings.HasPrefix(msg.Channel.Name, "U") {
+			// This is a DM - try to get the user's name
+			if strings.HasPrefix(msg.Channel.Name, "U") {
+				// The "name" is actually a user ID - look it up
+				if user, exists := usersMap[msg.Channel.Name]; exists {
+					// Priority: RealName → DisplayName → Name for consistent formatting
+					if user.RealName != "" {
+						channelDisplay = "@" + user.RealName
+					} else if user.Profile.DisplayName != "" {
+						channelDisplay = "@" + user.Profile.DisplayName
+					} else {
+						channelDisplay = "@" + user.Name
+					}
+				} else {
+					channelDisplay = "@" + msg.Channel.Name
+				}
+			} else {
+				channelDisplay = "@" + msg.Channel.Name
+			}
+		}
 
 		hasMedia := hasImageBlocks(msg.Blocks)
 
@@ -1571,7 +1852,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 			UserName:  userName,
 			RealName:  realName,
 			Text:      text.ProcessText(msgText),
-			Channel:   fmt.Sprintf("#%s", msg.Channel.Name),
+			Channel:   channelDisplay,
 			ThreadTs:  threadTs,
 			Time:      timestamp,
 			Reactions: "",
@@ -1579,22 +1860,29 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 		})
 	}
 
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		if warn && errors.Is(err, provider.ErrUsersNotReady) {
-			ch.logger.Warn(
-				"Slack users sync not ready; you may see raw UIDs instead of names and lose some functionality.",
-				zap.Error(err),
-			)
+	if !ch.oauthEnabled {
+		if ready, err := ch.apiProvider.IsReady(); !ready {
+			if warn && errors.Is(err, provider.ErrUsersNotReady) {
+				ch.logger.Warn(
+					"Slack users sync not ready; you may see raw UIDs instead of names and lose some functionality.",
+					zap.Error(err),
+				)
+			}
 		}
 	}
 	return messages
 }
 
-func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context, request mcp.CallToolRequest) (*conversationParams, error) {
+func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context, slackClient *slack.Client, request mcp.CallToolRequest) (*conversationParams, error) {
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
 		ch.logger.Error("channel_id missing in conversations params")
 		return nil, errors.New("channel_id must be a string")
+	}
+
+	// Validate @ prefix has a username
+	if channel == "@" {
+		return nil, errors.New("channel_id '@' is invalid: please provide a username after @ (e.g., @username)")
 	}
 
 	limit := request.GetString("limit", "")
@@ -1621,28 +1909,50 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 		}
 	}
 
+	// Validate limit is positive
+	if paramLimit < 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", paramLimit)
+	}
+	if paramLimit == 0 && cursor == "" && paramOldest == "" {
+		// limit=0 with no cursor or time range - use default
+		paramLimit = defaultConversationsNumericLimit
+	}
+
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
-		if ready, err := ch.apiProvider.IsReady(); !ready {
-			if errors.Is(err, provider.ErrUsersNotReady) {
-				ch.logger.Warn(
-					"WARNING: Slack users sync is not ready yet, you may experience some limited functionality and see UIDs instead of resolved names as well as unable to query users by their @handles. Users sync is part of channels sync and operations on channels depend on users collection (IM, MPIM). Please wait until users are synced and try again",
-					zap.Error(err),
-				)
+		// OAuth mode: resolve channel name to ID using Slack API
+		if ch.oauthEnabled {
+			ch.logger.Debug("Resolving channel name in OAuth mode", zap.String("channel", channel))
+			resolvedID, err := ch.resolveChannelName(ctx, slackClient, channel)
+			if err != nil {
+				ch.logger.Error("Failed to resolve channel name", zap.String("channel", channel), zap.Error(err))
+				return nil, fmt.Errorf("failed to resolve channel name %q: %w", channel, err)
 			}
-			if errors.Is(err, provider.ErrChannelsNotReady) {
-				ch.logger.Warn(
-					"WARNING: Slack channels sync is not ready yet, you may experience some limited functionality and be able to request conversation only by Channel ID, not by its name. Please wait until channels are synced and try again.",
-					zap.Error(err),
-				)
+			channel = resolvedID
+		} else {
+			// Legacy mode: use channel cache
+			if ready, err := ch.apiProvider.IsReady(); !ready {
+				if errors.Is(err, provider.ErrUsersNotReady) {
+					ch.logger.Warn(
+						"WARNING: Slack users sync is not ready yet, you may experience some limited functionality and see UIDs instead of resolved names as well as unable to query users by their @handles. Users sync is part of channels sync and operations on channels depend on users collection (IM, MPIM). Please wait until users are synced and try again",
+						zap.Error(err),
+					)
+				}
+				if errors.Is(err, provider.ErrChannelsNotReady) {
+					ch.logger.Warn(
+						"WARNING: Slack channels sync is not ready yet, you may experience some limited functionality and be able to request conversation only by Channel ID, not by its name. Please wait until channels are synced and try again.",
+						zap.Error(err),
+					)
+				}
+				return nil, fmt.Errorf("channel %q not found in empty cache", channel)
 			}
-			return nil, fmt.Errorf("channel %q not found in empty cache", channel)
+			channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+			chn, ok := channelsMaps.ChannelsInv[channel]
+			if !ok {
+				ch.logger.Error("Channel not found in synced cache", zap.String("channel", channel))
+				return nil, fmt.Errorf("channel %q not found in synced cache. Try to remove old cache file and restart MCP Server", channel)
+			}
+			channel = channelsMaps.Channels[chn].ID
 		}
-		// Use resolveChannelID which includes refresh-on-error logic
-		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
-		if err != nil {
-			return nil, err
-		}
-		channel = resolvedChannel
 	}
 
 	return &conversationParams{
@@ -1677,10 +1987,16 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		ch.logger.Error("channel_id missing in add-message params")
 		return nil, errors.New("channel_id must be a string")
 	}
-	channel, err := ch.resolveChannelID(ctx, channel)
-	if err != nil {
-		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
-		return nil, err
+	if !ch.oauthEnabled {
+		resolved, err := ch.resolveChannelID(ctx, channel)
+		if err != nil {
+			ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+			return nil, err
+		}
+		channel = resolved
+	} else if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		// In OAuth mode without cache, require channel ID
+		return nil, fmt.Errorf("in OAuth mode, please use channel ID (C...) instead of name (%s)", channel)
 	}
 	if !isChannelAllowed(channel) {
 		ch.logger.Warn("Add-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
@@ -1867,7 +2183,8 @@ func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest)
 		ts:      ts,
 	}, nil
 }
-func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (*searchParams, error) {
+
+func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, slackClient *slack.Client, req mcp.CallToolRequest) (*searchParams, error) {
 	rawQuery := strings.TrimSpace(req.GetString("search_query", ""))
 	freeText, filters := splitQuery(rawQuery)
 
@@ -1875,14 +2192,14 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 		addFilter(filters, "is", "thread")
 	}
 	if chName := req.GetString("filter_in_channel", ""); chName != "" {
-		f, err := ch.paramFormatChannel(chName)
+		f, err := ch.paramFormatChannel(ctx, slackClient, chName)
 		if err != nil {
 			ch.logger.Error("Invalid channel filter", zap.String("filter", chName), zap.Error(err))
 			return nil, err
 		}
 		addFilter(filters, "in", f)
 	} else if im := req.GetString("filter_in_im_or_mpim", ""); im != "" {
-		f, err := ch.paramFormatUser(im)
+		f, err := ch.paramFormatUser(ctx, slackClient, im)
 		if err != nil {
 			ch.logger.Error("Invalid IM/MPIM filter", zap.String("filter", im), zap.Error(err))
 			return nil, err
@@ -1890,7 +2207,7 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 		addFilter(filters, "in", f)
 	}
 	if with := req.GetString("filter_users_with", ""); with != "" {
-		f, err := ch.paramFormatUser(with)
+		f, err := ch.paramFormatUser(ctx, slackClient, with)
 		if err != nil {
 			ch.logger.Error("Invalid with-user filter", zap.String("filter", with), zap.Error(err))
 			return nil, err
@@ -1898,7 +2215,7 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 		addFilter(filters, "with", f)
 	}
 	if from := req.GetString("filter_users_from", ""); from != "" {
-		f, err := ch.paramFormatUser(from)
+		f, err := ch.paramFormatUser(ctx, slackClient, from)
 		if err != nil {
 			ch.logger.Error("Invalid from-user filter", zap.String("filter", from), zap.Error(err))
 			return nil, err
@@ -1921,7 +2238,23 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 	}
 
 	finalQuery := buildQuery(freeText, filters)
+
+	// Validate that we have at least some search criteria
+	if strings.TrimSpace(finalQuery) == "" {
+		return nil, fmt.Errorf("search_query is required: provide a search term or use filters (filter_in_channel, filter_users_from, filter_date_after, etc.)")
+	}
+
 	limit := req.GetInt("limit", 100)
+
+	// Validate limit
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be a positive integer (got %d)", limit)
+	}
+	if limit > 100 {
+		ch.logger.Warn("Limit exceeds maximum of 100, capping", zap.Int("requested", limit))
+		limit = 100
+	}
+
 	cursor := req.GetString("cursor", "")
 
 	var (
@@ -1960,27 +2293,51 @@ func (ch *ConversationsHandler) parseParamsToolSearch(req mcp.CallToolRequest) (
 	}, nil
 }
 
+// isSlackUserIDPrefix checks if the string starts with a Slack user ID prefix.
 // Slack user IDs may begin with U or W: https://docs.slack.dev/changelog/2016/08/11/user-id-format-changes
 func isSlackUserIDPrefix(s string) bool {
 	return strings.HasPrefix(s, "U") || strings.HasPrefix(s, "W")
 }
 
-func (ch *ConversationsHandler) paramFormatUser(raw string) (string, error) {
-	users := ch.apiProvider.ProvideUsersMap()
+func (ch *ConversationsHandler) paramFormatUser(ctx context.Context, slackClient *slack.Client, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
+
+	// Handle user ID directly
 	if isSlackUserIDPrefix(raw) {
-		u, ok := users.Users[raw]
-		if !ok {
-			return "", fmt.Errorf("user %q not found", raw)
-		}
-		return fmt.Sprintf("<@%s>", u.ID), nil
+		return fmt.Sprintf("<@%s>", raw), nil
 	}
+
+	// Strip @ prefix if present
 	if strings.HasPrefix(raw, "<@") {
 		raw = raw[2:]
+		if idx := strings.Index(raw, ">"); idx >= 0 {
+			raw = raw[:idx]
+		}
+		return fmt.Sprintf("<@%s>", raw), nil
 	}
 	if strings.HasPrefix(raw, "@") {
 		raw = raw[1:]
 	}
+
+	if ch.oauthEnabled {
+		// OAuth mode: resolve username to user ID via Slack API
+		if slackClient == nil {
+			return "", fmt.Errorf("slack client is nil")
+		}
+		users, err := slackClient.GetUsersContext(ctx)
+		if err != nil {
+			return "", fmt.Errorf("failed to get users: %w", err)
+		}
+		for _, user := range users {
+			if user.Name == raw || user.Profile.DisplayName == raw {
+				return fmt.Sprintf("<@%s>", user.ID), nil
+			}
+		}
+		return "", fmt.Errorf("user %q not found", raw)
+	}
+
+	// Legacy mode: use cached users
+	users := ch.apiProvider.ProvideUsersMap()
 	uid, ok := users.UsersInv[raw]
 	if !ok {
 		return "", fmt.Errorf("user %q not found", raw)
@@ -1988,23 +2345,67 @@ func (ch *ConversationsHandler) paramFormatUser(raw string) (string, error) {
 	return fmt.Sprintf("<@%s>", uid), nil
 }
 
-func (ch *ConversationsHandler) paramFormatChannel(raw string) (string, error) {
+func (ch *ConversationsHandler) paramFormatChannel(ctx context.Context, slackClient *slack.Client, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
-	cms := ch.apiProvider.ProvideChannelsMaps()
-	if strings.HasPrefix(raw, "#") {
-		if id, ok := cms.ChannelsInv[raw]; ok {
-			return cms.Channels[id].Name, nil
-		}
-		return "", fmt.Errorf("channel %q not found", raw)
-	}
-	// Handle both C (standard channels) and G (private groups/channels) prefixes
+
+	// Handle channel ID directly - for search, we need the channel name
 	if strings.HasPrefix(raw, "C") || strings.HasPrefix(raw, "G") {
+		if ch.oauthEnabled {
+			// In OAuth mode with a channel ID, we need to get the channel name for search
+			if slackClient != nil {
+				info, err := slackClient.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+					ChannelID: raw,
+				})
+				if err == nil && info != nil {
+					return info.Name, nil
+				}
+			}
+			// Fallback: use the ID (search might still work)
+			return raw, nil
+		}
+		// Legacy mode: look up name from cache
+		cms := ch.apiProvider.ProvideChannelsMaps()
 		if chn, ok := cms.Channels[raw]; ok {
 			return chn.Name, nil
 		}
-		return "", fmt.Errorf("channel %q not found", raw)
+		return raw, nil // Fallback to ID
 	}
-	return "", fmt.Errorf("invalid channel format: %q", raw)
+
+	// Handle channel name
+	name := strings.TrimPrefix(raw, "#")
+
+	if ch.oauthEnabled {
+		// OAuth mode: resolve channel name via Slack API (just validate it exists)
+		if slackClient == nil {
+			return "", fmt.Errorf("slack client is nil")
+		}
+		// Search for the channel to validate it exists
+		channelTypes := []string{"public_channel", "private_channel"}
+		for _, chanType := range channelTypes {
+			params := &slack.GetConversationsParameters{
+				Types: []string{chanType},
+				Limit: 200,
+			}
+			channels, _, err := slackClient.GetConversationsContext(ctx, params)
+			if err != nil {
+				continue
+			}
+			for _, c := range channels {
+				if c.Name == name {
+					return c.Name, nil
+				}
+			}
+		}
+		// Channel not found but try using the name anyway (might be in later pages)
+		return name, nil
+	}
+
+	// Legacy mode: look up from cache
+	cms := ch.apiProvider.ProvideChannelsMaps()
+	if id, ok := cms.ChannelsInv[raw]; ok {
+		return cms.Channels[id].Name, nil
+	}
+	return "", fmt.Errorf("channel %q not found", raw)
 }
 
 func marshalMessagesToCSV(messages []Message) (*mcp.CallToolResult, error) {
@@ -2022,8 +2423,85 @@ func getUserInfo(userID string, usersMap map[string]slack.User) (userName, realN
 	return userID, userID, false
 }
 
+// fetchUsersForMessages fetches user info from Slack API for the given user IDs
+// and returns a map of userID -> slack.User. This is used in OAuth mode where
+// we don't have a pre-populated users cache.
+func (ch *ConversationsHandler) fetchUsersForMessages(ctx context.Context, client *slack.Client, userIDs []string) map[string]slack.User {
+	usersMap := make(map[string]slack.User)
+	if client == nil {
+		return usersMap
+	}
+
+	// Deduplicate user IDs
+	seen := make(map[string]bool)
+	var uniqueIDs []string
+	for _, id := range userIDs {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			uniqueIDs = append(uniqueIDs, id)
+		}
+	}
+
+	// Fetch each user's info
+	for _, userID := range uniqueIDs {
+		user, err := client.GetUserInfoContext(ctx, userID)
+		if err != nil {
+			ch.logger.Debug("Failed to fetch user info", zap.String("userID", userID), zap.Error(err))
+			continue
+		}
+		if user == nil {
+			ch.logger.Debug("User info returned nil", zap.String("userID", userID))
+			continue
+		}
+		usersMap[userID] = *user
+	}
+
+	return usersMap
+}
+
 func getBotInfo(botID string) (userName, realName string, ok bool) {
 	return botID, botID, true
+}
+
+// expandUserMentions replaces Slack user mentions (<@U1234567>) with display names (@Name)
+// using the provided users map. If a display name is already in the mention (<@U1234567|Name>),
+// it's handled by the text processor. This function handles the case where the mention
+// only contains the user ID.
+func expandUserMentions(text string, usersMap map[string]slack.User) string {
+	if usersMap == nil {
+		return text
+	}
+
+	// Match user mentions without display name: <@U1234567>
+	// Don't match mentions that already have display name: <@U1234567|Name>
+	userMentionRe := regexp.MustCompile(`<@(U[A-Z0-9]+)>`)
+
+	return userMentionRe.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract user ID from <@U1234567>
+		submatch := userMentionRe.FindStringSubmatch(match)
+		if len(submatch) < 2 {
+			return match
+		}
+		userID := submatch[1]
+
+		// Look up user in map
+		if user, exists := usersMap[userID]; exists {
+			// Priority: RealName → DisplayName → Name for consistent formatting
+			name := user.RealName
+			if name == "" {
+				name = user.Profile.DisplayName
+			}
+			if name == "" {
+				name = user.Name
+			}
+			if name != "" {
+				return "@" + name
+			}
+		}
+
+		// Fallback to just the user ID
+		return "@" + userID
+	})
 }
 
 func limitByNumeric(limit string, defaultLimit int) (int, error) {
@@ -2290,4 +2768,88 @@ func hasImageBlocks(blocks slack.Blocks) bool {
 		}
 	}
 	return false
+}
+
+// parseSlackMessageURL parses a Slack message URL and extracts the channel ID and timestamp.
+// URL format: https://[workspace].slack.com/archives/C1234567890/p1234567890123456
+// The "p" prefix is followed by the timestamp without the decimal point.
+// Returns (channelID, timestamp, ok) where timestamp is in Slack format "1234567890.123456"
+func parseSlackMessageURL(rawURL string) (channelID, timestamp string, ok bool) {
+	rawURL = strings.TrimSpace(rawURL)
+
+	// Check if it looks like a Slack URL
+	if !strings.Contains(rawURL, "slack.com/archives/") {
+		return "", "", false
+	}
+
+	// Parse the URL
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", false
+	}
+
+	// Path should be /archives/CHANNEL_ID/p1234567890123456
+	// or /archives/CHANNEL_ID/p1234567890123456?thread_ts=...
+	pathParts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(pathParts) < 3 || pathParts[0] != "archives" {
+		return "", "", false
+	}
+
+	channelID = pathParts[1]
+	messageID := pathParts[2]
+
+	// Validate channel ID format (C, G, D, or W followed by alphanumeric)
+	if len(channelID) < 2 {
+		return "", "", false
+	}
+	prefix := channelID[0]
+	if prefix != 'C' && prefix != 'G' && prefix != 'D' && prefix != 'W' {
+		return "", "", false
+	}
+
+	// Parse message ID: starts with 'p' followed by 16 digits (timestamp without decimal)
+	if !strings.HasPrefix(messageID, "p") || len(messageID) != 17 {
+		return "", "", false
+	}
+
+	// Convert p1234567890123456 to 1234567890.123456
+	tsDigits := messageID[1:] // Remove 'p' prefix
+	if len(tsDigits) != 16 {
+		return "", "", false
+	}
+
+	// Insert decimal point after the first 10 digits
+	timestamp = tsDigits[:10] + "." + tsDigits[10:]
+
+	return channelID, timestamp, true
+}
+
+// fetchSingleMessage fetches a single message by channel ID and timestamp
+func (ch *ConversationsHandler) fetchSingleMessage(ctx context.Context, slackClient *slack.Client, channelID, timestamp string) (*mcp.CallToolResult, error) {
+	historyParams := slack.GetConversationHistoryParameters{
+		ChannelID: channelID,
+		Limit:     1,
+		Oldest:    timestamp,
+		Latest:    timestamp,
+		Inclusive: true,
+	}
+
+	history, err := slackClient.GetConversationHistoryContext(ctx, &historyParams)
+	if err != nil {
+		ch.logger.Error("Failed to fetch single message", zap.Error(err))
+		return nil, fmt.Errorf("failed to fetch message: %w", err)
+	}
+
+	if history == nil || len(history.Messages) == 0 {
+		ch.logger.Debug("No message found at timestamp",
+			zap.String("channelID", channelID),
+			zap.String("timestamp", timestamp),
+		)
+		return nil, fmt.Errorf("message not found at %s in channel %s", timestamp, channelID)
+	}
+
+	ch.logger.Debug("Fetched single message", zap.Int("count", len(history.Messages)))
+
+	messages := ch.convertMessagesFromHistory(ctx, slackClient, history.Messages, channelID, false)
+	return marshalMessagesToCSV(messages)
 }

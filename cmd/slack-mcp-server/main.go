@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/korotovsky/slack-mcp-server/pkg/handler"
+	"github.com/korotovsky/slack-mcp-server/pkg/oauth"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server"
 	"github.com/mattn/go-isatty"
@@ -66,15 +69,64 @@ func main() {
 		)
 	}
 
-	p := provider.New(transport, logger)
-	s := server.NewMCPServer(p, logger, enabledTools)
+	// Check if OAuth mode is enabled
+	oauthEnabled := os.Getenv("SLACK_MCP_OAUTH_ENABLED") == "true"
 
-	go func() {
-		var once sync.Once
+	var s *server.MCPServer
+	var oauthHandler *server.OAuthHandler
+	var oauthManager oauth.OAuthManager
+	var p *provider.ApiProvider
 
-		newUsersWatcher(p, &once, logger)()
-		newChannelsWatcher(p, &once, logger)()
-	}()
+	if oauthEnabled {
+		// OAuth Mode
+		logger.Info("OAuth mode enabled", zap.String("context", "console"))
+
+		// Validate OAuth configuration
+		clientID := os.Getenv("SLACK_MCP_OAUTH_CLIENT_ID")
+		clientSecret := os.Getenv("SLACK_MCP_OAUTH_CLIENT_SECRET")
+		redirectURI := os.Getenv("SLACK_MCP_OAUTH_REDIRECT_URI")
+
+		if clientID == "" || clientSecret == "" || redirectURI == "" {
+			logger.Fatal("OAuth enabled but missing required credentials",
+				zap.String("context", "console"),
+				zap.Bool("has_client_id", clientID != ""),
+				zap.Bool("has_client_secret", clientSecret != ""),
+				zap.Bool("has_redirect_uri", redirectURI != ""),
+			)
+		}
+
+		// Create OAuth components
+		tokenStorage := oauth.NewMemoryStorage()
+		oauthManager = oauth.NewManager(clientID, clientSecret, redirectURI, tokenStorage)
+
+		// Create OAuth handler for HTTP endpoints
+		oauthHandler = server.NewOAuthHandler(oauthManager, logger)
+
+		// Create handlers with OAuth support
+		conversationsHandler := handler.NewConversationsHandlerWithOAuth(tokenStorage, logger)
+		channelsHandler := handler.NewChannelsHandlerWithOAuth(tokenStorage, logger)
+
+		// Create MCP server with OAuth middleware
+		s = server.NewMCPServerWithOAuth(conversationsHandler, channelsHandler, oauthManager, logger)
+
+		logger.Info("OAuth server initialized",
+			zap.String("context", "console"),
+			zap.String("redirect_uri", redirectURI),
+		)
+	} else {
+		// Legacy Mode (existing code)
+		logger.Info("Legacy mode enabled", zap.String("context", "console"))
+
+		p = provider.New(transport, logger)
+		s = server.NewMCPServer(p, logger, enabledTools)
+
+		go func() {
+			var once sync.Once
+
+			newUsersWatcher(p, &once, logger)()
+			newChannelsWatcher(p, &once, logger)()
+		}()
+	}
 
 	switch transport {
 	case "stdio":
@@ -100,25 +152,54 @@ func main() {
 			port = strconv.Itoa(defaultSsePort)
 		}
 
-		sseServer := s.ServeSSE(":" + port)
-		logger.Info(
-			fmt.Sprintf("SSE server listening on %s", fmt.Sprintf("%s:%s/sse", host, port)),
-			zap.String("context", "console"),
-			zap.String("host", host),
-			zap.String("port", port),
-		)
+		addr := host + ":" + port
 
-		if ready, _ := p.IsReady(); !ready {
-			logger.Info("Slack MCP Server is still warming up caches",
-				zap.String("context", "console"),
-			)
-		}
+		if oauthEnabled && oauthHandler != nil {
+			// OAuth mode: use combined handler with HTTP-level auth
+			handler := s.ServeSSEWithOAuth(":"+port, oauthHandler, oauthManager)
 
-		if err := sseServer.Start(host + ":" + port); err != nil {
-			logger.Fatal("Server error",
+			logger.Info("OAuth endpoints enabled",
 				zap.String("context", "console"),
-				zap.Error(err),
+				zap.String("authorize_url", fmt.Sprintf("http://%s/oauth/authorize", addr)),
+				zap.String("callback_url", fmt.Sprintf("http://%s/oauth/callback", addr)),
 			)
+
+			logger.Info(
+				fmt.Sprintf("SSE server listening on %s/sse", addr),
+				zap.String("context", "console"),
+				zap.String("host", host),
+				zap.String("port", port),
+			)
+
+			if err := http.ListenAndServe(addr, handler); err != nil {
+				logger.Fatal("Server error",
+					zap.String("context", "console"),
+					zap.Error(err),
+				)
+			}
+		} else {
+			// Legacy mode
+			handler := s.ServeSSE(":" + port)
+
+			logger.Info(
+				fmt.Sprintf("SSE server listening on %s/sse", addr),
+				zap.String("context", "console"),
+				zap.String("host", host),
+				zap.String("port", port),
+			)
+
+			if ready, _ := p.IsReady(); !ready {
+				logger.Info("Slack MCP Server is still warming up caches",
+					zap.String("context", "console"),
+				)
+			}
+
+			if err := http.ListenAndServe(addr, handler); err != nil {
+				logger.Fatal("Server error",
+					zap.String("context", "console"),
+					zap.Error(err),
+				)
+			}
 		}
 	case "http":
 		host := os.Getenv("SLACK_MCP_HOST")
@@ -130,25 +211,54 @@ func main() {
 			port = strconv.Itoa(defaultSsePort)
 		}
 
-		httpServer := s.ServeHTTP(":" + port)
-		logger.Info(
-			fmt.Sprintf("HTTP server listening on %s", fmt.Sprintf("%s:%s", host, port)),
-			zap.String("context", "console"),
-			zap.String("host", host),
-			zap.String("port", port),
-		)
+		addr := host + ":" + port
 
-		if ready, _ := p.IsReady(); !ready {
-			logger.Info("Slack MCP Server is still warming up caches",
-				zap.String("context", "console"),
-			)
-		}
+		if oauthEnabled && oauthHandler != nil {
+			// OAuth mode: use combined handler with HTTP-level auth
+			handler := s.ServeHTTPWithOAuth(":"+port, oauthHandler, oauthManager)
 
-		if err := httpServer.Start(host + ":" + port); err != nil {
-			logger.Fatal("Server error",
+			logger.Info("OAuth endpoints enabled",
 				zap.String("context", "console"),
-				zap.Error(err),
+				zap.String("authorize_url", fmt.Sprintf("http://%s/oauth/authorize", addr)),
+				zap.String("callback_url", fmt.Sprintf("http://%s/oauth/callback", addr)),
 			)
+
+			logger.Info(
+				fmt.Sprintf("HTTP server listening on %s", addr),
+				zap.String("context", "console"),
+				zap.String("host", host),
+				zap.String("port", port),
+			)
+
+			if err := http.ListenAndServe(addr, handler); err != nil {
+				logger.Fatal("Server error",
+					zap.String("context", "console"),
+					zap.Error(err),
+				)
+			}
+		} else {
+			// Legacy mode
+			handler := s.ServeHTTP(":" + port)
+
+			logger.Info(
+				fmt.Sprintf("HTTP server listening on %s", addr),
+				zap.String("context", "console"),
+				zap.String("host", host),
+				zap.String("port", port),
+			)
+
+			if ready, _ := p.IsReady(); !ready {
+				logger.Info("Slack MCP Server is still warming up caches",
+					zap.String("context", "console"),
+				)
+			}
+
+			if err := http.ListenAndServe(addr, handler); err != nil {
+				logger.Fatal("Server error",
+					zap.String("context", "console"),
+					zap.Error(err),
+				)
+			}
 		}
 	default:
 		logger.Fatal("Invalid transport type",

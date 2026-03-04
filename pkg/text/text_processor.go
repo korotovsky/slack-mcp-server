@@ -193,6 +193,21 @@ func HumanizeCertificates(certs []*x509.Certificate) string {
 }
 
 func filterSpecialChars(text string) string {
+	// Handle Slack user mentions: <@U1234567> or <@U1234567|displayname>
+	// Replace with @displayname or @userid
+	userMentionWithName := regexp.MustCompile(`<@(U[A-Z0-9]+)\|([^>]+)>`)
+	text = userMentionWithName.ReplaceAllString(text, "@$2")
+
+	userMentionNoName := regexp.MustCompile(`<@(U[A-Z0-9]+)>`)
+	text = userMentionNoName.ReplaceAllString(text, "@$1")
+
+	// Handle Slack channel mentions: <#C1234567> or <#C1234567|channel-name>
+	channelMentionWithName := regexp.MustCompile(`<#(C[A-Z0-9]+)\|([^>]+)>`)
+	text = channelMentionWithName.ReplaceAllString(text, "#$2")
+
+	channelMentionNoName := regexp.MustCompile(`<#(C[A-Z0-9]+)>`)
+	text = channelMentionNoName.ReplaceAllString(text, "#$1")
+
 	replaceWithCommaCheck := func(match []string, isLast bool) string {
 		var url, linkText string
 
@@ -266,7 +281,8 @@ func filterSpecialChars(text string) string {
 		protected = strings.Replace(protected, url, placeholder, 1)
 	}
 
-	cleanRegex := regexp.MustCompile(`[^0-9\p{L}\p{M}\s\.\,\-_:/\?=&%]`)
+	// Allow # and @ for channel and user mentions
+	cleanRegex := regexp.MustCompile(`[^0-9\p{L}\p{M}\s\.\,\-_:/\?=&%#@]`)
 	cleaned := cleanRegex.ReplaceAllString(protected, "")
 
 	// Restore the URLs
