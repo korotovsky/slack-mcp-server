@@ -1489,7 +1489,11 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			continue
 		}
 
-		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
+		msgText := msg.Text
+		if msgText == "" {
+			msgText = text.BlocksToText(msg.Blocks)
+		}
+		msgText += text.AttachmentsTo2CSV(msgText, msg.Attachments)
 
 		var reactionParts []string
 		for _, r := range msg.Reactions {
@@ -1561,7 +1565,11 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 			continue
 		}
 
-		msgText := msg.Text + text.AttachmentsTo2CSV(msg.Text, msg.Attachments)
+		msgText := msg.Text
+		if msgText == "" {
+			msgText = text.BlocksToText(msg.Blocks)
+		}
+		msgText += text.AttachmentsTo2CSV(msgText, msg.Attachments)
 
 		hasMedia := hasImageBlocks(msg.Blocks)
 
