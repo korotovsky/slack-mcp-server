@@ -26,7 +26,7 @@ import (
 const usersNotReadyMsg = "users cache is not ready yet, sync process is still running... please wait"
 const channelsNotReadyMsg = "channels cache is not ready yet, sync process is still running... please wait"
 const defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-const defaultCacheTTL = 1 * time.Hour
+const defaultCacheTTL = 24 * time.Hour
 const defaultMinRefreshInterval = 30 * time.Second
 
 var AllChanTypes = []string{"mpim", "im", "public_channel", "private_channel"}
@@ -246,16 +246,18 @@ type ApiProvider struct {
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
 	usersSnapshot          atomic.Pointer[UsersCache]
 	usersCachePath         string
-	usersReady             bool
+	usersReady             atomic.Bool
+	refreshingUsers        atomic.Bool // true while a background refresh goroutine is running
 	lastForcedUsersRefresh time.Time
-	usersMu                sync.RWMutex // protects usersReady, lastForcedUsersRefresh
+	usersMu                sync.RWMutex // protects lastForcedUsersRefresh
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
 	channelsSnapshot          atomic.Pointer[ChannelsCache]
 	channelsCachePath         string
-	channelsReady             bool
+	channelsReady             atomic.Bool
+	refreshingChannels        atomic.Bool // true while a background refresh goroutine is running
 	lastForcedChannelsRefresh time.Time
-	channelsMu                sync.RWMutex // protects channelsReady, lastForcedChannelsRefresh
+	channelsMu                sync.RWMutex // protects lastForcedChannelsRefresh
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -717,14 +719,8 @@ func (ap *ApiProvider) ForceRefreshUsers(ctx context.Context) error {
 
 func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) error {
 	ap.usersMu.Lock()
-	defer ap.usersMu.Unlock()
 
-	var (
-		list        []slack.User
-		optionLimit = slack.GetUsersOptionLimit(1000)
-	)
-
-	// Check if we should use cache (not forced, cache exists, and within TTL)
+	// Check if we should use cache (not forced, cache exists)
 	if !force {
 		if data, err := os.ReadFile(ap.usersCachePath); err == nil {
 			var cachedUsers []slack.User
@@ -733,43 +729,78 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 					zap.String("cache_file", ap.usersCachePath),
 					zap.Error(err))
 			} else {
+				// Build snapshot from cache
+				newSnapshot := &UsersCache{
+					Users:    make(map[string]slack.User, len(cachedUsers)),
+					UsersInv: make(map[string]string, len(cachedUsers)),
+				}
+				for _, u := range cachedUsers {
+					newSnapshot.Users[u.ID] = u
+					newSnapshot.UsersInv[u.Name] = u.ID
+				}
+				ap.usersSnapshot.Store(newSnapshot)
+				ap.usersReady.Store(true)
+
 				// Check cache TTL using file modification time
-				cacheValid := true
+				cacheExpired := false
 				if ap.cacheTTL > 0 {
 					if fileInfo, err := os.Stat(ap.usersCachePath); err == nil {
 						cacheAge := time.Since(fileInfo.ModTime())
 						if cacheAge > ap.cacheTTL {
-							ap.logger.Info("Users cache expired, will refetch",
+							cacheExpired = true
+							ap.logger.Info("Serving stale users cache, background refresh starting",
 								zap.Duration("cache_age", cacheAge),
 								zap.Duration("ttl", ap.cacheTTL),
+								zap.Int("count", len(cachedUsers)),
 								zap.String("cache_file", ap.usersCachePath))
-							cacheValid = false
 						}
 					}
 				}
 
-				if cacheValid {
-					// Build new snapshot from cache
-					newSnapshot := &UsersCache{
-						Users:    make(map[string]slack.User, len(cachedUsers)),
-						UsersInv: make(map[string]string, len(cachedUsers)),
-					}
-					for _, u := range cachedUsers {
-						newSnapshot.Users[u.ID] = u
-						newSnapshot.UsersInv[u.Name] = u.ID
-					}
-					ap.usersSnapshot.Store(newSnapshot)
+				if !cacheExpired {
 					ap.logger.Info("Loaded users from cache",
 						zap.Int("count", len(cachedUsers)),
 						zap.String("cache_file", ap.usersCachePath))
-					ap.usersReady = true
+					ap.usersMu.Unlock()
 					return nil
 				}
+
+				// Cache is expired: release lock, spawn background refresh, return immediately
+				ap.usersMu.Unlock()
+				ap.spawnBackgroundUsersRefresh()
+				return nil
 			}
 		}
 	}
 
-	// Fetch fresh data from Slack API
+	// No usable cache: fetch fresh data synchronously (first run or force)
+	ap.usersMu.Unlock()
+	return ap.fetchAndStoreUsers(ctx)
+}
+
+// spawnBackgroundUsersRefresh starts a background goroutine to fetch fresh user data.
+// Uses refreshingUsers flag to prevent concurrent background refreshes.
+func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
+	if !ap.refreshingUsers.CompareAndSwap(false, true) {
+		ap.logger.Debug("Skipping background users refresh, already in progress")
+		return
+	}
+	go func() {
+		defer ap.refreshingUsers.Store(false)
+		if err := ap.fetchAndStoreUsers(context.Background()); err != nil {
+			ap.logger.Warn("Background users refresh failed, continuing with stale data",
+				zap.Error(err))
+		}
+	}()
+}
+
+// fetchAndStoreUsers fetches all users from the Slack API and updates the snapshot and cache file.
+func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
+	var (
+		list        []slack.User
+		optionLimit = slack.GetUsersOptionLimit(1000)
+	)
+
 	users, err := ap.client.GetUsersContext(ctx,
 		optionLimit,
 	)
@@ -831,7 +862,7 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 		}
 	}
 
-	ap.usersReady = true
+	ap.usersReady.Store(true)
 
 	return nil
 }
@@ -867,9 +898,8 @@ func (ap *ApiProvider) ForceRefreshChannels(ctx context.Context) error {
 
 func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) error {
 	ap.channelsMu.Lock()
-	defer ap.channelsMu.Unlock()
 
-	// Check if we should use cache (not forced, cache exists, and within TTL)
+	// Check if we should use cache (not forced, cache exists)
 	if !force {
 		if data, err := os.ReadFile(ap.channelsCachePath); err == nil {
 			var cachedChannels []Channel
@@ -878,57 +908,84 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 					zap.String("cache_file", ap.channelsCachePath),
 					zap.Error(err))
 			} else {
+				// Re-map channels with current users cache to ensure DM names are populated
+				usersMap := ap.ProvideUsersMap().Users
+				newSnapshot := &ChannelsCache{
+					Channels:    make(map[string]Channel, len(cachedChannels)),
+					ChannelsInv: make(map[string]string, len(cachedChannels)),
+				}
+				for _, c := range cachedChannels {
+					if c.IsIM {
+						remappedChannel := mapChannel(
+							c.ID, "", "", c.Topic, c.Purpose,
+							c.User, c.Members, c.MemberCount,
+							c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
+							usersMap,
+						)
+						newSnapshot.Channels[c.ID] = remappedChannel
+						newSnapshot.ChannelsInv[remappedChannel.Name] = c.ID
+					} else {
+						newSnapshot.Channels[c.ID] = c
+						newSnapshot.ChannelsInv[c.Name] = c.ID
+					}
+				}
+				ap.channelsSnapshot.Store(newSnapshot)
+				ap.channelsReady.Store(true)
+
 				// Check cache TTL using file modification time
-				cacheValid := true
+				cacheExpired := false
 				if ap.cacheTTL > 0 {
 					if fileInfo, err := os.Stat(ap.channelsCachePath); err == nil {
 						cacheAge := time.Since(fileInfo.ModTime())
 						if cacheAge > ap.cacheTTL {
-							ap.logger.Info("Channels cache expired, will refetch",
+							cacheExpired = true
+							ap.logger.Info("Serving stale channels cache, background refresh starting",
 								zap.Duration("cache_age", cacheAge),
 								zap.Duration("ttl", ap.cacheTTL),
+								zap.Int("count", len(cachedChannels)),
 								zap.String("cache_file", ap.channelsCachePath))
-							cacheValid = false
 						}
 					}
 				}
 
-				if cacheValid {
-					// Re-map channels with current users cache to ensure DM names are populated
-					usersMap := ap.ProvideUsersMap().Users
-					newSnapshot := &ChannelsCache{
-						Channels:    make(map[string]Channel, len(cachedChannels)),
-						ChannelsInv: make(map[string]string, len(cachedChannels)),
-					}
-					for _, c := range cachedChannels {
-						// For IM channels, re-generate the name and purpose using current users cache
-						if c.IsIM {
-							// Re-map the channel to get updated user name if available
-							remappedChannel := mapChannel(
-								c.ID, "", "", c.Topic, c.Purpose,
-								c.User, c.Members, c.MemberCount,
-								c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
-								usersMap,
-							)
-							newSnapshot.Channels[c.ID] = remappedChannel
-							newSnapshot.ChannelsInv[remappedChannel.Name] = c.ID
-						} else {
-							newSnapshot.Channels[c.ID] = c
-							newSnapshot.ChannelsInv[c.Name] = c.ID
-						}
-					}
-					ap.channelsSnapshot.Store(newSnapshot)
+				if !cacheExpired {
 					ap.logger.Info("Loaded channels from cache and re-mapped DM names",
 						zap.Int("count", len(cachedChannels)),
 						zap.String("cache_file", ap.channelsCachePath))
-					ap.channelsReady = true
+					ap.channelsMu.Unlock()
 					return nil
 				}
+
+				// Cache is expired: release lock, spawn background refresh, return immediately
+				ap.channelsMu.Unlock()
+				ap.spawnBackgroundChannelsRefresh()
+				return nil
 			}
 		}
 	}
 
-	// Fetch fresh data from Slack API
+	// No usable cache: fetch fresh data synchronously (first run or force)
+	ap.channelsMu.Unlock()
+	return ap.fetchAndStoreChannels(ctx)
+}
+
+// spawnBackgroundChannelsRefresh starts a background goroutine to fetch fresh channel data.
+func (ap *ApiProvider) spawnBackgroundChannelsRefresh() {
+	if !ap.refreshingChannels.CompareAndSwap(false, true) {
+		ap.logger.Debug("Skipping background channels refresh, already in progress")
+		return
+	}
+	go func() {
+		defer ap.refreshingChannels.Store(false)
+		if err := ap.fetchAndStoreChannels(context.Background()); err != nil {
+			ap.logger.Warn("Background channels refresh failed, continuing with stale data",
+				zap.Error(err))
+		}
+	}()
+}
+
+// fetchAndStoreChannels fetches all channels from the Slack API and updates the snapshot and cache file.
+func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
@@ -945,7 +1002,7 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 		}
 	}
 
-	ap.channelsReady = true
+	ap.channelsReady.Store(true)
 
 	return nil
 }
@@ -1100,10 +1157,10 @@ func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
 }
 
 func (ap *ApiProvider) IsReady() (bool, error) {
-	if !ap.usersReady {
+	if !ap.usersReady.Load() {
 		return false, ErrUsersNotReady
 	}
-	if !ap.channelsReady {
+	if !ap.channelsReady.Load() {
 		return false, ErrChannelsNotReady
 	}
 	return true, nil
@@ -1141,7 +1198,7 @@ func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int)
 // searchUsersInCache performs a case-insensitive regex search on cached users.
 // Matches against username, real name, display name, and email.
 func (ap *ApiProvider) searchUsersInCache(query string, limit int) ([]slack.User, error) {
-	if !ap.usersReady {
+	if !ap.usersReady.Load() {
 		return nil, ErrUsersNotReady
 	}
 
