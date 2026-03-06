@@ -285,6 +285,143 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	return marshalMessagesToCSV(messages)
 }
 
+// ConversationsDeleteMessageHandler deletes a message
+func (ch *ConversationsHandler) ConversationsDeleteMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsDeleteMessageHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	channelRaw := request.GetString("channel_id", "")
+	if channelRaw == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, channelRaw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve channel_id: %w", err)
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		return nil, errors.New("timestamp is required")
+	}
+
+	_, _, err = ch.apiProvider.Slack().DeleteMessage(channel, timestamp)
+	if err != nil {
+		ch.logger.Error("Slack DeleteMessage failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText("Message deleted successfully"), nil
+}
+
+// ConversationsUpdateMessageHandler updates an existing message
+func (ch *ConversationsHandler) ConversationsUpdateMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUpdateMessageHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	channelRaw := request.GetString("channel_id", "")
+	if channelRaw == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, channelRaw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve channel_id: %w", err)
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		return nil, errors.New("timestamp is required")
+	}
+
+	msgText := request.GetString("text", "")
+	if msgText == "" {
+		return nil, errors.New("text is required")
+	}
+
+	contentType := request.GetString("content_type", "text/markdown")
+
+	var options []slack.MsgOption
+	switch contentType {
+	case "text/plain":
+		options = append(options, slack.MsgOptionDisableMarkdown())
+		options = append(options, slack.MsgOptionText(msgText, false))
+	case "text/markdown":
+		blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(msgText)
+		if err != nil {
+			ch.logger.Warn("Markdown parsing error", zap.Error(err))
+			options = append(options, slack.MsgOptionDisableMarkdown())
+			options = append(options, slack.MsgOptionText(msgText, false))
+		} else {
+			options = append(options, slack.MsgOptionBlocks(blocks...))
+		}
+	default:
+		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
+	}
+
+	respChannel, respTimestamp, _, err := ch.apiProvider.Slack().UpdateMessage(channel, timestamp, options...)
+	if err != nil {
+		ch.logger.Error("Slack UpdateMessage failed", zap.Error(err))
+		return nil, err
+	}
+
+	// fetch the updated message
+	historyParams := slack.GetConversationHistoryParameters{
+		ChannelID: respChannel,
+		Limit:     1,
+		Oldest:    respTimestamp,
+		Latest:    respTimestamp,
+		Inclusive: true,
+	}
+	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+	if err != nil {
+		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	messages := ch.convertMessagesFromHistory(history.Messages, historyParams.ChannelID, false)
+	return marshalMessagesToCSV(messages)
+}
+
+// ConversationsOpenHandler opens or resumes a DM or group DM
+func (ch *ConversationsHandler) ConversationsOpenHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsOpenHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	usersRaw := request.GetString("users", "")
+	if usersRaw == "" {
+		return nil, errors.New("users is required")
+	}
+
+	userIDs := strings.Split(usersRaw, ",")
+	for i := range userIDs {
+		userIDs[i] = strings.TrimSpace(userIDs[i])
+	}
+
+	params := &slack.OpenConversationParameters{
+		Users: userIDs,
+	}
+
+	channel, _, _, err := ch.apiProvider.Slack().OpenConversation(params)
+	if err != nil {
+		ch.logger.Error("Slack OpenConversation failed", zap.Error(err))
+		return nil, err
+	}
+
+	result := fmt.Sprintf("channel_id: %s\nchannel_name: %s\nis_group: %t", channel.ID, channel.Name, channel.IsGroup)
+	return mcp.NewToolResultText(result), nil
+}
+
 // ReactionsAddHandler adds an emoji reaction to a message
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))

@@ -41,6 +41,9 @@ const (
 	ToolUsergroupsUpdate            = "usergroups_update"
 	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
 	ToolUsersSearch                 = "users_search"
+	ToolConversationsDeleteMessage  = "conversations_delete_message"
+	ToolConversationsUpdateMessage  = "conversations_update_message"
+	ToolConversationsOpen           = "conversations_open"
 )
 
 var ValidToolNames = []string{
@@ -60,6 +63,9 @@ var ValidToolNames = []string{
 	ToolUsergroupsUpdate,
 	ToolUsergroupsUsersUpdate,
 	ToolUsersSearch,
+	ToolConversationsDeleteMessage,
+	ToolConversationsUpdateMessage,
+	ToolConversationsOpen,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -184,6 +190,57 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
 			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteMessage, enabledTools, "SLACK_MCP_DELETE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteMessage,
+			mcp.WithDescription("Delete a message from a public channel, private channel, or direct message (DM, or IM) conversation. Only messages posted by the authenticated user (or bot) can be deleted."),
+			mcp.WithTitleAnnotation("Delete Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("timestamp",
+				mcp.Required(),
+				mcp.Description("Timestamp of the message to delete, in format 1234567890.123456."),
+			),
+		), conversationsHandler.ConversationsDeleteMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsUpdateMessage, enabledTools, "SLACK_MCP_UPDATE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsUpdateMessage,
+			mcp.WithDescription("Update (edit) an existing message in a public channel, private channel, or direct message (DM, or IM) conversation. Only messages posted by the authenticated user (or bot) can be updated."),
+			mcp.WithTitleAnnotation("Update Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("timestamp",
+				mcp.Required(),
+				mcp.Description("Timestamp of the message to update, in format 1234567890.123456."),
+			),
+			mcp.WithString("text",
+				mcp.Required(),
+				mcp.Description("New message text in specified content_type format."),
+			),
+			mcp.WithString("content_type",
+				mcp.DefaultString("text/markdown"),
+				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+			),
+		), conversationsHandler.ConversationsUpdateMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsOpen, enabledTools, "SLACK_MCP_OPEN_CONVERSATION_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsOpen,
+			mcp.WithDescription("Open or resume a direct message (DM) or group direct message (group DM) conversation. Use this to create a new DM or group DM, or to get the channel ID for an existing one. Returns the conversation's channel ID which can be used with other tools."),
+			mcp.WithTitleAnnotation("Open Conversation"),
+			mcp.WithString("users",
+				mcp.Required(),
+				mcp.Description("Comma-separated list of user IDs (e.g., 'U1234567890,U9876543210'). One user ID for a DM, multiple for a group DM."),
+			),
+		), conversationsHandler.ConversationsOpenHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {

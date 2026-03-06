@@ -213,6 +213,11 @@ type SlackAPI interface {
 	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
 	GetMutedChannels(ctx context.Context) (map[string]bool, error)
 
+	// Message management methods
+	DeleteMessage(channel, messageTimestamp string) (string, string, error)
+	UpdateMessage(channelID, timestamp string, options ...slack.MsgOption) (string, string, string, error)
+	OpenConversation(params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error)
+
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
 	GetUserGroupMembersContext(ctx context.Context, userGroup string, options ...slack.GetUserGroupMembersOption) ([]string, error)
@@ -479,6 +484,18 @@ func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, it
 
 func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
 	return c.slackClient.RemoveReactionContext(ctx, name, item)
+}
+
+func (c *MCPSlackClient) DeleteMessage(channel, messageTimestamp string) (string, string, error) {
+	return c.slackClient.DeleteMessage(channel, messageTimestamp)
+}
+
+func (c *MCPSlackClient) UpdateMessage(channelID, timestamp string, options ...slack.MsgOption) (string, string, string, error) {
+	return c.slackClient.UpdateMessage(channelID, timestamp, options...)
+}
+
+func (c *MCPSlackClient) OpenConversation(params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error) {
+	return c.slackClient.OpenConversation(params)
 }
 
 func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
