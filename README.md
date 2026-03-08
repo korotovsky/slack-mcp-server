@@ -207,6 +207,55 @@ Mark a channel or DM as read.
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` (e.g., `#general`, `@username`).
   - `ts` (string, optional): Timestamp of the message to mark as read up to. If not provided, marks all messages as read.
 
+### 16. activity_unreads
+Get unread Activity items — thread replies you're following and @mentions in threads. Returns the same data as Slack's Activity panel "Unreads" tab. Zero false positives.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `include_messages` (boolean, default `true`): If true, fetches unread reply messages per thread. If false, returns a summary CSV only.
+  - `max_messages_per_thread` (number, default `10`): Max messages to fetch per thread when `include_messages` is true.
+  - `limit` (number, default `30`): Max Activity items to return.
+
+### 17. activity_mark_read
+Mark an Activity item as read. Use the `key`, `feed_ts`, and `type` values from `activity_unreads` output.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `key` (string, required): Activity item key from `activity_unreads` output (e.g., `thread_v2-C092WJP9Z38-1772545632.256259`).
+  - `feed_ts` (string, required): Feed timestamp from `activity_unreads` output.
+  - `type` (string, required): Item type: `thread_v2`, `at_user`, `at_user_group`, `at_channel`, `at_everyone`.
+
+### 18. saved_list
+List saved items from Slack's "Save for Later" panel. Returns items the user has saved, with optional message content. This replaces the deprecated `stars.list` API ([changelog](https://api.slack.com/changelog/2023-07-its-later-already-for-stars-and-reminders)).
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `filter` (string, default `"saved"`): Filter saved items: `"saved"` (active/in-progress), `"completed"` (marked done), `"archived"`.
+  - `limit` (number, default `50`): Maximum number of items to return. Auto-paginates.
+  - `include_messages` (boolean, default `true`): If true, fetches the actual saved message content. If false, returns metadata only.
+  - `max_messages_per_item` (number, default `5`): Max messages to fetch per saved item (for thread replies).
+
+### 19. saved_update
+Update a saved item: mark as completed, set a due date/reminder, or both. Use `item_id` and `ts` values from `saved_list` output. This replaces the deprecated `stars.add`/`stars.remove` APIs.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `item_id` (string, required): Channel/DM ID where the saved message lives (from `saved_list` output).
+  - `ts` (string, required): Message timestamp of the saved item (from `saved_list` output).
+  - `mark` (string, optional): Set to `"completed"` to mark the item as done.
+  - `date_due` (number, optional): Unix timestamp for due date/reminder. Set to `0` to clear.
+
+### 20. saved_clear_completed
+Clear all completed saved items from the "Save for Later" panel. This is a bulk operation that removes all items with `state="completed"`.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:** None.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
