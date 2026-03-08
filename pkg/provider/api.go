@@ -211,6 +211,8 @@ type SlackAPI interface {
 	ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error)
 	UsersSearch(ctx context.Context, query string, count int) ([]slack.User, error)
 	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
+	ActivityFeed(ctx context.Context, limit int) (edge.ActivityFeedResponse, error)
+	ActivityMarkRead(ctx context.Context, itemType, feedTs, key string) error
 	GetMutedChannels(ctx context.Context) (map[string]bool, error)
 
 	// User groups API methods
@@ -503,6 +505,14 @@ func (c *MCPSlackClient) UsersSearch(ctx context.Context, query string, count in
 
 func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error) {
 	return c.edgeClient.ClientCounts(ctx)
+}
+
+func (c *MCPSlackClient) ActivityFeed(ctx context.Context, limit int) (edge.ActivityFeedResponse, error) {
+	return c.edgeClient.ActivityFeed(ctx, limit)
+}
+
+func (c *MCPSlackClient) ActivityMarkRead(ctx context.Context, itemType, feedTs, key string) error {
+	return c.edgeClient.ActivityMarkRead(ctx, itemType, feedTs, key)
 }
 
 func (c *MCPSlackClient) GetMutedChannels(ctx context.Context) (map[string]bool, error) {
