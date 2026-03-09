@@ -255,6 +255,113 @@ func filterChannelsByTypes(channels map[string]provider.Channel, types []string)
 	return result
 }
 
+type StarredChannel struct {
+	ChannelID   string `csv:"channel_id"`
+	ChannelName string `csv:"channel_name"`
+	ChannelType string `csv:"channel_type"` // "dm", "group_dm", "internal", "partner"
+	IsMuted     bool   `csv:"is_muted"`
+	MemberCount int    `csv:"member_count"`
+}
+
+func (ch *ChannelsHandler) ChannelsStarredHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ChannelsStarredHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	if ch.apiProvider.IsBotToken() {
+		return nil, fmt.Errorf(
+			"channels_starred requires a user token (xoxp) or browser session tokens (xoxc/xoxd); " +
+				"bot tokens (xoxb) do not support starred items",
+		)
+	}
+
+	channelTypesFilter := request.GetString("channel_types", "all")
+	limit := request.GetInt("limit", 100)
+
+	ch.logger.Debug("Request parameters",
+		zap.String("channel_types", channelTypesFilter),
+		zap.Int("limit", limit),
+	)
+
+	// Get starred channel IDs from Slack API
+	starredIDs, err := ch.apiProvider.Slack().GetStarredChannelIDs(ctx, limit)
+	if err != nil {
+		ch.logger.Error("Failed to get starred channel IDs", zap.Error(err))
+		return nil, fmt.Errorf("failed to get starred channels: %v", err)
+	}
+
+	ch.logger.Debug("Got starred channel IDs", zap.Int("count", len(starredIDs)))
+
+	// Fetch muted channels for the is_muted column
+	mutedChannels := make(map[string]bool)
+	if !ch.apiProvider.IsOAuth() {
+		mc, err := ch.apiProvider.Slack().GetMutedChannels(ctx)
+		if err != nil {
+			ch.logger.Warn("Failed to fetch muted channels, proceeding without mute info", zap.Error(err))
+		} else {
+			mutedChannels = mc
+		}
+	}
+
+	// Resolve channel details from cache
+	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+
+	var result []StarredChannel
+	for _, id := range starredIDs {
+		sc := StarredChannel{
+			ChannelID: id,
+			IsMuted:   mutedChannels[id],
+		}
+
+		if cached, ok := channelsMaps.Channels[id]; ok {
+			sc.ChannelName = cached.Name
+			sc.MemberCount = cached.MemberCount
+			sc.ChannelType = classifyChannelType(cached)
+		} else {
+			// Channel not in cache — use ID as name, type unknown
+			sc.ChannelName = id
+			sc.ChannelType = "internal"
+		}
+
+		// Apply channel_types filter
+		if channelTypesFilter != "all" && sc.ChannelType != channelTypesFilter {
+			continue
+		}
+
+		result = append(result, sc)
+		if len(result) >= limit {
+			break
+		}
+	}
+
+	ch.logger.Debug("Returning starred channels", zap.Int("count", len(result)))
+
+	csvBytes, err := gocsv.MarshalBytes(&result)
+	if err != nil {
+		ch.logger.Error("Failed to marshal starred channels to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+// classifyChannelType returns "dm", "group_dm", "partner", or "internal" for a cached channel.
+func classifyChannelType(ch provider.Channel) string {
+	if ch.IsIM {
+		return "dm"
+	}
+	if ch.IsMpIM {
+		return "group_dm"
+	}
+	if ch.IsExtShared {
+		return "partner"
+	}
+	return "internal"
+}
+
 func paginateChannels(channels []provider.Channel, cursor string, limit int) ([]provider.Channel, string) {
 	logger := zap.L()
 

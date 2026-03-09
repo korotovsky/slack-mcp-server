@@ -213,6 +213,9 @@ type SlackAPI interface {
 	ClientCounts(ctx context.Context) (edge.ClientCountsResponse, error)
 	GetMutedChannels(ctx context.Context) (map[string]bool, error)
 
+	// Stars API methods
+	GetStarredChannelIDs(ctx context.Context, limit int) ([]string, error)
+
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
 	GetUserGroupMembersContext(ctx context.Context, userGroup string, options ...slack.GetUserGroupMembersOption) ([]string, error)
@@ -507,6 +510,43 @@ func (c *MCPSlackClient) ClientCounts(ctx context.Context) (edge.ClientCountsRes
 
 func (c *MCPSlackClient) GetMutedChannels(ctx context.Context) (map[string]bool, error) {
 	return c.edgeClient.GetMutedChannels(ctx)
+}
+
+func (c *MCPSlackClient) GetStarredChannelIDs(ctx context.Context, limit int) ([]string, error) {
+	if c.isOAuth {
+		// xoxp tokens: use stars.list standard API and filter for channel-like items
+		params := slack.StarsParameters{
+			Count: limit,
+			Page:  1,
+		}
+		items, _, err := c.slackClient.ListStarsContext(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		var channelIDs []string
+		for _, item := range items {
+			switch item.Type {
+			case slack.TYPE_CHANNEL, slack.TYPE_IM, slack.TYPE_GROUP:
+				if item.Channel != "" {
+					channelIDs = append(channelIDs, item.Channel)
+				}
+			}
+		}
+		return channelIDs, nil
+	}
+
+	// xoxc/xoxd tokens: use client.userBoot which returns starred channel IDs
+	ub, err := c.edgeClient.ClientUserBoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var channelIDs []string
+	for _, item := range ub.Starred {
+		if id, ok := item.(string); ok {
+			channelIDs = append(channelIDs, id)
+		}
+	}
+	return channelIDs, nil
 }
 
 func (c *MCPSlackClient) GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error) {
