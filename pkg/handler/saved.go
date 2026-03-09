@@ -87,6 +87,7 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 				State:       item.State,
 			}
 			allItems = append(allItems, row)
+			fetched++
 
 			if includeMessages {
 				if err := rl.Wait(ctx); err != nil {
@@ -101,10 +102,16 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 				}
 				histResp, err := h.apiProvider.Slack().GetConversationHistoryContext(ctx, histParams)
 				if err != nil {
-					h.logger.Warn("Failed to fetch saved message",
+					h.logger.Warn("Failed to fetch saved message via history, trying replies",
 						zap.String("channel", item.ItemID),
 						zap.String("ts", item.Ts),
 						zap.Error(err))
+					allMessages = append(allMessages, Message{
+						MsgID:   item.Ts,
+						Channel: channelName,
+						Text:    "[message content unavailable — channel access denied]",
+						Time:    formatUnixTs(item.DateCreated),
+					})
 					continue
 				}
 				if len(histResp.Messages) > 0 {
@@ -127,10 +134,29 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 					}
 					msgs := h.convHandler.convertMessagesFromHistory(histResp.Messages, item.ItemID, false)
 					allMessages = append(allMessages, msgs...)
+				} else {
+					repliesParams := &slack.GetConversationRepliesParameters{
+						ChannelID: item.ItemID,
+						Timestamp: item.Ts,
+						Latest:    item.Ts,
+						Oldest:    item.Ts,
+						Inclusive: true,
+						Limit:     maxMsgsPerItem,
+					}
+					replies, _, _, err := h.apiProvider.Slack().GetConversationRepliesContext(ctx, repliesParams)
+					if err == nil && len(replies) > 0 {
+						msgs := h.convHandler.convertMessagesFromHistory(replies, item.ItemID, false)
+						allMessages = append(allMessages, msgs...)
+					} else {
+						allMessages = append(allMessages, Message{
+							MsgID:   item.Ts,
+							Channel: channelName,
+							Text:    "[saved item — message not found in channel history]",
+							Time:    formatUnixTs(item.DateCreated),
+						})
+					}
 				}
 			}
-
-			fetched++
 		}
 
 		if resp.ResponseMetadata.NextCursor == "" || fetched >= limit {
