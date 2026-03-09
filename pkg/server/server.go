@@ -116,7 +116,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,
-			mcp.WithDescription("Get messages from the channel (or DM) by channel_id, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
+			mcp.WithDescription("Get messages from a channel or DM conversation. Use this to read recent messages, catch up on a channel, or find a specific message's timestamp for threading or reactions. Results are returned as CSV. Supports time-based limits (e.g. '1d', '1w') and cursor-based pagination."),
 			mcp.WithTitleAnnotation("Get Conversation History"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("channel_id",
@@ -139,7 +139,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolConversationsReplies, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsReplies,
-			mcp.WithDescription("Get a thread of messages posted to a conversation by channelID and thread_ts, the last row/column in the response is used as 'cursor' parameter for pagination if not empty"),
+			mcp.WithDescription("Get all replies in a message thread by channel ID and thread timestamp. Use this to read the full context of a threaded conversation or follow up on a specific discussion. Results are returned as CSV. Supports cursor-based pagination for long threads."),
 			mcp.WithTitleAnnotation("Get Thread Replies"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("channel_id",
@@ -166,7 +166,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolConversationsAddMessage, enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL") {
 		s.AddTool(mcp.NewTool(ToolConversationsAddMessage,
-			mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
+			mcp.WithDescription("Send a message to a channel, DM, or thread. If thread_ts is provided, the message is posted as a reply in that thread; otherwise, it is posted directly to the channel. Supports Markdown formatting by default."),
 			mcp.WithTitleAnnotation("Send Message"),
 			mcp.WithDestructiveHintAnnotation(true),
 			mcp.WithString("channel_id",
@@ -354,7 +354,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolChannelsList, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolChannelsList,
-			mcp.WithDescription("Get list of channels"),
+			mcp.WithDescription("List channels in the Slack workspace by type: public, private, direct messages (IMs), or group DMs (MPIMs). Use this to discover channels, find a channel ID before reading messages, or browse available conversations. Returns CSV with columns: id, name, topic, purpose, memberCount."),
 			mcp.WithTitleAnnotation("List Channels"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("channel_types",
