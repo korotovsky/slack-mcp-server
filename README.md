@@ -85,7 +85,18 @@ Get list of channels
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
 
-### 6. reactions_add:
+### 6. channels_starred:
+List channels and DMs that the user has starred (saved/bookmarked). Returns a curated subset of all channels — useful for focused workflows that only care about high-priority channels.
+
+> **Note:** This tool is not available when using bot tokens (`xoxb-*`). With browser session tokens (`xoxc`/`xoxd`), it uses the efficient `client.userBoot` API. With OAuth tokens (`xoxp`), it uses the `stars.list` API.
+
+- **Parameters:**
+  - `channel_types` (string, default: "all"): Filter by channel type: `all`, `dm` (direct messages), `group_dm` (group DMs), `partner` (ext-shared channels), `internal` (regular workspace channels).
+  - `limit` (number, default: 100): Maximum number of starred channels to return (1-1000).
+
+- **Returns:** CSV with fields: `channel_id`, `channel_name`, `channel_type`, `is_muted`, `member_count`
+
+### 7. reactions_add:
 Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation.
 
 > **Note:** Adding reactions is disabled by default for safety. To enable, set the `SLACK_MCP_ADD_MESSAGE_TOOL` environment variable. If set to a comma-separated list of channel IDs, reactions are enabled only for those specific channels. See the Environment Variables section below for details.
@@ -95,7 +106,7 @@ Add an emoji reaction to a message in a public channel, private channel, or dire
   - `timestamp` (string, required): Timestamp of the message to add reaction to, in format `1234567890.123456`.
   - `emoji` (string, required): The name of the emoji to add as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
 
-### 7. reactions_remove:
+### 8. reactions_remove:
 Remove an emoji reaction from a message in a public channel, private channel, or direct message (DM, or IM) conversation.
 
 > **Note:** Removing reactions follows the same permission model as `reactions_add`. To enable, set the `SLACK_MCP_ADD_MESSAGE_TOOL` environment variable.
@@ -105,7 +116,7 @@ Remove an emoji reaction from a message in a public channel, private channel, or
   - `timestamp` (string, required): Timestamp of the message to remove reaction from, in format `1234567890.123456`.
   - `emoji` (string, required): The name of the emoji to remove as a reaction (without colons). Example: `thumbsup`, `heart`, `rocket`.
 
-### 8. users_search:
+### 9. users_search:
 Search for users by name, email, or display name. Returns user details and DM channel ID if available.
 
 > **Note:** For OAuth tokens (`xoxp`/`xoxb`), this tool searches the local users cache using pattern matching. For browser session tokens (`xoxc`/`xoxd`), it uses the Slack edge API for real-time search.
@@ -123,7 +134,7 @@ Search for users by name, email, or display name. Returns user details and DM ch
   - `Title`: User's job title
   - `DMChannelID`: DM channel ID if available in cache (for quick messaging)
 
-### 9. usergroups_list:
+### 10. usergroups_list:
 List all user groups (subteams) in the workspace.
 
 - **Parameters:**
@@ -135,7 +146,7 @@ List all user groups (subteams) in the workspace.
 
 > **Required OAuth scopes:** `usergroups:read`
 
-### 10. usergroups_create:
+### 11. usergroups_create:
 Create a new user group in the workspace.
 
 - **Parameters:**
@@ -148,7 +159,7 @@ Create a new user group in the workspace.
 
 > **Required OAuth scopes:** `usergroups:write`
 
-### 11. usergroups_update:
+### 12. usergroups_update:
 Update an existing user group's metadata.
 
 - **Parameters:**
@@ -162,7 +173,7 @@ Update an existing user group's metadata.
 
 > **Required OAuth scopes:** `usergroups:write`
 
-### 12. usergroups_users_update:
+### 13. usergroups_users_update:
 Update the members of a user group. This replaces all existing members.
 
 - **Parameters:**
@@ -173,7 +184,7 @@ Update the members of a user group. This replaces all existing members.
 
 > **Required OAuth scopes:** `usergroups:write`
 
-### 13. usergroups_me:
+### 14. usergroups_me:
 Manage your user group membership: list groups you're in, join a group, or leave a group.
 
 - **Parameters:**
@@ -186,7 +197,7 @@ Manage your user group membership: list groups you're in, join a group, or leave
 
 > **Required OAuth scopes:** `usergroups:read` (for list), `usergroups:read` + `usergroups:write` (for join/leave)
 
-### 14. conversations_unreads
+### 15. conversations_unreads
 Get unread messages across all channels efficiently. Uses a single API call to identify channels with unreads, then fetches only those messages. Results are prioritized: DMs > partner channels (Slack Connect) > internal channels.
 
 > **Note:** This tool works best with browser session tokens (`xoxc`/`xoxd`), which use the efficient `client.counts` API. For standard OAuth tokens (`xoxp`), a fallback method using `conversations.info` is used, which requires one API call per channel and may be slower for large workspaces. Not available with bot tokens (`xoxb`).
@@ -198,7 +209,7 @@ Get unread messages across all channels efficiently. Uses a single API call to i
   - `max_messages_per_channel` (number, default: 10): Maximum messages to fetch per channel.
   - `mentions_only` (boolean, default: false): If true, only returns channels where you have @mentions. Note: This filter only works with browser tokens; OAuth tokens will return all unread channels.
 
-### 15. conversations_mark
+### 16. conversations_mark
 Mark a channel or DM as read.
 
 > **Note:** Marking messages as read is disabled by default for safety. To enable, set the `SLACK_MCP_MARK_TOOL` environment variable to `true` or `1`. See the Environment Variables section below for details.
@@ -266,7 +277,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 | `SLACK_MCP_GOVSLACK`              | No        | `nil`                     | Set to `true` to enable [GovSlack](https://slack.com/solutions/govslack) mode. Routes API calls to `slack-gov.com` endpoints instead of `slack.com` for FedRAMP-compliant government workspaces.                                                                                          |
-| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `channels_starred`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
 

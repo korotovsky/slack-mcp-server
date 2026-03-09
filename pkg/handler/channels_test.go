@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -134,6 +135,52 @@ func runChannelTest(t *testing.T, env *testEnv, channelType string, expectedChan
 		}
 		assert.Truef(t, found, "No row in column %q matched %q; full CSV:\n%s",
 			rule.csvFieldName, rule.csvFieldValueRE, toolOutput.String())
+	}
+}
+
+func TestUnitClassifyChannelType(t *testing.T) {
+	tests := []struct {
+		name     string
+		channel  provider.Channel
+		expected string
+	}{
+		{
+			name:     "regular public channel",
+			channel:  provider.Channel{ID: "C123", Name: "#general"},
+			expected: "internal",
+		},
+		{
+			name:     "private channel",
+			channel:  provider.Channel{ID: "C456", Name: "#secret", IsPrivate: true},
+			expected: "internal",
+		},
+		{
+			name:     "DM channel",
+			channel:  provider.Channel{ID: "D123", Name: "@alice", IsIM: true},
+			expected: "dm",
+		},
+		{
+			name:     "group DM",
+			channel:  provider.Channel{ID: "G123", Name: "mpdm-alice-bob", IsMpIM: true},
+			expected: "group_dm",
+		},
+		{
+			name:     "external shared channel",
+			channel:  provider.Channel{ID: "C789", Name: "#ext-partner", IsExtShared: true},
+			expected: "partner",
+		},
+		{
+			name:     "ext shared takes precedence over private",
+			channel:  provider.Channel{ID: "C999", Name: "#ext-priv", IsPrivate: true, IsExtShared: true},
+			expected: "partner",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyChannelType(tt.channel)
+			assert.Equal(t, tt.expected, got)
+		})
 	}
 }
 
