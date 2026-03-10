@@ -283,18 +283,6 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		BotID:        authResp.BotID,
 	}
 
-	slackClient = slack.New(authProvider.SlackToken(),
-		slack.OptionHTTPClient(httpClient),
-		slack.OptionAPIURL(authResp.URL+"api/"),
-	)
-
-	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
-		edge.OptionHTTPClient(httpClient),
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	isEnterprise := authResp.EnterpriseID != ""
 	token := authProvider.SlackToken()
 
@@ -303,6 +291,25 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	// isBotToken: Bot token - determines feature availability (e.g., search)
 	isOAuth := strings.HasPrefix(token, "xoxp-") || strings.HasPrefix(token, "xoxb-")
 	isBotToken := strings.HasPrefix(token, "xoxb-")
+
+	// OAuth tokens (xoxp/xoxb) must use the default Slack API URL (slack.com/api/).
+	// On Enterprise Grid workspaces, the workspace-specific URL (e.g. myorg.slack.com/api/)
+	// returns missing_scope errors for standard API methods like conversations.list.
+	// Cookie-based tokens (xoxc/xoxd) require the workspace URL for authentication.
+	slackOpts = []slack.Option{slack.OptionHTTPClient(httpClient)}
+	if !isOAuth {
+		slackOpts = append(slackOpts, slack.OptionAPIURL(authResp.URL+"api/"))
+	} else if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
+		slackOpts = append(slackOpts, slack.OptionAPIURL("https://slack-gov.com/api/"))
+	}
+	slackClient = slack.New(authProvider.SlackToken(), slackOpts...)
+
+	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
+		edge.OptionHTTPClient(httpClient),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &MCPSlackClient{
 		slackClient:  slackClient,
