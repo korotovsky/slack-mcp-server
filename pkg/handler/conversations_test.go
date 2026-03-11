@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -649,6 +650,97 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			got := isSlackUserIDPrefix(tt.s)
 			if got != tt.want {
 				t.Errorf("isSlackUserIDPrefix(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnitFilterSafeSearch(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       []slack.SearchMessage
+		expectedIDs []string // expected channel IDs after filtering
+	}{
+		{
+			name:        "empty input",
+			input:       []slack.SearchMessage{},
+			expectedIDs: []string{},
+		},
+		{
+			name: "public channel included",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "C123", Name: "general", IsPrivate: false, IsMPIM: false}},
+			},
+			expectedIDs: []string{"C123"},
+		},
+		{
+			name: "private channel excluded",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "C123", Name: "secret", IsPrivate: true, IsMPIM: false}},
+			},
+			expectedIDs: []string{},
+		},
+		{
+			name: "MPIM excluded",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "G123", Name: "mpdm-user1-user2", IsPrivate: false, IsMPIM: true}},
+			},
+			expectedIDs: []string{},
+		},
+		{
+			name: "DM excluded by ID prefix",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "D123", Name: "", IsPrivate: false, IsMPIM: false}},
+			},
+			expectedIDs: []string{},
+		},
+		{
+			name: "mixed results",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "C001", Name: "public1", IsPrivate: false, IsMPIM: false}},
+				{Channel: slack.CtxChannel{ID: "C002", Name: "private1", IsPrivate: true, IsMPIM: false}},
+				{Channel: slack.CtxChannel{ID: "D003", Name: "", IsPrivate: false, IsMPIM: false}},
+				{Channel: slack.CtxChannel{ID: "C004", Name: "public2", IsPrivate: false, IsMPIM: false}},
+				{Channel: slack.CtxChannel{ID: "G005", Name: "mpim", IsPrivate: false, IsMPIM: true}},
+				{Channel: slack.CtxChannel{ID: "C006", Name: "public3", IsPrivate: false, IsMPIM: false}},
+			},
+			expectedIDs: []string{"C001", "C004", "C006"},
+		},
+		{
+			name: "all filtered out",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "D001", Name: "", IsPrivate: false, IsMPIM: false}},
+				{Channel: slack.CtxChannel{ID: "C002", Name: "private", IsPrivate: true, IsMPIM: false}},
+			},
+			expectedIDs: []string{},
+		},
+		{
+			name: "private channel with G prefix excluded",
+			input: []slack.SearchMessage{
+				{Channel: slack.CtxChannel{ID: "G123", Name: "private-group", IsPrivate: true, IsMPIM: false}},
+			},
+			expectedIDs: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := filterSafeSearch(tt.input)
+
+			gotIDs := make([]string, len(result))
+			for i, msg := range result {
+				gotIDs[i] = msg.Channel.ID
+			}
+
+			if len(gotIDs) != len(tt.expectedIDs) {
+				t.Errorf("filterSafeSearch() returned %d messages (IDs: %v), want %d (IDs: %v)",
+					len(gotIDs), gotIDs, len(tt.expectedIDs), tt.expectedIDs)
+				return
+			}
+			for i, id := range gotIDs {
+				if id != tt.expectedIDs[i] {
+					t.Errorf("filterSafeSearch() result[%d].Channel.ID = %s, want %s", i, id, tt.expectedIDs[i])
+				}
 			}
 		})
 	}
