@@ -1,11 +1,11 @@
 module github.com/korotovsky/slack-mcp-server
 
-go 1.24.4
+go 1.25.0
 
 require (
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/google/uuid v1.6.0
-	github.com/mark3labs/mcp-go v0.44.0
+	github.com/mark3labs/mcp-go v0.45.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/openai/openai-go v1.12.0
 	github.com/refraction-networking/utls v1.8.2
@@ -13,14 +13,14 @@ require (
 	github.com/rusq/slackauth v0.7.1
 	github.com/rusq/slackdump/v3 v3.1.13
 	github.com/rusq/tagops v0.1.1
-	github.com/slack-go/slack v0.17.3
+	github.com/slack-go/slack v0.19.0
 	github.com/stretchr/testify v1.11.1
-	github.com/takara2314/slack-go-util v0.3.0
+	github.com/takara2314/slack-go-util v0.4.0
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
-	golang.org/x/net v0.50.0
-	golang.org/x/sync v0.19.0
-	golang.org/x/time v0.14.0
+	golang.org/x/net v0.52.0
+	golang.org/x/sync v0.20.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -87,13 +87,13 @@ require (
 	github.com/ysmood/got v0.42.3 // indirect
 	github.com/ysmood/gson v0.7.3 // indirect
 	github.com/ysmood/leakless v0.9.0 // indirect
-	github.com/yuin/goldmark v1.7.13 // indirect
+	github.com/yuin/goldmark v1.7.16 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/term v0.41.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
