@@ -462,6 +462,19 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 	}
 
 	content := buf.Bytes()
+
+	// For image files, return as native MCP image content so the client
+	// can render them directly without base64-in-JSON overflow.
+	if isImageMimetype(fileInfo.Mimetype) {
+		imageData := base64.StdEncoding.EncodeToString(content)
+		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d}`,
+			fileInfo.ID,
+			escapeJSON(fileInfo.Name),
+			escapeJSON(fileInfo.Mimetype),
+			len(content))
+		return mcp.NewToolResultImage(metadata, imageData, fileInfo.Mimetype), nil
+	}
+
 	encoding := "none"
 	var contentStr string
 
@@ -481,6 +494,10 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		escapeJSON(contentStr))
 
 	return mcp.NewToolResultText(result), nil
+}
+
+func isImageMimetype(mimetype string) bool {
+	return strings.HasPrefix(mimetype, "image/")
 }
 
 func isTextMimetype(mimetype string) bool {
