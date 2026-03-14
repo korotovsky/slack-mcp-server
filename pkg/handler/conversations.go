@@ -128,6 +128,12 @@ type markParams struct {
 	channel string
 	ts      string
 }
+
+type reactionRow struct {
+	Emoji string `csv:"Emoji"`
+	Count int    `csv:"Count"`
+	Users string `csv:"Users"`
+}
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
 	logger      *zap.Logger
@@ -355,6 +361,91 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed :%s: reaction from message %s in channel %s", params.emoji, params.timestamp, params.channel)), nil
+}
+
+// ReactionsGetHandler returns detailed reaction data (including user IDs) for a specific message.
+// Uses conversations.replies which works for top-level messages, thread parents, and thread replies
+// alike. Requires only channels:history scope, no additional reactions:read permission needed.
+func (ch *ConversationsHandler) ReactionsGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ReactionsGetHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	rawChannel := request.GetString("channel_id", "")
+	if rawChannel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, rawChannel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", rawChannel), zap.Error(err))
+		return nil, err
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		return nil, errors.New("timestamp is required")
+	}
+
+	ch.logger.Debug("Fetching reactions for message",
+		zap.String("channel", channel),
+		zap.String("timestamp", timestamp),
+	)
+
+	msg, err := ch.fetchMessageForReactions(ctx, channel, timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if msg == nil {
+		return mcp.NewToolResultText("No message found at the specified timestamp"), nil
+	}
+
+	if len(msg.Reactions) == 0 {
+		return mcp.NewToolResultText("No reactions on this message"), nil
+	}
+
+	var rows []reactionRow
+	for _, r := range msg.Reactions {
+		rows = append(rows, reactionRow{
+			Emoji: r.Name,
+			Count: r.Count,
+			Users: strings.Join(r.Users, ";"),
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := gocsv.Marshal(rows, &buf); err != nil {
+		return nil, fmt.Errorf("failed to marshal reactions: %w", err)
+	}
+
+	return mcp.NewToolResultText(buf.String()), nil
+}
+
+// fetchMessageForReactions retrieves a single message by timestamp using conversations.replies.
+// This works for top-level messages, thread parents, and thread replies alike — no additional
+// scopes beyond channels:history required.
+//
+// Note: Slack's reactions.get API is purpose-built for this but requires the reactions:read scope.
+// We use conversations.replies instead to avoid introducing a new scope requirement.
+func (ch *ConversationsHandler) fetchMessageForReactions(ctx context.Context, channel, timestamp string) (*slack.Message, error) {
+	msgs, _, _, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+		ChannelID: channel,
+		Timestamp: timestamp,
+		Limit:     1,
+		Inclusive: true,
+	})
+	if err != nil {
+		ch.logger.Error("Failed to fetch message for reactions", zap.Error(err))
+		return nil, fmt.Errorf("failed to fetch message: %w", err)
+	}
+
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+
+	return &msgs[0], nil
 }
 
 func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
