@@ -41,6 +41,9 @@ const (
 	ToolUsergroupsUpdate            = "usergroups_update"
 	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
 	ToolUsersSearch                 = "users_search"
+	ToolSavedList                   = "saved_list"
+	ToolSavedUpdate                 = "saved_update"
+	ToolSavedClearCompleted         = "saved_clear_completed"
 )
 
 var ValidToolNames = []string{
@@ -60,6 +63,9 @@ var ValidToolNames = []string{
 	ToolUsergroupsUpdate,
 	ToolUsergroupsUsersUpdate,
 	ToolUsersSearch,
+	ToolSavedList,
+	ToolSavedUpdate,
+	ToolSavedClearCompleted,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -468,6 +474,63 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Comma-separated user IDs that will become the COMPLETE member list (e.g., 'U0123456789,U9876543210'). All current members not in this list will be removed."),
 			),
 		), usergroupsHandler.UsergroupsUsersUpdateHandler)
+	}
+
+	// Register saved items tools — "Save for Later" panel management.
+	// Requires browser session tokens (xoxc/xoxd); not available for bot or OAuth tokens.
+	if !provider.IsBotToken() && !provider.IsOAuth() && shouldAddTool(ToolSavedList, enabledTools, "") {
+		savedHandler := handler.NewSavedHandler(provider, logger, conversationsHandler)
+		s.AddTool(mcp.NewTool(ToolSavedList,
+			mcp.WithDescription("List saved items from Slack's 'Save for Later' panel. Returns items the user has saved, with optional message content. Replaces the deprecated stars.list API. Requires browser session tokens (xoxc/xoxd)."),
+			mcp.WithTitleAnnotation("List Saved Items"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("filter",
+				mcp.Description("Filter saved items: 'saved' (active/in-progress, default), 'completed' (marked done), 'archived'."),
+				mcp.DefaultString("saved"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum number of items to return. Auto-paginates. Default is 50."),
+				mcp.DefaultNumber(50),
+			),
+			mcp.WithBoolean("include_messages",
+				mcp.Description("If true (default), fetches the actual saved message content. If false, returns metadata only."),
+				mcp.DefaultBool(true),
+			),
+			mcp.WithNumber("max_messages_per_item",
+				mcp.Description("Max messages to fetch per saved item (for thread replies). Default is 5."),
+				mcp.DefaultNumber(5),
+			),
+		), savedHandler.SavedListHandler)
+
+		if shouldAddTool(ToolSavedUpdate, enabledTools, "") {
+			s.AddTool(mcp.NewTool(ToolSavedUpdate,
+				mcp.WithDescription("Update a saved item: mark as completed, set a due date, or both. Use item_id and ts values from saved_list output. Replaces the deprecated stars.add/stars.remove APIs."),
+				mcp.WithTitleAnnotation("Update Saved Item"),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithString("item_id",
+					mcp.Required(),
+					mcp.Description("Channel/DM ID where the saved message lives (from saved_list output)."),
+				),
+				mcp.WithString("ts",
+					mcp.Required(),
+					mcp.Description("Message timestamp of the saved item (from saved_list output)."),
+				),
+				mcp.WithString("mark",
+					mcp.Description("Set to 'completed' to mark the item as done."),
+				),
+				mcp.WithNumber("date_due",
+					mcp.Description("Unix timestamp for due date/reminder. Set to 0 to clear."),
+				),
+			), savedHandler.SavedUpdateHandler)
+		}
+
+		if shouldAddTool(ToolSavedClearCompleted, enabledTools, "") {
+			s.AddTool(mcp.NewTool(ToolSavedClearCompleted,
+				mcp.WithDescription("Clear all completed saved items from the 'Save for Later' panel. This is a bulk operation that removes all items with state='completed'."),
+				mcp.WithTitleAnnotation("Clear Completed Saved Items"),
+				mcp.WithDestructiveHintAnnotation(true),
+			), savedHandler.SavedClearCompletedHandler)
+		}
 	}
 
 	logger.Info("Authenticating with Slack API...",

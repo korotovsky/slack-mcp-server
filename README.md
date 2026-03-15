@@ -207,6 +207,35 @@ Mark a channel or DM as read.
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` (e.g., `#general`, `@username`).
   - `ts` (string, optional): Timestamp of the message to mark as read up to. If not provided, marks all messages as read.
 
+### 16. saved_list
+List saved items from Slack's "Save for Later" panel. Returns items the user has saved, with optional message content. This replaces the deprecated `stars.list` API ([changelog](https://api.slack.com/changelog/2023-07-its-later-already-for-stars-and-reminders)).
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `filter` (string, default `"saved"`): Filter saved items: `"saved"` (active/in-progress), `"completed"` (marked done), `"archived"`.
+  - `limit` (number, default `50`): Maximum number of items to return. Auto-paginates.
+  - `include_messages` (boolean, default `true`): If true, fetches the actual saved message content. If false, returns metadata only.
+  - `max_messages_per_item` (number, default `5`): Max messages to fetch per saved item (for thread replies).
+
+### 17. saved_update
+Update a saved item: mark as completed, set a due date/reminder, or both. Use `item_id` and `ts` values from `saved_list` output. This replaces the deprecated `stars.add`/`stars.remove` APIs.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `item_id` (string, required): Channel/DM ID where the saved message lives (from `saved_list` output).
+  - `ts` (string, required): Message timestamp of the saved item (from `saved_list` output).
+  - `mark` (string, optional): Set to `"completed"` to mark the item as done.
+  - `date_due` (number, optional): Unix timestamp for due date/reminder. Set to `0` to clear.
+
+### 18. saved_clear_completed
+Clear all completed saved items from the "Save for Later" panel. This is a bulk operation that removes all items with `state="completed"`.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:** None.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
