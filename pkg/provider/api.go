@@ -782,37 +782,45 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 					zap.String("cache_file", ap.usersCachePath))
 			} else {
 				// Check cache TTL using file modification time
-				cacheValid := true
+				cacheExpired := false
 				if ap.cacheTTL > 0 {
 					if fileInfo, err := os.Stat(ap.usersCachePath); err == nil {
 						cacheAge := time.Since(fileInfo.ModTime())
 						if cacheAge > ap.cacheTTL {
-							ap.logger.Info("Users cache expired, will refetch",
+							cacheExpired = true
+							ap.logger.Info("Users cache expired, loading stale data for immediate availability",
 								zap.Duration("cache_age", cacheAge),
 								zap.Duration("ttl", ap.cacheTTL),
 								zap.String("cache_file", ap.usersCachePath))
-							cacheValid = false
 						}
 					}
 				}
 
-				if cacheValid {
-					// Build new snapshot from cache
-					newSnapshot := &UsersCache{
-						Users:    make(map[string]slack.User, len(cachedUsers)),
-						UsersInv: make(map[string]string, len(cachedUsers)),
-					}
-					for _, u := range cachedUsers {
-						newSnapshot.Users[u.ID] = u
-						newSnapshot.UsersInv[u.Name] = u.ID
-					}
-					ap.usersSnapshot.Store(newSnapshot)
+				// Always load existing cache into snapshot for immediate availability.
+				// This ensures tools are usable instantly even when the cache is stale.
+				newSnapshot := &UsersCache{
+					Users:    make(map[string]slack.User, len(cachedUsers)),
+					UsersInv: make(map[string]string, len(cachedUsers)),
+				}
+				for _, u := range cachedUsers {
+					newSnapshot.Users[u.ID] = u
+					newSnapshot.UsersInv[u.Name] = u.ID
+				}
+				ap.usersSnapshot.Store(newSnapshot)
+				ap.usersReady = true
+
+				if !cacheExpired {
 					ap.logger.Info("Loaded users from cache",
 						zap.Int("count", len(cachedUsers)),
 						zap.String("cache_file", ap.usersCachePath))
-					ap.usersReady = true
 					return nil
 				}
+
+				// Cache was stale — fall through to fetch fresh data from Slack API.
+				// Tools are already available with stale data; the snapshot will be
+				// atomically swapped when the fresh fetch completes.
+				ap.logger.Info("Serving stale users cache while refreshing in background",
+					zap.Int("stale_count", len(cachedUsers)))
 			}
 		}
 	}
@@ -930,51 +938,59 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 					zap.String("cache_file", ap.channelsCachePath))
 			} else {
 				// Check cache TTL using file modification time
-				cacheValid := true
+				cacheExpired := false
 				if ap.cacheTTL > 0 {
 					if fileInfo, err := os.Stat(ap.channelsCachePath); err == nil {
 						cacheAge := time.Since(fileInfo.ModTime())
 						if cacheAge > ap.cacheTTL {
-							ap.logger.Info("Channels cache expired, will refetch",
+							cacheExpired = true
+							ap.logger.Info("Channels cache expired, loading stale data for immediate availability",
 								zap.Duration("cache_age", cacheAge),
 								zap.Duration("ttl", ap.cacheTTL),
 								zap.String("cache_file", ap.channelsCachePath))
-							cacheValid = false
 						}
 					}
 				}
 
-				if cacheValid {
-					// Re-map channels with current users cache to ensure DM names are populated
-					usersMap := ap.ProvideUsersMap().Users
-					newSnapshot := &ChannelsCache{
-						Channels:    make(map[string]Channel, len(cachedChannels)),
-						ChannelsInv: make(map[string]string, len(cachedChannels)),
+				// Always load existing cache into snapshot for immediate availability.
+				// This ensures tools are usable instantly even when the cache is stale.
+				usersMap := ap.ProvideUsersMap().Users
+				newSnapshot := &ChannelsCache{
+					Channels:    make(map[string]Channel, len(cachedChannels)),
+					ChannelsInv: make(map[string]string, len(cachedChannels)),
+				}
+				for _, c := range cachedChannels {
+					// For IM channels, re-generate the name and purpose using current users cache
+					if c.IsIM {
+						// Re-map the channel to get updated user name if available
+						remappedChannel := mapChannel(
+							c.ID, "", "", c.Topic, c.Purpose,
+							c.User, c.Members, c.MemberCount,
+							c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
+							usersMap,
+						)
+						newSnapshot.Channels[c.ID] = remappedChannel
+						newSnapshot.ChannelsInv[remappedChannel.Name] = c.ID
+					} else {
+						newSnapshot.Channels[c.ID] = c
+						newSnapshot.ChannelsInv[c.Name] = c.ID
 					}
-					for _, c := range cachedChannels {
-						// For IM channels, re-generate the name and purpose using current users cache
-						if c.IsIM {
-							// Re-map the channel to get updated user name if available
-							remappedChannel := mapChannel(
-								c.ID, "", "", c.Topic, c.Purpose,
-								c.User, c.Members, c.MemberCount,
-								c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
-								usersMap,
-							)
-							newSnapshot.Channels[c.ID] = remappedChannel
-							newSnapshot.ChannelsInv[remappedChannel.Name] = c.ID
-						} else {
-							newSnapshot.Channels[c.ID] = c
-							newSnapshot.ChannelsInv[c.Name] = c.ID
-						}
-					}
-					ap.channelsSnapshot.Store(newSnapshot)
-					ap.logger.Info("Loaded channels from cache and re-mapped DM names",
+				}
+				ap.channelsSnapshot.Store(newSnapshot)
+				ap.channelsReady = true
+
+				if !cacheExpired {
+					ap.logger.Info("Loaded channels from cache",
 						zap.Int("count", len(cachedChannels)),
 						zap.String("cache_file", ap.channelsCachePath))
-					ap.channelsReady = true
 					return nil
 				}
+
+				// Cache was stale — fall through to fetch fresh data from Slack API.
+				// Tools are already available with stale data; the snapshot will be
+				// atomically swapped when the fresh fetch completes.
+				ap.logger.Info("Serving stale channels cache while refreshing in background",
+					zap.Int("stale_count", len(cachedChannels)))
 			}
 		}
 	}
