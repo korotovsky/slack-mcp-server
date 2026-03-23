@@ -633,6 +633,123 @@ func TestUnitIsChannelAllowedForConfig(t *testing.T) {
 	}
 }
 
+func TestUnitCheckSendStatus(t *testing.T) {
+	setEnv := func(key, value string) func() {
+		old, existed := os.LookupEnv(key)
+		os.Setenv(key, value)
+		return func() {
+			if existed {
+				os.Setenv(key, old)
+			} else {
+				os.Unsetenv(key)
+			}
+		}
+	}
+
+	t.Run("not available when add_message not enabled", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "not available" {
+			t.Errorf("expected 'not available', got %q", got)
+		}
+	})
+
+	t.Run("available when add_message enabled via env var", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "true")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "available" {
+			t.Errorf("expected 'available', got %q", got)
+		}
+	})
+
+	t.Run("available when add_message in enabled tools list", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "conversations_add_message,channels_list")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "available" {
+			t.Errorf("expected 'available', got %q", got)
+		}
+	})
+
+	t.Run("not available when channel not in allowlist", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "C456,C789")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "not available for this channel" {
+			t.Errorf("expected 'not available for this channel', got %q", got)
+		}
+	})
+
+	t.Run("available when channel in allowlist", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "C123,C456")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "available" {
+			t.Errorf("expected 'available', got %q", got)
+		}
+	})
+
+	t.Run("not available when channel in blocklist", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "!C123")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "not available for this channel" {
+			t.Errorf("expected 'not available for this channel', got %q", got)
+		}
+	})
+
+	t.Run("not available when only draft tool in enabled list (substring false positive)", func(t *testing.T) {
+		cleanup1 := setEnv("SLACK_MCP_ADD_MESSAGE_TOOL", "")
+		cleanup2 := setEnv("SLACK_MCP_ENABLED_TOOLS", "conversations_draft_message,channels_list")
+		defer cleanup1()
+		defer cleanup2()
+
+		got := checkSendStatus("C123")
+		if got != "not available" {
+			t.Errorf("expected 'not available' (draft tool name is superstring of add_message), got %q", got)
+		}
+	})
+}
+
+func TestUnitFormatThreadTs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty returns top-level", "", "(top-level message)"},
+		{"timestamp passes through", "1234567890.123456", "1234567890.123456"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatThreadTs(tt.input)
+			if got != tt.want {
+				t.Errorf("formatThreadTs(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 	tests := []struct {
 		name string
