@@ -28,6 +28,7 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsDraftMessage   = "conversations_draft_message"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -47,6 +48,7 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsDraftMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -184,6 +186,30 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
 			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDraftMessage, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsDraftMessage,
+			mcp.WithDescription("Draft a message for a public channel, private channel, or direct message (DM, or IM) conversation. Returns a formatted preview of the message without sending it. Use conversations_add_message to send the message after reviewing the draft."),
+			mcp.WithTitleAnnotation("Draft Message"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be drafted for the channel itself, otherwise it will be drafted as a thread reply."),
+			),
+			mcp.WithString("text",
+				mcp.Required(),
+				mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+			),
+			mcp.WithString("content_type",
+				mcp.DefaultString("text/markdown"),
+				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+			),
+		), conversationsHandler.ConversationsDraftMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {

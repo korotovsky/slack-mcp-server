@@ -285,6 +285,66 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	return marshalMessagesToCSV(messages)
 }
 
+// ConversationsDraftMessageHandler validates and formats a message without sending it.
+// Returns a preview of what the message would look like, allowing the user to review
+// before sending via conversations_add_message.
+func (ch *ConversationsHandler) ConversationsDraftMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsDraftMessageHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolDraftMessage(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse draft-message params", zap.Error(err))
+		return nil, err
+	}
+
+	// Validate content type and check markdown parsing, matching conversations_add_message behavior.
+	var formatStatus string
+
+	switch params.contentType {
+	case "text/plain":
+		formatStatus = "plain_text"
+	case "text/markdown":
+		blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+		if err != nil {
+			ch.logger.Warn("Markdown parsing error", zap.Error(err))
+			formatStatus = "plain_text (markdown parse failed, will send as plain text)"
+		} else {
+			formatStatus = fmt.Sprintf("markdown (%d block(s))", len(blocks))
+		}
+	default:
+		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
+	}
+
+	sendability := checkSendStatus(params.channel)
+
+	// Build the draft preview response.
+	// Use labeled sections instead of delimiter lines to avoid ambiguity
+	// when the message text itself contains delimiter-like patterns.
+	preview := fmt.Sprintf("[Draft message preview]\n"+
+		"Channel: %s\n"+
+		"Thread: %s\n"+
+		"Format: %s\n"+
+		"Send status: %s\n\n"+
+		"[Message text]\n"+
+		"%s\n\n"+
+		"[End of draft]\n"+
+		"To send this message, use conversations_add_message with the same parameters.",
+		params.channel,
+		formatThreadTs(params.threadTs),
+		formatStatus,
+		sendability,
+		params.text,
+	)
+
+	return mcp.NewToolResultText(preview), nil
+}
+
 // ReactionsAddHandler adds an emoji reaction to a message
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
@@ -1414,6 +1474,20 @@ func isChannelAllowed(channel string) bool {
 	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
 }
 
+// checkSendStatus reports whether conversations_add_message would accept a message
+// to the given channel. Returns a human-readable status string.
+func checkSendStatus(channel string) string {
+	addMessageTool := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	addMessageEnabled := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+	if addMessageTool == "" && !isToolInEnabledList(addMessageEnabled, "conversations_add_message") {
+		return "not available"
+	}
+	if !isChannelAllowedForConfig(channel, addMessageTool) {
+		return "not available for this channel"
+	}
+	return "available"
+}
+
 func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
 	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
 		return channel, nil
@@ -1652,6 +1726,66 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 		latest:   paramLatest,
 		cursor:   cursor,
 		activity: activity,
+	}, nil
+}
+
+// isToolInEnabledList checks for an exact tool name match in a comma-separated list.
+// Unlike strings.Contains, this avoids false positives from partial matches
+// in comma-separated lists (e.g., matching "foo" inside "foobar,baz").
+func isToolInEnabledList(enabledTools, toolName string) bool {
+	if enabledTools == "" {
+		return false
+	}
+	for _, t := range strings.Split(enabledTools, ",") {
+		if strings.TrimSpace(t) == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+func formatThreadTs(threadTs string) string {
+	if threadTs == "" {
+		return "(top-level message)"
+	}
+	return threadTs
+}
+
+func (ch *ConversationsHandler) parseParamsToolDraftMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in draft-message params")
+		return nil, errors.New("channel_id must be a string")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+
+	threadTs := request.GetString("thread_ts", "")
+	if threadTs != "" && !strings.Contains(threadTs, ".") {
+		ch.logger.Error("Invalid thread_ts format", zap.String("thread_ts", threadTs))
+		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	msgText := request.GetString("text", "")
+	if msgText == "" {
+		ch.logger.Error("Message text missing")
+		return nil, errors.New("text is required and must not be empty")
+	}
+
+	contentType := request.GetString("content_type", "text/markdown")
+	if contentType != "text/plain" && contentType != "text/markdown" {
+		ch.logger.Error("Invalid content_type", zap.String("content_type", contentType))
+		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
+	}
+
+	return &addMessageParams{
+		channel:     channel,
+		threadTs:    threadTs,
+		text:        msgText,
+		contentType: contentType,
 	}, nil
 }
 
