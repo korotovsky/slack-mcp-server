@@ -250,6 +250,7 @@ type ApiProvider struct {
 	refreshingUsers        atomic.Bool // true while a background refresh goroutine is running
 	lastForcedUsersRefresh time.Time
 	usersMu                sync.RWMutex // protects lastForcedUsersRefresh
+	fetchUsersMu           sync.Mutex   // serializes fetchAndStoreUsers calls
 
 	// Channels cache: atomic pointer to immutable snapshot (no copy on read)
 	channelsSnapshot          atomic.Pointer[ChannelsCache]
@@ -258,6 +259,7 @@ type ApiProvider struct {
 	refreshingChannels        atomic.Bool // true while a background refresh goroutine is running
 	lastForcedChannelsRefresh time.Time
 	channelsMu                sync.RWMutex // protects lastForcedChannelsRefresh
+	fetchChannelsMu           sync.Mutex   // serializes fetchAndStoreChannels calls
 }
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
@@ -728,6 +730,10 @@ func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) err
 				ap.logger.Warn("Failed to unmarshal users cache, will refetch",
 					zap.String("cache_file", ap.usersCachePath),
 					zap.Error(err))
+			} else if len(cachedUsers) == 0 {
+				ap.logger.Warn("Cache file contains zero users, treating as cache miss",
+					zap.String("cache_file", ap.usersCachePath))
+				// Fall through to fetchAndStoreUsers
 			} else {
 				// Build snapshot from cache
 				newSnapshot := &UsersCache{
@@ -795,7 +801,11 @@ func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
 }
 
 // fetchAndStoreUsers fetches all users from the Slack API and updates the snapshot and cache file.
+// Serialized by fetchUsersMu to prevent concurrent fetches from racing on snapshot/file writes.
 func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
+	ap.fetchUsersMu.Lock()
+	defer ap.fetchUsersMu.Unlock()
+
 	var (
 		list        []slack.User
 		optionLimit = slack.GetUsersOptionLimit(1000)
@@ -808,6 +818,12 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 		ap.logger.Error("Failed to fetch users", zap.Error(err))
 		return err
 	}
+
+	if len(users) == 0 {
+		ap.logger.Warn("API returned zero users, keeping existing cache")
+		return nil
+	}
+
 	list = append(list, users...)
 
 	// Build new snapshot
@@ -851,8 +867,15 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal users for cache", zap.Error(err))
 	} else {
-		if err := os.WriteFile(ap.usersCachePath, data, 0644); err != nil {
-			ap.logger.Error("Failed to write cache file",
+		// Atomic write: temp file + rename to prevent partial files on crash
+		tmpFile := ap.usersCachePath + ".tmp"
+		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+			ap.logger.Error("Failed to write temp cache file",
+				zap.String("cache_file", tmpFile),
+				zap.Error(err))
+		} else if err := os.Rename(tmpFile, ap.usersCachePath); err != nil {
+			ap.logger.Error("Failed to rename cache file",
+				zap.String("temp_file", tmpFile),
 				zap.String("cache_file", ap.usersCachePath),
 				zap.Error(err))
 		} else {
@@ -907,6 +930,10 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 				ap.logger.Warn("Failed to unmarshal channels cache, will refetch",
 					zap.String("cache_file", ap.channelsCachePath),
 					zap.Error(err))
+			} else if len(cachedChannels) == 0 {
+				ap.logger.Warn("Cache file contains zero channels, treating as cache miss",
+					zap.String("cache_file", ap.channelsCachePath))
+				// Fall through to fetchAndStoreChannels
 			} else {
 				// Re-map channels with current users cache to ensure DM names are populated
 				usersMap := ap.ProvideUsersMap().Users
@@ -985,14 +1012,30 @@ func (ap *ApiProvider) spawnBackgroundChannelsRefresh() {
 }
 
 // fetchAndStoreChannels fetches all channels from the Slack API and updates the snapshot and cache file.
+// Serialized by fetchChannelsMu to prevent concurrent fetches from racing on snapshot/file writes.
 func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
+	ap.fetchChannelsMu.Lock()
+	defer ap.fetchChannelsMu.Unlock()
+
 	channels := ap.GetChannels(ctx, AllChanTypes)
+
+	if len(channels) == 0 {
+		ap.logger.Warn("API returned zero channels, keeping existing cache")
+		return nil
+	}
 
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
-		if err := os.WriteFile(ap.channelsCachePath, data, 0644); err != nil {
-			ap.logger.Error("Failed to write cache file",
+		// Atomic write: temp file + rename to prevent partial files on crash
+		tmpFile := ap.channelsCachePath + ".tmp"
+		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+			ap.logger.Error("Failed to write temp cache file",
+				zap.String("cache_file", tmpFile),
+				zap.Error(err))
+		} else if err := os.Rename(tmpFile, ap.channelsCachePath); err != nil {
+			ap.logger.Error("Failed to rename cache file",
+				zap.String("temp_file", tmpFile),
 				zap.String("cache_file", ap.channelsCachePath),
 				zap.Error(err))
 		} else {

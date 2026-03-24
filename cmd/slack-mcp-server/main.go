@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server"
@@ -77,6 +78,15 @@ func main() {
 
 	switch transport {
 	case "stdio":
+		// Wait for caches to be ready before accepting stdio requests.
+		// With stale-while-revalidate this exits in one tick (~100ms).
+		// On cold start (no cache), this blocks until the initial fetch completes.
+		for {
+			if ready, _ := p.IsReady(); ready {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		if err := s.ServeStdio(); err != nil {
 			logger.Fatal("Server error",
 				zap.String("context", "console"),
