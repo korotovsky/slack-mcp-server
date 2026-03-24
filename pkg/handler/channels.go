@@ -167,8 +167,22 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	ch.logger.Debug("Channels after filtering by type", zap.Int("count", len(channels)))
 
 	if query != "" {
-		targets := parseQueryTargets(queryTargets)
-		channels = filterChannelsByQuery(channels, query, targets)
+		validTargets := map[string]bool{"name": true, "topic": true, "purpose": true}
+		targetSet := make(map[string]bool)
+		for _, t := range strings.Split(queryTargets, ",") {
+			t = strings.TrimSpace(strings.ToLower(t))
+			if validTargets[t] {
+				targetSet[t] = true
+			} else if t != "" {
+				ch.logger.Warn("Invalid query target ignored", zap.String("target", t))
+			}
+		}
+		if len(targetSet) == 0 {
+			ch.logger.Debug("No valid query targets provided, using default (name)")
+			targetSet["name"] = true
+		}
+
+		channels = filterChannelsByQuery(channels, query, targetSet)
 		ch.logger.Debug("Channels after keyword filter", zap.Int("count", len(channels)))
 	}
 
@@ -265,37 +279,13 @@ func filterChannelsByTypes(channels map[string]provider.Channel, types []string)
 	return result
 }
 
-type queryTargetSet struct {
-	name    bool
-	topic   bool
-	purpose bool
-}
-
-func parseQueryTargets(raw string) queryTargetSet {
-	ts := queryTargetSet{}
-	for _, t := range strings.Split(raw, ",") {
-		switch strings.TrimSpace(strings.ToLower(t)) {
-		case "name":
-			ts.name = true
-		case "topic":
-			ts.topic = true
-		case "purpose":
-			ts.purpose = true
-		}
-	}
-	if !ts.name && !ts.topic && !ts.purpose {
-		ts.name = true
-	}
-	return ts
-}
-
-func filterChannelsByQuery(channels []provider.Channel, query string, targets queryTargetSet) []provider.Channel {
+func filterChannelsByQuery(channels []provider.Channel, query string, targetSet map[string]bool) []provider.Channel {
 	q := strings.ToLower(query)
 	var result []provider.Channel
 	for _, ch := range channels {
-		if (targets.name && strings.Contains(strings.ToLower(ch.Name), q)) ||
-			(targets.topic && strings.Contains(strings.ToLower(ch.Topic), q)) ||
-			(targets.purpose && strings.Contains(strings.ToLower(ch.Purpose), q)) {
+		if (targetSet["name"] && strings.Contains(strings.ToLower(ch.Name), q)) ||
+			(targetSet["topic"] && strings.Contains(strings.ToLower(ch.Topic), q)) ||
+			(targetSet["purpose"] && strings.Contains(strings.ToLower(ch.Purpose), q)) {
 			result = append(result, ch)
 		}
 	}
