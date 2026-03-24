@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,6 +38,38 @@ var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
 var ErrRefreshRateLimited = errors.New("refresh skipped due to rate limiting")
 
+// atomicWriteFile writes data to a file atomically using a temp file and rename.
+// Uses os.CreateTemp for unpredictable temp file names (prevents symlink attacks)
+// and cleans up the temp file on rename failure.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".cache_*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("setting file permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	return nil
+}
+
 // getCacheDir returns the appropriate cache directory for slack-mcp-server
 func getCacheDir() string {
 	cacheDir, err := os.UserCacheDir()
@@ -46,14 +79,14 @@ func getCacheDir() string {
 	}
 
 	dir := filepath.Join(cacheDir, "slack-mcp-server")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		// Fallback to current directory if we can't create cache dir
 		return "."
 	}
 	return dir
 }
 
-// getCacheTTL returns the cache TTL from SLACK_MCP_CACHE_TTL env var or default (1 hour).
+// getCacheTTL returns the cache TTL from SLACK_MCP_CACHE_TTL env var or default (24 hours).
 // Supports formats: "1h", "30m", "3600" (seconds), "0" (disable TTL, cache forever)
 // Negative values are rejected and fall back to default.
 func getCacheTTL() time.Duration {
@@ -820,8 +853,11 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 	}
 
 	if len(users) == 0 {
-		ap.logger.Warn("API returned zero users, keeping existing cache")
-		return nil
+		if ap.usersReady.Load() {
+			ap.logger.Warn("API returned zero users, keeping existing cache")
+			return nil
+		}
+		return errors.New("API returned zero users and no existing cache is available")
 	}
 
 	list = append(list, users...)
@@ -867,15 +903,9 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal users for cache", zap.Error(err))
 	} else {
-		// Atomic write: temp file + rename to prevent partial files on crash
-		tmpFile := ap.usersCachePath + ".tmp"
-		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-			ap.logger.Error("Failed to write temp cache file",
-				zap.String("cache_file", tmpFile),
-				zap.Error(err))
-		} else if err := os.Rename(tmpFile, ap.usersCachePath); err != nil {
-			ap.logger.Error("Failed to rename cache file",
-				zap.String("temp_file", tmpFile),
+		// Atomic write: temp file + rename to prevent partial/corrupt files
+		if err := atomicWriteFile(ap.usersCachePath, data, 0600); err != nil {
+			ap.logger.Error("Failed to write cache file",
 				zap.String("cache_file", ap.usersCachePath),
 				zap.Error(err))
 		} else {
@@ -1020,22 +1050,19 @@ func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
 	if len(channels) == 0 {
-		ap.logger.Warn("API returned zero channels, keeping existing cache")
-		return nil
+		if ap.channelsReady.Load() {
+			ap.logger.Warn("API returned zero channels, keeping existing cache")
+			return nil
+		}
+		return errors.New("API returned zero channels and no existing cache is available")
 	}
 
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
-		// Atomic write: temp file + rename to prevent partial files on crash
-		tmpFile := ap.channelsCachePath + ".tmp"
-		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-			ap.logger.Error("Failed to write temp cache file",
-				zap.String("cache_file", tmpFile),
-				zap.Error(err))
-		} else if err := os.Rename(tmpFile, ap.channelsCachePath); err != nil {
-			ap.logger.Error("Failed to rename cache file",
-				zap.String("temp_file", tmpFile),
+		// Atomic write: temp file + rename to prevent partial/corrupt files
+		if err := atomicWriteFile(ap.channelsCachePath, data, 0600); err != nil {
+			ap.logger.Error("Failed to write cache file",
 				zap.String("cache_file", ap.channelsCachePath),
 				zap.Error(err))
 		} else {
