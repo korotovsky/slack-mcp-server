@@ -168,6 +168,8 @@ func TestIntegrationChannelsListQueryFilter(t *testing.T) {
 	for _, row := range dataRows {
 		assert.Containsf(t, strings.ToLower(row[0]), "testcase",
 			"Expected all results to match query 'testcase', got: %s", row[0])
+		assert.NotContainsf(t, strings.ToLower(row[0]), "general",
+			"Expected #general to be filtered out, but found: %s", row[0])
 	}
 	assert.GreaterOrEqual(t, len(dataRows), 3, "Expected at least testcase-1, testcase-2, testcase-3")
 }
