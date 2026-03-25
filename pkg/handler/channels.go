@@ -114,12 +114,16 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	types := request.GetString("channel_types", provider.PubChanType)
 	cursor := request.GetString("cursor", "")
 	limit := request.GetInt("limit", 0)
+	query := request.GetString("query", "")
+	queryTargets := request.GetString("query_targets", "name")
 
 	ch.logger.Debug("Request parameters",
 		zap.String("sort", sortType),
 		zap.String("channel_types", types),
 		zap.String("cursor", cursor),
 		zap.Int("limit", limit),
+		zap.String("query", query),
+		zap.String("query_targets", queryTargets),
 	)
 
 	// MCP Inspector v0.14.0 has issues with Slice type
@@ -161,6 +165,26 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 
 	channels := filterChannelsByTypes(allChannels, channelTypes)
 	ch.logger.Debug("Channels after filtering by type", zap.Int("count", len(channels)))
+
+	if query != "" {
+		validTargets := map[string]bool{"name": true, "topic": true, "purpose": true}
+		targetSet := make(map[string]bool)
+		for _, t := range strings.Split(queryTargets, ",") {
+			t = strings.TrimSpace(strings.ToLower(t))
+			if validTargets[t] {
+				targetSet[t] = true
+			} else if t != "" {
+				ch.logger.Warn("Invalid query target ignored", zap.String("target", t))
+			}
+		}
+		if len(targetSet) == 0 {
+			ch.logger.Debug("No valid query targets provided, using default (name)")
+			targetSet["name"] = true
+		}
+
+		channels = filterChannelsByQuery(channels, query, targetSet)
+		ch.logger.Debug("Channels after keyword filter", zap.Int("count", len(channels)))
+	}
 
 	var chans []provider.Channel
 
@@ -252,6 +276,19 @@ func filterChannelsByTypes(channels map[string]provider.Channel, types []string)
 		zap.Int("mpims", mpimCount),
 	)
 
+	return result
+}
+
+func filterChannelsByQuery(channels []provider.Channel, query string, targetSet map[string]bool) []provider.Channel {
+	q := strings.ToLower(query)
+	var result []provider.Channel
+	for _, ch := range channels {
+		if (targetSet["name"] && strings.Contains(strings.ToLower(ch.Name), q)) ||
+			(targetSet["topic"] && strings.Contains(strings.ToLower(ch.Topic), q)) ||
+			(targetSet["purpose"] && strings.Contains(strings.ToLower(ch.Purpose), q)) {
+			result = append(result, ch)
+		}
+	}
 	return result
 }
 

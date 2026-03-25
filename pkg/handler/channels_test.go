@@ -137,6 +137,43 @@ func runChannelTest(t *testing.T, env *testEnv, channelType string, expectedChan
 	}
 }
 
+func TestIntegrationChannelsListQueryFilter(t *testing.T) {
+	env, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	callReq := mcp.CallToolRequest{}
+	callReq.Params.Name = "channels_list"
+	callReq.Params.Arguments = map[string]any{
+		"channel_types": "public_channel",
+		"query":         "testcase",
+	}
+
+	result, err := env.mcpClient.CallTool(env.ctx, callReq)
+	require.NoError(t, err, "Tool call failed")
+	require.NotNil(t, result, "Tool result is nil")
+	require.False(t, result.IsError, "Tool returned error")
+
+	var toolOutput strings.Builder
+	for _, content := range result.Content {
+		if textContent, ok := content.(mcp.TextContent); ok {
+			toolOutput.WriteString(textContent.Text)
+		}
+	}
+
+	reader := csv.NewReader(strings.NewReader(toolOutput.String()))
+	rows, err := reader.ReadAll()
+	require.NoError(t, err, "Failed to parse CSV")
+
+	dataRows := rows[1:]
+	for _, row := range dataRows {
+		assert.Containsf(t, strings.ToLower(row[0]), "testcase",
+			"Expected all results to match query 'testcase', got: %s", row[0])
+		assert.NotContainsf(t, strings.ToLower(row[0]), "general",
+			"Expected #general to be filtered out, but found: %s", row[0])
+	}
+	assert.GreaterOrEqual(t, len(dataRows), 3, "Expected at least testcase-1, testcase-2, testcase-3")
+}
+
 func TestIntegrationPublicChannelsList(t *testing.T) {
 	env, cleanup := setupTestEnv(t)
 	defer cleanup()
