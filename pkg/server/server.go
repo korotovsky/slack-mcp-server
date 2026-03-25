@@ -34,6 +34,7 @@ const (
 	ToolConversationsSearchMessages = "conversations_search_messages"
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
+	ToolConversationsOpen           = "conversations_open"
 	ToolChannelsList                = "channels_list"
 	ToolUsergroupsList              = "usergroups_list"
 	ToolUsergroupsMe                = "usergroups_me"
@@ -53,6 +54,7 @@ var ValidToolNames = []string{
 	ToolConversationsSearchMessages,
 	ToolConversationsUnreads,
 	ToolConversationsMark,
+	ToolConversationsOpen,
 	ToolChannelsList,
 	ToolUsergroupsList,
 	ToolUsergroupsMe,
@@ -113,6 +115,17 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	)
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+
+	if shouldAddTool(ToolConversationsOpen, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsOpen,
+			mcp.WithDescription("Open a direct message (DM) or multi-person direct message (MPIM) conversation with one or more users. Returns the new channel ID of the DM."),
+			mcp.WithTitleAnnotation("Open Conversation"),
+			mcp.WithString("users",
+				mcp.Required(),
+				mcp.Description("Comma-separated list of user IDs or @usernames to open a DM with. Example: U12345678, @username"),
+			),
+		), conversationsHandler.ConversationsOpenHandler)
+	}
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,
