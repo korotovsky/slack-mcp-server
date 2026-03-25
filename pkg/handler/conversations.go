@@ -1655,6 +1655,76 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 	}, nil
 }
 
+func (ch *ConversationsHandler) parseParamsToolOpenConversation(ctx context.Context, request mcp.CallToolRequest) ([]string, error) {
+	usersStr := request.GetString("users", "")
+	if usersStr == "" {
+		return nil, errors.New("users must be a comma-separated string of user IDs or @usernames")
+	}
+
+	var userIDs []string
+	usersMap := ch.apiProvider.ProvideUsersMap()
+
+	for _, user := range strings.Split(usersStr, ",") {
+		user = strings.TrimSpace(user)
+		if user == "" {
+			continue
+		}
+
+		if strings.HasPrefix(user, "@") {
+			username := strings.TrimPrefix(user, "@")
+			if id, ok := usersMap.UsersInv[username]; ok {
+				userIDs = append(userIDs, id)
+			} else {
+				ch.logger.Error("User not found", zap.String("username", username))
+				return nil, fmt.Errorf("user %q not found. Please provide a valid @username or User ID (e.g. U12345678)", user)
+			}
+		} else {
+			// Assume it's a User ID
+			userIDs = append(userIDs, user)
+		}
+	}
+
+	if len(userIDs) == 0 {
+		return nil, errors.New("no valid users provided")
+	}
+
+	return userIDs, nil
+}
+
+// ConversationsOpenHandler opens a new DM or MPIM
+func (ch *ConversationsHandler) ConversationsOpenHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsOpenHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	userIDs, err := ch.parseParamsToolOpenConversation(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse open-conversation params", zap.Error(err))
+		return nil, err
+	}
+
+	params := &slack.OpenConversationParameters{
+		Users:    userIDs,
+		ReturnIM: true,
+	}
+
+	channel, _, _, err := ch.apiProvider.Slack().OpenConversationContext(ctx, params)
+	if err != nil {
+		ch.logger.Error("Slack OpenConversationContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	// Try to force cache refresh in background since we have a new channel
+	go func() {
+		_ = ch.apiProvider.ForceRefreshChannels(context.Background())
+	}()
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully opened conversation. Channel ID: %s", channel.Conversation.ID)), nil
+}
+
 func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
 	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
