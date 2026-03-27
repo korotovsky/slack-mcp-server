@@ -108,6 +108,28 @@ type filesGetParams struct {
 	fileID string
 }
 
+type filesListParams struct {
+	channel string
+	user    string
+	types   string
+	limit   int
+	cursor  string
+}
+
+type FileListResult struct {
+	FileID     string `csv:"FileID"`
+	Name       string `csv:"Name"`
+	Title      string `csv:"Title"`
+	Mimetype   string `csv:"Mimetype"`
+	Filetype   string `csv:"Filetype"`
+	PrettyType string `csv:"PrettyType"`
+	Size       int    `csv:"Size"`
+	UserID     string `csv:"UserID"`
+	Created    string `csv:"Created"`
+	Permalink  string `csv:"Permalink"`
+	Cursor     string `csv:"Cursor"`
+}
+
 type usersSearchParams struct {
 	query string
 	limit int
@@ -481,6 +503,91 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		escapeJSON(contentStr))
 
 	return mcp.NewToolResultText(result), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesList(request mcp.CallToolRequest) (*filesListParams, error) {
+	params := &filesListParams{
+		channel: request.GetString("channel_id", ""),
+		user:    request.GetString("user_id", ""),
+		types:   request.GetString("types", ""),
+		cursor:  request.GetString("cursor", ""),
+		limit:   50,
+	}
+
+	if limitStr := request.GetString("limit", ""); limitStr != "" {
+		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
+			params.limit = v
+		}
+	}
+
+	return params, nil
+}
+
+func (ch *ConversationsHandler) FilesListHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesListHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolFilesList(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse files_list params", zap.Error(err))
+		return nil, err
+	}
+
+	listParams := slack.ListFilesParameters{
+		Channel: params.channel,
+		User:    params.user,
+		Types:   params.types,
+		Limit:   params.limit,
+		Cursor:  params.cursor,
+	}
+
+	files, nextPage, err := ch.apiProvider.Slack().ListFilesContext(ctx, listParams)
+	if err != nil {
+		ch.logger.Error("Slack ListFilesContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	if len(files) == 0 {
+		return mcp.NewToolResultText("No files found."), nil
+	}
+
+	nextCursor := ""
+	if nextPage != nil {
+		nextCursor = nextPage.Cursor
+	}
+
+	results := make([]FileListResult, 0, len(files))
+	for i, f := range files {
+		cursor := ""
+		if i == len(files)-1 {
+			cursor = nextCursor
+		}
+		results = append(results, FileListResult{
+			FileID:     f.ID,
+			Name:       f.Name,
+			Title:      f.Title,
+			Mimetype:   f.Mimetype,
+			Filetype:   f.Filetype,
+			PrettyType: f.PrettyType,
+			Size:       f.Size,
+			UserID:     f.User,
+			Created:    f.Created.Time().Format(time.RFC3339),
+			Permalink:  f.Permalink,
+			Cursor:     cursor,
+		})
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&results)
+	if err != nil {
+		ch.logger.Error("Failed to marshal files to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
 func isTextMimetype(mimetype string) bool {
