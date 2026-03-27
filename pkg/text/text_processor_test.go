@@ -2,8 +2,6 @@ package text
 
 import (
 	"testing"
-
-	"github.com/slack-go/slack"
 )
 
 func TestIsUnfurlingEnabled(t *testing.T) {
@@ -111,14 +109,9 @@ func TestIsUnfurlingEnabled(t *testing.T) {
 }
 
 func TestFilterSpecialCharsWithCommas(t *testing.T) {
-	usersMap := map[string]slack.User{
-		"U12345678": {Name: "alice"},
-		"W87654321": {Name: "bob"},
-	}
 	tests := []struct {
 		name     string
 		input    string
-		userMap  map[string]slack.User
 		expected string
 	}{
 		{
@@ -156,65 +149,11 @@ func TestFilterSpecialCharsWithCommas(t *testing.T) {
 			input:    "Check this [Google](https://google.com) out",
 			expected: "Check this https://google.com - Google, out",
 		},
-		{
-			name:     "known user mention resolved to name",
-			input:    "Hey <@U12345678> how are you?",
-			userMap:  usersMap,
-			expected: "Hey @alice how are you?",
-		},
-		{
-			name:     "unknown Slack bot mention",
-			input:    "Hey <@B12348765> how are you?",
-			userMap:  usersMap,
-			expected: "Hey B12348765 how are you?",
-		},
-		{
-			name:     "unknown user mention falls back to ID",
-			input:    "Hey <@UUNKNOWN99> sup",
-			userMap:  usersMap,
-			expected: "Hey @UUNKNOWN99 sup",
-		},
-		{
-			name:     "multiple known mentions",
-			input:    "<@U12345678> and <@W87654321> are here",
-			userMap:  usersMap,
-			expected: "@alice and @bob are here",
-		},
-		{
-			name:     "W-prefixed user ID resolved",
-			input:    "Ping <@W87654321>",
-			userMap:  usersMap,
-			expected: "Ping @bob",
-		},
-		{
-			name:     "mention alongside a link",
-			input:    "<@U12345678> check <https://example.com|this>",
-			userMap:  usersMap,
-			expected: "@alice check https://example.com - this",
-		},
-		{
-			name:     "empty users map falls back to ID",
-			input:    "Hi <@U12345678>",
-			userMap:  map[string]slack.User{},
-			expected: "Hi @U12345678",
-		},
-		{
-			name:     "normal text same to user ID",
-			input:    "this machine is model-U12345678",
-			userMap:  usersMap,
-			expected: "this machine is model-U12345678",
-		},
-		{
-			name:     "invalid Slack user mention format as normal text",
-			input:    "I like <@  W87654321 > @U12345678 <U12345678> <@>",
-			userMap:  usersMap,
-			expected: "I like W87654321 U12345678 U12345678",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := filterSpecialChars(tt.input, tt.userMap)
+			result := filterSpecialChars(tt.input)
 			if result != tt.expected {
 				t.Errorf("filterSpecialChars() = %q, expected %q", result, tt.expected)
 			}

@@ -14,6 +14,8 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
+var UserMentionRegex = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]+)?>`)
+
 func AttachmentToText(att slack.Attachment) string {
 	var parts []string
 
@@ -173,8 +175,8 @@ func TimestampToIsoRFC3339(slackTS string) (string, error) {
 	return t.UTC().Format(time.RFC3339), nil
 }
 
-func ProcessText(s string, userMaps map[string]slack.User) string {
-	s = filterSpecialChars(s, userMaps)
+func ProcessText(s string) string {
+	s = filterSpecialChars(s)
 
 	return s
 }
@@ -192,7 +194,7 @@ func HumanizeCertificates(certs []*x509.Certificate) string {
 	return strings.Join(descriptions, ", ")
 }
 
-func filterSpecialChars(text string, userMaps map[string]slack.User) string {
+func filterSpecialChars(text string) string {
 	replaceWithCommaCheck := func(match []string, isLast bool) string {
 		var url, linkText string
 
@@ -266,13 +268,6 @@ func filterSpecialChars(text string, userMaps map[string]slack.User) string {
 		protected = strings.Replace(protected, url, placeholder, 1)
 	}
 
-	userMentionRegex := regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
-	userMentions := userMentionRegex.FindAllString(protected, -1)
-	for i, userMention := range userMentions {
-		placeholder := "___USER_AT_PLACEHOLDER___" + string(rune(48+i)) + "___"
-		protected = strings.Replace(protected, userMention, placeholder, 1)
-	}
-
 	cleanRegex := regexp.MustCompile(`[^0-9\p{L}\p{M}\s\.\,\-_:/\?=&%]`)
 	cleaned := cleanRegex.ReplaceAllString(protected, "")
 
@@ -280,19 +275,6 @@ func filterSpecialChars(text string, userMaps map[string]slack.User) string {
 	for i, url := range urls {
 		placeholder := "___URL_PLACEHOLDER_" + string(rune(48+i)) + "___"
 		cleaned = strings.Replace(cleaned, placeholder, url, 1)
-	}
-
-	// Restore the @ sign
-	for i, userMention := range userMentions {
-		var userName string
-		placeholder := "___USER_AT_PLACEHOLDER___" + string(rune(48+i)) + "___"
-		userId := userMention[2 : len(userMention)-1]
-		if u, ok := userMaps[userId]; ok {
-			userName = u.Name
-		} else {
-			userName = userId
-		}
-		cleaned = strings.Replace(cleaned, placeholder, fmt.Sprintf("@%s", userName), 1)
 	}
 
 	spaceRegex := regexp.MustCompile(`[ \t]+`)

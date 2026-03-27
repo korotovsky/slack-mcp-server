@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -649,6 +650,84 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			got := isSlackUserIDPrefix(tt.s)
 			if got != tt.want {
 				t.Errorf("isSlackUserIDPrefix(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnitProcessText(t *testing.T) {
+	usersMap := map[string]slack.User{
+		"U12345678": {Profile: slack.UserProfile{DisplayName: "alice"}},
+		"W87654321": {Profile: slack.UserProfile{DisplayName: "bob"}},
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		userMap  map[string]slack.User
+		expected string
+	}{
+		{
+			name:     "known user mention resolved to name",
+			input:    "Hey <@U12345678> how are you?",
+			userMap:  usersMap,
+			expected: "Hey @alice how are you?",
+		},
+		{
+			name:     "unknown Slack bot mention",
+			input:    "Hey <@B12348765> how are you?",
+			userMap:  usersMap,
+			expected: "Hey B12348765 how are you?",
+		},
+		{
+			name:     "unknown user mention falls back to ID",
+			input:    "Hey <@UUNKNOWN99> sup",
+			userMap:  usersMap,
+			expected: "Hey @UUNKNOWN99 sup",
+		},
+		{
+			name:     "multiple known mentions",
+			input:    "<@U12345678> and <@W87654321> are here",
+			userMap:  usersMap,
+			expected: "@alice and @bob are here",
+		},
+		{
+			name:     "W-prefixed user ID resolved",
+			input:    "Ping <@W87654321>",
+			userMap:  usersMap,
+			expected: "Ping @bob",
+		},
+		{
+			name:     "mention alongside a link",
+			input:    "<@U12345678> check <https://example.com|this>",
+			userMap:  usersMap,
+			expected: "@alice check https://example.com - this",
+		},
+		{
+			name:     "empty users map falls back to ID",
+			input:    "Hi <@U12345678>",
+			userMap:  map[string]slack.User{},
+			expected: "Hi @U12345678",
+		},
+		{
+			name:     "normal text unchanged",
+			input:    "this machine is model-U12345678",
+			userMap:  usersMap,
+			expected: "this machine is model-U12345678",
+		},
+		{
+			name:     "invalid Slack user mention format treated as normal text",
+			input:    "I like <@  W87654321 > @U12345678 <U12345678> <@>",
+			userMap:  usersMap,
+			expected: "I like W87654321 U12345678 U12345678",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := processText(tt.input, tt.userMap)
+			if got != tt.expected {
+				t.Errorf("processText(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
