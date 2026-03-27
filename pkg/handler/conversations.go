@@ -1516,7 +1516,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			UserID:        msg.User,
 			UserName:      userName,
 			RealName:      realName,
-			Text:          text.ProcessText(msgText),
+			Text:          processText(msgText, usersMap.Users),
 			Channel:       channel,
 			ThreadTs:      msg.ThreadTimestamp,
 			Time:          timestamp,
@@ -1570,7 +1570,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 			UserID:    msg.User,
 			UserName:  userName,
 			RealName:  realName,
-			Text:      text.ProcessText(msgText),
+			Text:      processText(msgText, usersMap.Users),
 			Channel:   fmt.Sprintf("#%s", msg.Channel.Name),
 			ThreadTs:  threadTs,
 			Time:      timestamp,
@@ -2290,4 +2290,35 @@ func hasImageBlocks(blocks slack.Blocks) bool {
 		}
 	}
 	return false
+}
+
+func processText(s string, userMaps map[string]slack.User) string {
+	protected := s
+	userMentions := text.UserMentionRegex.FindAllString(s, -1)
+	for i, userMention := range userMentions {
+		placeholder := "___USER_AT_PLACEHOLDER___" + string(rune(48+i)) + "___"
+		protected = strings.Replace(protected, userMention, placeholder, 1)
+	}
+
+	cleaned := text.ProcessText(protected)
+	// Restore the @ sign
+	for i, userMention := range userMentions {
+		var userName string
+		placeholder := "___USER_AT_PLACEHOLDER___" + string(rune(48+i)) + "___"
+		userId := userMention[2 : len(userMention)-1]
+		if u, ok := userMaps[userId]; ok {
+			name := u.Profile.DisplayName
+			if name == "" {
+				name = u.RealName
+			}
+			if name == "" {
+				name = u.Name
+			}
+			userName = name
+		} else {
+			userName = userId
+		}
+		cleaned = strings.Replace(cleaned, placeholder, fmt.Sprintf("@%s", userName), 1)
+	}
+	return cleaned
 }
