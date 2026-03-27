@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +16,27 @@ import (
 )
 
 func AttachmentToText(att slack.Attachment) string {
+	if compactOutput() {
+		return attachmentToCompactText(att)
+	}
+	return attachmentToFullText(att)
+}
+
+// attachmentToCompactText returns only the Title of an attachment.
+// Link previews in Slack append Title + Text + Footer which can double
+// the message length. The title alone tells the LLM what was linked.
+func attachmentToCompactText(att slack.Attachment) string {
+	if att.Title != "" {
+		result := att.Title
+		result = strings.ReplaceAll(result, "\n", " ")
+		result = strings.ReplaceAll(result, "\r", " ")
+		result = strings.TrimSpace(result)
+		return result
+	}
+	return ""
+}
+
+func attachmentToFullText(att slack.Attachment) string {
 	var parts []string
 
 	if att.Title != "" {
@@ -49,6 +71,11 @@ func AttachmentToText(att slack.Attachment) string {
 	result = strings.TrimSpace(result)
 
 	return result
+}
+
+func compactOutput() bool {
+	v := os.Getenv("SLACK_MCP_COMPACT_OUTPUT")
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func AttachmentsTo2CSV(msgText string, attachments []slack.Attachment) string {
