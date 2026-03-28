@@ -1185,10 +1185,26 @@ func (ap *ApiProvider) IsOAuth() bool {
 	return ok && client != nil && client.IsOAuth()
 }
 
+// slackUserIDPattern matches Slack user IDs (e.g., U07VCEPP4N5, W0123456789).
+var slackUserIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]{2,}$`)
+
 // SearchUsers searches for users by name, email, or display name.
+// If the query matches a Slack user ID pattern (e.g., U07VCEPP4N5), it looks up the user
+// directly via the users.info API instead of searching.
 // For OAuth tokens (xoxp/xoxb), it searches the local users cache using regex matching.
 // For browser tokens (xoxc/xoxd), it uses the edge API's UsersSearch method.
 func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int) ([]slack.User, error) {
+	if slackUserIDPattern.MatchString(query) {
+		users, err := ap.client.GetUsersInfo(query)
+		if err != nil {
+			return nil, err
+		}
+		if users != nil {
+			return *users, nil
+		}
+		return nil, nil
+	}
+
 	if ap.IsOAuth() {
 		return ap.searchUsersInCache(query, limit)
 	}

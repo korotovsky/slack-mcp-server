@@ -286,12 +286,12 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolUsersSearch, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolUsersSearch,
-			mcp.WithDescription("Search for users by name, email, or display name. Returns user details and DM channel ID if available."),
+			mcp.WithDescription("Search for users by name, email, display name, or Slack user ID. If a Slack user ID is provided (e.g. U07VCEPP4N5), the user is looked up directly. Returns user details and DM channel ID if available."),
 			mcp.WithTitleAnnotation("Search Users"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("query",
 				mcp.Required(),
-				mcp.Description("Search query - matches against real name, display name, username, or email."),
+				mcp.Description("Search query - matches against real name, display name, username, email, or a Slack user ID (e.g. U07VCEPP4N5)."),
 			),
 			mcp.WithNumber("limit",
 				mcp.DefaultNumber(10),
