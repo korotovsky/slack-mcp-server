@@ -110,6 +110,10 @@ Fetches a CSV directory of all users in the workspace.
   - `userName`: Slack username (e.g., `john`)
   - `realName`: User’s real name (e.g., `John Doe`)
 
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/korotovsky-slack-mcp-server).
+
 ## Setup Guide
 
 - [Authentication Setup](docs/01-authentication-setup.md)
