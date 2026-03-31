@@ -236,10 +236,24 @@ func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.Ca
 		channelTypes = []string{provider.PubChanType, provider.PrivateChanType}
 	}
 
-	// Fetch channels the user is a member of via users.conversations API.
+	needsSort := sortType == "popularity"
+
+	// When sorting by popularity we must fetch all channels first because the
+	// Slack API doesn't support server-side sorting. Otherwise we can stop
+	// fetching as soon as we have enough results and use the Slack API's native
+	// cursor for pagination — dramatically faster on large workspaces.
+	mustFetchAll := needsSort
+
 	usersMap := ch.apiProvider.ProvideUsersMap().Users
 	var allChannels []provider.Channel
 	var apiCursor string
+	var slackNextCursor string
+
+	// If the caller passed a cursor and we're in early-exit mode, it's a Slack API cursor.
+	if !mustFetchAll && cursor != "" {
+		apiCursor = cursor
+	}
+
 	for {
 		params := &slack.GetConversationsForUserParameters{
 			Types:           channelTypes,
@@ -257,6 +271,12 @@ func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.Ca
 			allChannels = append(allChannels, provider.MapChannelFromSlack(c, usersMap))
 		}
 
+		// Early exit: stop paginating through the Slack API once we have enough.
+		if !mustFetchAll && len(allChannels) >= limit {
+			slackNextCursor = nextCursor
+			break
+		}
+
 		if nextCursor == "" {
 			break
 		}
@@ -265,22 +285,41 @@ func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.Ca
 
 	ch.logger.Debug("Fetched member channels", zap.Int("count", len(allChannels)))
 
-	// Paginate results
-	paged, nextcur := paginateChannels(allChannels, cursor, limit)
-
 	var channelList []Channel
-	for _, channel := range paged {
-		channelList = append(channelList, Channel{
-			ID:          channel.ID,
-			Name:        channel.Name,
-			Topic:       channel.Topic,
-			Purpose:     channel.Purpose,
-			MemberCount: channel.MemberCount,
-		})
+	var nextcur string
+
+	if mustFetchAll {
+		// We fetched everything — use in-memory pagination with ID-based cursors.
+		var paged []provider.Channel
+		paged, nextcur = paginateChannels(allChannels, cursor, limit)
+		for _, channel := range paged {
+			channelList = append(channelList, Channel{
+				ID:          channel.ID,
+				Name:        channel.Name,
+				Topic:       channel.Topic,
+				Purpose:     channel.Purpose,
+				MemberCount: channel.MemberCount,
+			})
+		}
+	} else {
+		// We stopped early — truncate to limit and use the Slack API cursor.
+		end := limit
+		if end > len(allChannels) {
+			end = len(allChannels)
+		}
+		for _, channel := range allChannels[:end] {
+			channelList = append(channelList, Channel{
+				ID:          channel.ID,
+				Name:        channel.Name,
+				Topic:       channel.Topic,
+				Purpose:     channel.Purpose,
+				MemberCount: channel.MemberCount,
+			})
+		}
+		nextcur = slackNextCursor
 	}
 
-	switch sortType {
-	case "popularity":
+	if needsSort {
 		sort.Slice(channelList, func(i, j int) bool {
 			return channelList[i].MemberCount > channelList[j].MemberCount
 		})
