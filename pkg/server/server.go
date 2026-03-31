@@ -35,6 +35,7 @@ const (
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
 	ToolChannelsList                = "channels_list"
+	ToolChannelsMe                  = "channels_me"
 	ToolUsergroupsList              = "usergroups_list"
 	ToolUsergroupsMe                = "usergroups_me"
 	ToolUsergroupsCreate            = "usergroups_create"
@@ -54,6 +55,7 @@ var ValidToolNames = []string{
 	ToolConversationsUnreads,
 	ToolConversationsMark,
 	ToolChannelsList,
+	ToolChannelsMe,
 	ToolUsergroupsList,
 	ToolUsergroupsMe,
 	ToolUsergroupsCreate,
@@ -372,6 +374,24 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
 			),
 		), channelsHandler.ChannelsHandler)
+	}
+
+	if shouldAddTool(ToolChannelsMe, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolChannelsMe,
+			mcp.WithDescription("List channels you are a member of. Unlike channels_list which returns all workspace channels, this returns only channels you have joined. Useful on large workspaces where channels_list returns thousands of results."),
+			mcp.WithTitleAnnotation("My Channels"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_types",
+				mcp.Description("Comma-separated channel types. Allowed values: 'mpim', 'im', 'public_channel', 'private_channel'. Default: 'public_channel,private_channel'."),
+			),
+			mcp.WithNumber("limit",
+				mcp.DefaultNumber(100),
+				mcp.Description("Maximum number of items to return (1-999)."),
+			),
+			mcp.WithString("cursor",
+				mcp.Description("Cursor for pagination."),
+			),
+		), channelsHandler.ChannelsMeHandler)
 	}
 
 	// User groups tools

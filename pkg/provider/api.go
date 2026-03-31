@@ -1303,3 +1303,14 @@ func mapChannel(
 		Members:     members,
 	}
 }
+
+// MapChannelFromSlack converts a slack.Channel to our internal Channel type.
+func MapChannelFromSlack(c slack.Channel, usersMap map[string]slack.User) Channel {
+	return mapChannel(
+		c.ID, c.Name, c.NameNormalized,
+		c.Topic.Value, c.Purpose.Value,
+		c.User, c.Members, c.NumMembers,
+		c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
+		usersMap,
+	)
+}

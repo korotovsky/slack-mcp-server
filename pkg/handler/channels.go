@@ -9,6 +9,7 @@ import (
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
+	"github.com/slack-go/slack"
 	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/korotovsky/slack-mcp-server/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -203,6 +204,102 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 	csvBytes, err := gocsv.MarshalBytes(&channelList)
 	if err != nil {
 		ch.logger.Error("Failed to marshal channels to CSV", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ChannelsMeHandler called")
+
+	types := request.GetString("channel_types", "public_channel,private_channel")
+	cursor := request.GetString("cursor", "")
+	limit := request.GetInt("limit", 0)
+
+	if limit == 0 {
+		limit = 100
+	}
+	if limit > 999 {
+		limit = 999
+	}
+
+	channelTypes := []string{}
+	for _, t := range strings.Split(types, ",") {
+		t = strings.TrimSpace(t)
+		if ch.validTypes[t] {
+			channelTypes = append(channelTypes, t)
+		}
+	}
+	if len(channelTypes) == 0 {
+		channelTypes = []string{provider.PubChanType, provider.PrivateChanType}
+	}
+
+	// Fetch channels via the Slack API, stopping as soon as we have enough
+	// results and using the API's native cursor for pagination. This avoids
+	// fetching every channel the user belongs to on large workspaces.
+	usersMap := ch.apiProvider.ProvideUsersMap().Users
+	var allChannels []provider.Channel
+	var apiCursor string
+	var slackNextCursor string
+
+	if cursor != "" {
+		apiCursor = cursor
+	}
+
+	for {
+		params := &slack.GetConversationsForUserParameters{
+			Types:           channelTypes,
+			Limit:           200,
+			Cursor:          apiCursor,
+			ExcludeArchived: true,
+		}
+		channels, nextCursor, err := ch.apiProvider.Slack().GetConversationsForUserContext(ctx, params)
+		if err != nil {
+			ch.logger.Error("Failed to fetch user conversations", zap.Error(err))
+			return nil, fmt.Errorf("failed to fetch your channels: %v", err)
+		}
+
+		for _, c := range channels {
+			allChannels = append(allChannels, provider.MapChannelFromSlack(c, usersMap))
+		}
+
+		// Early exit: stop paginating through the Slack API once we have enough.
+		if len(allChannels) >= limit {
+			slackNextCursor = nextCursor
+			break
+		}
+
+		if nextCursor == "" {
+			break
+		}
+		apiCursor = nextCursor
+	}
+
+	ch.logger.Debug("Fetched member channels", zap.Int("count", len(allChannels)))
+
+	// Truncate to limit and use the Slack API cursor.
+	end := limit
+	if end > len(allChannels) {
+		end = len(allChannels)
+	}
+	var channelList []Channel
+	for _, channel := range allChannels[:end] {
+		channelList = append(channelList, Channel{
+			ID:          channel.ID,
+			Name:        channel.Name,
+			Topic:       channel.Topic,
+			Purpose:     channel.Purpose,
+			MemberCount: channel.MemberCount,
+		})
+	}
+
+	if len(channelList) > 0 && slackNextCursor != "" {
+		channelList[len(channelList)-1].Cursor = slackNextCursor
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&channelList)
+	if err != nil {
 		return nil, err
 	}
 
