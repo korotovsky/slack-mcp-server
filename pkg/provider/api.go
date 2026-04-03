@@ -228,11 +228,11 @@ type MCPSlackClient struct {
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
 
-	isEnterprise  bool
-	isOAuth       bool
-	isBotToken    bool
-	edgeFailed    bool // set when edge API fails; subsequent calls skip straight to standard API
-	teamEndpoint  string
+	isEnterprise bool
+	isOAuth      bool
+	isBotToken   bool
+	edgeFailed   bool // set when edge API fails; subsequent calls skip straight to standard API
+	teamEndpoint string
 }
 
 type ApiProvider struct {
@@ -758,6 +758,45 @@ func (ap *ApiProvider) ForceRefreshUsers(ctx context.Context) error {
 
 	ap.logger.Info("Force refreshing users cache")
 	return ap.refreshUsersInternal(ctx, true)
+}
+
+// PatchUser fetches a single user by ID from the Slack API and adds them to
+// the in-memory users snapshot. This is much cheaper than a full cache rebuild
+// for a single cache miss (O(1) API call vs O(all users)).
+// Disk persistence is skipped — the next full refresh will persist the entry.
+func (ap *ApiProvider) PatchUser(ctx context.Context, userID string) (*slack.User, error) {
+	usersInfo, err := ap.client.GetUsersInfo(userID)
+	if err != nil {
+		ap.logger.Warn("Failed to fetch user for cache patch", zap.String("user_id", userID), zap.Error(err))
+		return nil, err
+	}
+	if usersInfo == nil || len(*usersInfo) == 0 {
+		ap.logger.Debug("User not found via API", zap.String("user_id", userID))
+		return nil, errors.New("user not found")
+	}
+
+	user := (*usersInfo)[0]
+	current := ap.usersSnapshot.Load()
+
+	newSnapshot := &UsersCache{
+		Users:    make(map[string]slack.User, len(current.Users)+1),
+		UsersInv: make(map[string]string, len(current.UsersInv)+1),
+	}
+	for k, v := range current.Users {
+		newSnapshot.Users[k] = v
+	}
+	for k, v := range current.UsersInv {
+		newSnapshot.UsersInv[k] = v
+	}
+	newSnapshot.Users[user.ID] = user
+	newSnapshot.UsersInv[user.Name] = user.ID
+
+	ap.usersSnapshot.Store(newSnapshot)
+	ap.logger.Debug("Patched user into cache",
+		zap.String("user_id", user.ID),
+		zap.String("user_name", user.Name))
+
+	return &user, nil
 }
 
 func (ap *ApiProvider) refreshUsersInternal(ctx context.Context, force bool) error {
