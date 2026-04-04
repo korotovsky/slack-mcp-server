@@ -1,0 +1,47 @@
+version: "1"
+description: "Slack MCP — permissive policy. All tools allowed. Rate limits on message sending and user group writes."
+default: allow
+
+tools:
+  # Message sending — rate limited even in permissive mode
+  conversations_add_message:
+    rules:
+      - name: "burst-limit"
+        rate_limit: "10/minute"
+        on_deny: "Slow down — max 10 messages per minute"
+      - name: "daily-cap"
+        rate_limit: "500/day"
+        on_deny: "Daily message limit (500) reached"
+
+  # Reactions — light limits
+  reactions_add:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "20/minute"
+        on_deny: "Max 20 reactions per minute"
+
+  reactions_remove:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "20/minute"
+        on_deny: "Max 20 reaction removals per minute"
+
+  # User group management — rate limited
+  usergroups_create:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "10/hour"
+        on_deny: "Max 10 user group creations per hour"
+
+  usergroups_users_update:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "30/hour"
+        on_deny: "Max 30 membership updates per hour"
+
+  # Global safety net
+  "*":
+    rules:
+      - name: "global-rate-limit"
+        rate_limit: "120/minute"
+        on_deny: "Global rate limit — max 120 tool calls per minute"

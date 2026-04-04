@@ -1,0 +1,94 @@
+version: "1"
+description: "Slack MCP — recommended policy. Rate limits on message sending, caps on bulk operations, reads allowed freely."
+default: allow
+
+tools:
+  # Message sending — highest risk, tightest limits
+  conversations_add_message:
+    rules:
+      - name: "burst-limit"
+        rate_limit: "5/minute"
+        on_deny: "Slow down — max 5 messages per minute"
+      - name: "hourly-cap"
+        rate_limit: "30/hour"
+        on_deny: "Hourly message limit (30) reached"
+      - name: "daily-cap"
+        rate_limit: "200/day"
+        on_deny: "Daily message limit (200) reached — prevents bulk messaging"
+
+  # Reactions — moderate limits
+  reactions_add:
+    rules:
+      - name: "burst-limit"
+        rate_limit: "10/minute"
+        on_deny: "Slow down — max 10 reactions per minute"
+      - name: "hourly-cap"
+        rate_limit: "60/hour"
+        on_deny: "Hourly reaction limit (60) reached"
+
+  reactions_remove:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "10/minute"
+        on_deny: "Max 10 reaction removals per minute"
+
+  # Mark as read — moderate limits
+  conversations_mark:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "30/minute"
+        on_deny: "Max 30 mark-as-read operations per minute"
+
+  # User group management — write operations, limited
+  usergroups_create:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "5/hour"
+        on_deny: "Max 5 user group creations per hour"
+
+  usergroups_update:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "10/hour"
+        on_deny: "Max 10 user group updates per hour"
+
+  usergroups_users_update:
+    rules:
+      - name: "burst-limit"
+        rate_limit: "3/minute"
+        on_deny: "Slow down — max 3 membership changes per minute"
+      - name: "hourly-cap"
+        rate_limit: "20/hour"
+        on_deny: "Hourly user group membership update limit (20) reached"
+
+  # Read tools — generous limits
+  conversations_history:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "30/minute"
+        on_deny: "Max 30 history fetches per minute"
+
+  conversations_replies:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "30/minute"
+        on_deny: "Max 30 thread fetches per minute"
+
+  conversations_search_messages:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "20/minute"
+        on_deny: "Max 20 searches per minute"
+
+  conversations_unreads:
+    rules:
+      - name: "rate-limit"
+        rate_limit: "10/minute"
+        on_deny: "Max 10 unread fetches per minute"
+
+  # Global safety net
+  "*":
+    rules:
+      - name: "global-rate-limit"
+        rate_limit: "60/minute"
+        on_deny: "Global rate limit — max 60 tool calls per minute across all Slack tools"

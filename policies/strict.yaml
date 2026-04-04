@@ -1,0 +1,54 @@
+version: "1"
+description: "Slack MCP — strict policy. Default deny. Only read and list tools are allowed."
+default: deny
+
+tools:
+  # Read-only tools — explicitly allowed
+  conversations_history:
+    rules:
+      - action: allow
+        rate_limit: "30/minute"
+
+  conversations_replies:
+    rules:
+      - action: allow
+        rate_limit: "30/minute"
+
+  conversations_search_messages:
+    rules:
+      - action: allow
+        rate_limit: "20/minute"
+
+  conversations_unreads:
+    rules:
+      - action: allow
+        rate_limit: "10/minute"
+
+  channels_list:
+    rules:
+      - action: allow
+        rate_limit: "20/minute"
+
+  users_search:
+    rules:
+      - action: allow
+        rate_limit: "20/minute"
+
+  usergroups_list:
+    rules:
+      - action: allow
+        rate_limit: "20/minute"
+
+  usergroups_me:
+    rules:
+      - action: allow
+        rate_limit: "10/minute"
+
+  # All write tools blocked by default deny:
+  # - conversations_add_message
+  # - reactions_add
+  # - reactions_remove
+  # - conversations_mark
+  # - usergroups_create
+  # - usergroups_update
+  # - usergroups_users_update

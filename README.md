@@ -288,6 +288,50 @@ npx @modelcontextprotocol/inspector go run mcp/mcp-server.go --transport stdio
 tail -n 20 -f ~/Library/Logs/Claude/mcp*.log
 ```
 
+## Tool-level policy enforcement
+
+The server's built-in `SLACK_MCP_ADD_MESSAGE_TOOL` and `SLACK_MCP_ENABLED_TOOLS` controls determine which tools are available. For rate limiting, daily caps, and audit logging on individual tool calls, you can wrap the server with [PolicyLayer Intercept](https://github.com/policylayer/intercept), an open-source MCP proxy.
+
+Three policy presets are included in [`/policies`](/policies):
+
+| Policy | Description |
+|--------|-------------|
+| `recommended.yaml` | Rate limits on message sending, daily caps, reads allowed freely |
+| `strict.yaml` | Default deny — only read and list tools are allowed |
+| `permissive.yaml` | Everything allowed, rate limits on sends and user group writes |
+
+### Usage
+
+```sh
+npx -y @policylayer/intercept \
+  --policy policies/recommended.yaml \
+  -- go run mcp/mcp-server.go --transport stdio
+```
+
+Or in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "slack": {
+      "command": "npx",
+      "args": [
+        "-y", "@policylayer/intercept",
+        "--policy", "policies/recommended.yaml",
+        "--", "/path/to/slack-mcp-server",
+        "--transport", "stdio"
+      ],
+      "env": {
+        "SLACK_MCP_XOXP_TOKEN": "<your-token>",
+        "SLACK_MCP_ADD_MESSAGE_TOOL": "true"
+      }
+    }
+  }
+}
+```
+
+Policies are YAML files you can customise. See the [Intercept docs](https://github.com/policylayer/intercept) for the full reference.
+
 ## Security
 
 - Never share API tokens
