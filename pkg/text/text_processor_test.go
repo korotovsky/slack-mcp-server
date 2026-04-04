@@ -2,7 +2,175 @@ package text
 
 import (
 	"testing"
+
+	"github.com/slack-go/slack"
 )
+
+func TestAttachmentToText(t *testing.T) {
+	tests := []struct {
+		name string
+		att  slack.Attachment
+		want string
+	}{
+		{
+			name: "fields_only",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "Env", Value: "production"},
+				},
+			},
+			want: "Env: production",
+		},
+		{
+			name: "multiple_fields",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "Workflow", Value: "remy-abtest"},
+					{Title: "Env", Value: "production"},
+				},
+			},
+			want: "Workflow: remy-abtest; Env: production",
+		},
+		{
+			name: "fields_with_text",
+			att: slack.Attachment{
+				Text: "deploy started",
+				Fields: []slack.AttachmentField{
+					{Title: "Env", Value: "production"},
+				},
+			},
+			want: "Text: deploy started; Env: production",
+		},
+		{
+			name: "fields_empty_slice",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{},
+			},
+			want: "",
+		},
+		{
+			name: "field_title_only",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "Status", Value: ""},
+				},
+			},
+			want: "Status",
+		},
+		{
+			name: "field_value_only",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "", Value: "running"},
+				},
+			},
+			want: "running",
+		},
+		{
+			name: "fields_with_all_parts",
+			att: slack.Attachment{
+				Title:  "Alert",
+				Text:   "Failed workflow",
+				Fields: []slack.AttachmentField{
+					{Title: "Env", Value: "prod"},
+					{Title: "Version", Value: "v1.9.0"},
+				},
+				Footer: "remy-worker",
+				Ts:     "1775138400",
+			},
+			want: "Title: Alert; Text: Failed workflow; Env: prod; Version: v1.9.0; Footer: remy-worker @ 2026-04-02T14:00:00Z",
+		},
+		{
+			name: "field_value_with_newline",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "Templates", Value: "step1\nstep2"},
+				},
+			},
+			want: "Templates: step1 step2",
+		},
+		{
+			name: "field_both_empty",
+			att: slack.Attachment{
+				Fields: []slack.AttachmentField{
+					{Title: "", Value: ""},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AttachmentToText(tt.att)
+			if got != tt.want {
+				t.Errorf("AttachmentToText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttachmentsTo2CSV(t *testing.T) {
+	tests := []struct {
+		name        string
+		msgText     string
+		attachments []slack.Attachment
+		want        string
+	}{
+		{
+			name:        "empty_attachments",
+			msgText:     "",
+			attachments: []slack.Attachment{},
+			want:        "",
+		},
+		{
+			name:    "single_no_msgtext",
+			msgText: "",
+			attachments: []slack.Attachment{
+				{Title: "hello"},
+			},
+			want: "Title: hello",
+		},
+		{
+			name:    "single_with_msgtext",
+			msgText: "hi",
+			attachments: []slack.Attachment{
+				{Title: "hello"},
+			},
+			want: ". Title: hello",
+		},
+		{
+			name:    "multiple_attachments",
+			msgText: "",
+			attachments: []slack.Attachment{
+				{Title: "first"},
+				{Title: "second"},
+			},
+			want: "Title: first, Title: second",
+		},
+		{
+			name:    "attachment_with_fields",
+			msgText: "",
+			attachments: []slack.Attachment{
+				{
+					Fields: []slack.AttachmentField{
+						{Title: "Env", Value: "prod"},
+					},
+				},
+			},
+			want: "Env: prod",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AttachmentsTo2CSV(tt.msgText, tt.attachments)
+			if got != tt.want {
+				t.Errorf("AttachmentsTo2CSV() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestIsUnfurlingEnabled(t *testing.T) {
 	tests := []struct {
