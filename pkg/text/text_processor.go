@@ -33,6 +33,16 @@ func AttachmentToText(att slack.Attachment) string {
 		parts = append(parts, fmt.Sprintf("Text: %s", att.Text))
 	}
 
+	for _, f := range att.Fields {
+		if f.Title != "" && f.Value != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s", f.Title, f.Value))
+		} else if f.Title != "" {
+			parts = append(parts, f.Title)
+		} else if f.Value != "" {
+			parts = append(parts, f.Value)
+		}
+	}
+
 	if att.Footer != "" {
 		ts, _ := TimestampToIsoRFC3339(string(att.Ts) + ".000000")
 
