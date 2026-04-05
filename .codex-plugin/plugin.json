@@ -1,0 +1,24 @@
+{
+  "name": "slack-mcp-server",
+  "version": "0.1.0",
+  "description": "Slack messaging from Codex via MCP with no permission requirements",
+  "author": {
+    "name": "korotovsky",
+    "url": "https://github.com/korotovsky/slack-mcp-server"
+  },
+  "homepage": "https://github.com/korotovsky/slack-mcp-server",
+  "repository": "https://github.com/korotovsky/slack-mcp-server",
+  "keywords": [
+    "mcp",
+    "codex"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Slack MCP Server",
+    "shortDescription": "Slack messaging from Codex via MCP with no permission requirements",
+    "longDescription": "The most powerful MCP Slack Server with no permission requirements, Apps support, and DMs.",
+    "category": "Communication",
+    "websiteURL": "https://github.com/korotovsky/slack-mcp-server"
+  }
+}

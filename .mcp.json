@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "slack-mcp-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/inspector",
+        "go",
+        "run",
+        "mcp/mcp-server.go",
+        "--transport",
+        "stdio"
+      ]
+    }
+  }
+}
