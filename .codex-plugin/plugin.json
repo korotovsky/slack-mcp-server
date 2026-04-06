@@ -1,0 +1,21 @@
+{
+  "name": "slack-mcp-server",
+  "version": "0.1.0",
+  "description": "The most powerful MCP Slack Server with no permission requirements, Apps support, GovSlack, DMs, Group DMs and smart history fetch logic.",
+  "author": {
+    "name": "Alexander Korotovsky",
+    "url": "https://github.com/korotovsky"
+  },
+  "homepage": "https://github.com/korotovsky/slack-mcp-server",
+  "repository": "https://github.com/korotovsky/slack-mcp-server",
+  "keywords": ["mcp", "codex", "slack", "messaging", "communication"],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Slack Messaging",
+    "shortDescription": "Powerful MCP Slack Server with Apps support",
+    "longDescription": "The most powerful MCP Slack Server with no permission requirements, Apps support, GovSlack, DMs, Group DMs and smart history fetch logic.",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/korotovsky/slack-mcp-server"
+  }
+}

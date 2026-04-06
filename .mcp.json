@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "slack": {
+      "command": "go",
+      "args": ["run", "github.com/korotovsky/slack-mcp-server"]
+    }
+  }
+}
