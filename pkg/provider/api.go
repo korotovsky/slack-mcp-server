@@ -228,11 +228,11 @@ type MCPSlackClient struct {
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
 
-	isEnterprise  bool
-	isOAuth       bool
-	isBotToken    bool
-	edgeFailed    bool // set when edge API fails; subsequent calls skip straight to standard API
-	teamEndpoint  string
+	isEnterprise bool
+	isOAuth      bool
+	isBotToken   bool
+	edgeFailed   bool // set when edge API fails; subsequent calls skip straight to standard API
+	teamEndpoint string
 }
 
 type ApiProvider struct {
@@ -1165,6 +1165,19 @@ func (ap *ApiProvider) IsReady() (bool, error) {
 		return false, ErrChannelsNotReady
 	}
 	return true, nil
+}
+
+// SkipCache marks both users and channels caches as ready without loading
+// any data. Lookups by #channel-name or @username will not work; callers
+// must use channel/user IDs instead.
+func (ap *ApiProvider) SkipCache() {
+	ap.usersMu.Lock()
+	ap.usersReady = true
+	ap.usersMu.Unlock()
+
+	ap.channelsMu.Lock()
+	ap.channelsReady = true
+	ap.channelsMu.Unlock()
 }
 
 func (ap *ApiProvider) ServerTransport() string {

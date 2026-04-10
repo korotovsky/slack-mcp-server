@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server"
@@ -23,10 +22,12 @@ var defaultSsePort = 13080
 func main() {
 	var transport string
 	var enabledToolsFlag string
+	var noCache bool
 	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (empty = all tools)")
+	flag.BoolVar(&noCache, "no-cache", false, "Skip user/channel cache loading on startup for faster initialization. Lookups by #channel-name or @username will not work; use channel/user IDs instead.")
 	flag.Parse()
 
 	if enabledToolsFlag == "" {
@@ -69,20 +70,26 @@ func main() {
 	p := provider.New(transport, logger)
 	s := server.NewMCPServer(p, logger, enabledTools)
 
-	go func() {
-		var once sync.Once
+	if noCache {
+		p.SkipCache()
+		logger.Info("Cache loading disabled via --no-cache flag",
+			zap.String("context", "console"),
+		)
+	} else {
+		go func() {
+			var once sync.Once
 
-		newUsersWatcher(p, &once, logger)()
-		newChannelsWatcher(p, &once, logger)()
-	}()
+			newUsersWatcher(p, &once, logger)()
+			newChannelsWatcher(p, &once, logger)()
+		}()
+	}
 
 	switch transport {
 	case "stdio":
-		for {
-			if ready, _ := p.IsReady(); ready {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+		if ready, _ := p.IsReady(); !ready && !noCache {
+			logger.Info("Slack MCP Server is still warming up caches, starting server anyway",
+				zap.String("context", "console"),
+			)
 		}
 		if err := s.ServeStdio(); err != nil {
 			logger.Fatal("Server error",
