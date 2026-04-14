@@ -98,6 +98,21 @@ func TestAttachmentToText(t *testing.T) {
 			},
 			want: "",
 		},
+		{
+			name: "title_with_link",
+			att: slack.Attachment{
+				Title:     "Error details",
+				TitleLink: "https://sentry.io/issues/123",
+			},
+			want: "Title: [Error details][https://sentry.io/issues/123]",
+		},
+		{
+			name: "title_without_link",
+			att: slack.Attachment{
+				Title: "Plain title",
+			},
+			want: "Title: Plain title",
+		},
 	}
 
 	for _, tt := range tests {

@@ -18,7 +18,11 @@ func AttachmentToText(att slack.Attachment) string {
 	var parts []string
 
 	if att.Title != "" {
-		parts = append(parts, fmt.Sprintf("Title: %s", att.Title))
+		if att.TitleLink != "" {
+			parts = append(parts, fmt.Sprintf("Title: [%s](%s)", att.Title, att.TitleLink))
+		} else {
+			parts = append(parts, fmt.Sprintf("Title: %s", att.Title))
+		}
 	}
 
 	if att.AuthorName != "" {
