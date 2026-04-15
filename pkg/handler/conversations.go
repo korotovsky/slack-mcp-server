@@ -1507,9 +1507,13 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 
 		var attachmentIDs []string
 		for _, f := range msg.Files {
-			attachmentIDs = append(attachmentIDs, f.ID)
+			if f.Name != "" {
+				attachmentIDs = append(attachmentIDs, fmt.Sprintf("%s (%s)", f.ID, f.Name))
+			} else {
+				attachmentIDs = append(attachmentIDs, f.ID)
+			}
 		}
-		attachmentIDsStr := strings.Join(attachmentIDs, ",")
+		attachmentIDsStr := strings.Join(attachmentIDs, ", ")
 
 		messages = append(messages, Message{
 			MsgID:         msg.Timestamp,

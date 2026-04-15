@@ -231,7 +231,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("file_id",
 				mcp.Required(),
-				mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs can be found in message metadata when HasMedia is true or AttachmentCount > 0."),
+				mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs (with filenames) can be found in the AttachmentIDs field of message metadata when FileCount > 0."),
 			),
 		), conversationsHandler.FilesGetHandler)
 	}
