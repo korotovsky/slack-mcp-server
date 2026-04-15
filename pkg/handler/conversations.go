@@ -3,10 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -77,6 +81,33 @@ type addMessageParams struct {
 	threadTs    string
 	text        string
 	contentType string
+}
+
+type uploadFileParams struct {
+	channel        string
+	filePath       string
+	initialComment string
+	threadTs       string
+	title          string
+}
+
+type downloadFilesParams struct {
+	channel   string
+	messageTs string
+	outputDir string
+}
+
+type uploadFileResult struct {
+	FileID    string `json:"file_id"`
+	Title     string `json:"title"`
+	ChannelID string `json:"channel_id"`
+}
+
+type downloadedFile struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Mime      string `json:"mime"`
+	LocalPath string `json:"local_path"`
 }
 
 type ConversationsHandler struct {
@@ -339,6 +370,309 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
 	}
 	return marshalMessagesToCSV(messages)
+}
+
+// ConversationsUploadFileHandler uploads a local file to a Slack channel or DM.
+func (ch *ConversationsHandler) ConversationsUploadFileHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUploadFileHandler called", zap.Any("params", request.Params))
+
+	params, err := ch.parseParamsToolUploadFile(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse upload-file params", zap.Error(err))
+		return nil, err
+	}
+
+	fileInfo, err := os.Stat(params.filePath)
+	if err != nil {
+		ch.logger.Error("Failed to stat file", zap.String("path", params.filePath), zap.Error(err))
+		return nil, fmt.Errorf("failed to stat file %q: %v", params.filePath, err)
+	}
+	if fileInfo.IsDir() {
+		return nil, fmt.Errorf("file_path %q is a directory, not a file", params.filePath)
+	}
+
+	title := params.title
+	if title == "" {
+		title = filepath.Base(params.filePath)
+	}
+
+	uploadParams := slack.UploadFileV2Parameters{
+		Channel:         params.channel,
+		File:            params.filePath,
+		Filename:        filepath.Base(params.filePath),
+		Title:           title,
+		InitialComment:  params.initialComment,
+		ThreadTimestamp: params.threadTs,
+		FileSize:        int(fileInfo.Size()),
+	}
+
+	ch.logger.Debug("Uploading file to Slack",
+		zap.String("channel", params.channel),
+		zap.String("path", params.filePath),
+		zap.Int("size", uploadParams.FileSize),
+		zap.String("thread_ts", params.threadTs),
+	)
+	summary, err := ch.apiProvider.Slack().UploadFileV2Context(ctx, uploadParams)
+	if err != nil {
+		ch.logger.Error("Slack UploadFileV2Context failed", zap.Error(err))
+		return nil, err
+	}
+
+	result := uploadFileResult{
+		FileID:    summary.ID,
+		Title:     summary.Title,
+		ChannelID: params.channel,
+	}
+	out, err := json.Marshal(result)
+	if err != nil {
+		ch.logger.Error("Failed to marshal upload result", zap.Error(err))
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(out)), nil
+}
+
+// ConversationsDownloadFilesHandler downloads all files attached to a Slack
+// message into a local directory and returns the list of saved files as JSON.
+func (ch *ConversationsHandler) ConversationsDownloadFilesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsDownloadFilesHandler called", zap.Any("params", request.Params))
+
+	params, err := ch.parseParamsToolDownloadFiles(request)
+	if err != nil {
+		ch.logger.Error("Failed to parse download-files params", zap.Error(err))
+		return nil, err
+	}
+
+	historyParams := slack.GetConversationHistoryParameters{
+		ChannelID: params.channel,
+		Limit:     1,
+		Oldest:    params.messageTs,
+		Latest:    params.messageTs,
+		Inclusive: true,
+	}
+	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+	if err != nil {
+		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
+		return nil, err
+	}
+	if len(history.Messages) == 0 {
+		ch.logger.Warn("No message found for ts", zap.String("ts", params.messageTs))
+		return mcp.NewToolResultText("[]"), nil
+	}
+
+	msg := history.Messages[0]
+	if len(msg.Files) == 0 {
+		return mcp.NewToolResultText("[]"), nil
+	}
+
+	outputDir := params.outputDir
+	if outputDir == "" {
+		outputDir = filepath.Join("/tmp/slack-files", params.messageTs)
+	}
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		ch.logger.Error("Failed to create output dir", zap.String("dir", outputDir), zap.Error(err))
+		return nil, fmt.Errorf("failed to create output dir %q: %v", outputDir, err)
+	}
+
+	token, cookies := ch.apiProvider.HTTPAuth()
+	if token == "" {
+		return nil, errors.New("no Slack token available for file download")
+	}
+	httpClient := &http.Client{Timeout: 120 * time.Second}
+
+	results := make([]downloadedFile, 0, len(msg.Files))
+	for _, f := range msg.Files {
+		downloadURL := f.URLPrivateDownload
+		if downloadURL == "" {
+			downloadURL = f.URLPrivate
+		}
+		if downloadURL == "" {
+			ch.logger.Warn("File has no download URL", zap.String("file_id", f.ID))
+			continue
+		}
+
+		localName := fmt.Sprintf("%s_%s", f.ID, sanitizeFilename(f.Name))
+		localPath := filepath.Join(outputDir, localName)
+
+		if err := downloadSlackFile(ctx, httpClient, downloadURL, token, cookies, localPath); err != nil {
+			ch.logger.Error("Failed to download file",
+				zap.String("file_id", f.ID),
+				zap.String("url", downloadURL),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("failed to download file %q: %v", f.ID, err)
+		}
+
+		results = append(results, downloadedFile{
+			ID:        f.ID,
+			Name:      f.Name,
+			Mime:      f.Mimetype,
+			LocalPath: localPath,
+		})
+	}
+
+	out, err := json.Marshal(results)
+	if err != nil {
+		ch.logger.Error("Failed to marshal download results", zap.Error(err))
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(out)), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolUploadFile(request mcp.CallToolRequest) (*uploadFileParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_UPLOAD_FILE_TOOL")
+	if toolConfig == "" {
+		ch.logger.Error("Upload-file tool disabled by default")
+		return nil, errors.New(
+			"by default, the conversations_upload_file tool is disabled to guard Slack workspaces against accidental uploads. " +
+				"To enable it, set the SLACK_MCP_UPLOAD_FILE_TOOL environment variable to true, 1, or comma separated list of channels " +
+				"to limit where the MCP can upload files, e.g. 'SLACK_MCP_UPLOAD_FILE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_UPLOAD_FILE_TOOL=!C1234567890' " +
+				"to enable all except one or 'SLACK_MCP_UPLOAD_FILE_TOOL=true' for all channels and DMs",
+		)
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id must be a string")
+	}
+	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+		chn, ok := channelsMaps.ChannelsInv[channel]
+		if !ok {
+			ch.logger.Error("Channel not found", zap.String("channel", channel))
+			return nil, fmt.Errorf("channel %q not found", channel)
+		}
+		channel = channelsMaps.Channels[chn].ID
+	}
+	if !isUploadChannelAllowed(channel) {
+		ch.logger.Warn("Upload-file tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("conversations_upload_file tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	filePath := request.GetString("file_path", "")
+	if filePath == "" {
+		return nil, errors.New("file_path must be a string")
+	}
+	if !filepath.IsAbs(filePath) {
+		return nil, fmt.Errorf("file_path %q must be an absolute path", filePath)
+	}
+
+	threadTs := request.GetString("thread_ts", "")
+	if threadTs != "" && !strings.Contains(threadTs, ".") {
+		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	return &uploadFileParams{
+		channel:        channel,
+		filePath:       filePath,
+		initialComment: request.GetString("initial_comment", ""),
+		threadTs:       threadTs,
+		title:          request.GetString("title", ""),
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolDownloadFiles(request mcp.CallToolRequest) (*downloadFilesParams, error) {
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id must be a string")
+	}
+	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
+		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+		chn, ok := channelsMaps.ChannelsInv[channel]
+		if !ok {
+			ch.logger.Error("Channel not found", zap.String("channel", channel))
+			return nil, fmt.Errorf("channel %q not found", channel)
+		}
+		channel = channelsMaps.Channels[chn].ID
+	}
+
+	messageTs := request.GetString("message_ts", "")
+	if messageTs == "" || !strings.Contains(messageTs, ".") {
+		return nil, errors.New("message_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	return &downloadFilesParams{
+		channel:   channel,
+		messageTs: messageTs,
+		outputDir: request.GetString("output_dir", ""),
+	}, nil
+}
+
+func isUploadChannelAllowed(channel string) bool {
+	config := os.Getenv("SLACK_MCP_UPLOAD_FILE_TOOL")
+	if config == "" || config == "true" || config == "1" {
+		return config != ""
+	}
+	items := strings.Split(config, ",")
+	isNegated := strings.HasPrefix(strings.TrimSpace(items[0]), "!")
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if isNegated {
+			if strings.TrimPrefix(item, "!") == channel {
+				return false
+			}
+		} else {
+			if item == channel {
+				return true
+			}
+		}
+	}
+	return isNegated
+}
+
+func sanitizeFilename(name string) string {
+	if name == "" {
+		return "file"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.' || r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "file"
+	}
+	return out
+}
+
+func downloadSlackFile(ctx context.Context, client *http.Client, url, token string, cookies []*http.Cookie, localPath string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	out, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return err
+	}
+	return nil
 }
 
 func isChannelAllowed(channel string) bool {

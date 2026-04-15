@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,7 @@ type SlackAPI interface {
 	GetUsersInfo(users ...string) (*[]slack.User, error)
 	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
+	UploadFileV2Context(ctx context.Context, params slack.UploadFileV2Parameters) (*slack.FileSummary, error)
 
 	// Used to get messages
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
@@ -284,6 +286,10 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
 }
 
+func (c *MCPSlackClient) UploadFileV2Context(ctx context.Context, params slack.UploadFileV2Parameters) (*slack.FileSummary, error) {
+	return c.slackClient.UploadFileV2Context(ctx, params)
+}
+
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
 	return c.edgeClient.ClientUserBoot(ctx)
 }
@@ -298,6 +304,16 @@ func (c *MCPSlackClient) AuthResponse() *slack.AuthTestResponse {
 
 func (c *MCPSlackClient) IsBotToken() bool {
 	return c.isBotToken
+}
+
+// Token returns the Slack token held by the auth provider.
+func (c *MCPSlackClient) Token() string {
+	return c.authProvider.SlackToken()
+}
+
+// Cookies returns the Slack session cookies held by the auth provider.
+func (c *MCPSlackClient) Cookies() []*http.Cookie {
+	return c.authProvider.Cookies()
 }
 
 func (c *MCPSlackClient) Raw() struct {
@@ -758,6 +774,17 @@ func (ap *ApiProvider) ServerTransport() string {
 
 func (ap *ApiProvider) Slack() SlackAPI {
 	return ap.client
+}
+
+// HTTPAuth returns the Slack token and session cookies for raw HTTP calls
+// (e.g. downloading files). Returns empty values when the underlying client
+// is not initialized (demo mode).
+func (ap *ApiProvider) HTTPAuth() (token string, cookies []*http.Cookie) {
+	client, ok := ap.client.(*MCPSlackClient)
+	if !ok || client == nil {
+		return "", nil
+	}
+	return client.Token(), client.Cookies()
 }
 
 func (ap *ApiProvider) IsBotToken() bool {
