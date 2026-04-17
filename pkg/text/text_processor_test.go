@@ -248,15 +248,15 @@ func TestProcessText_PreservesContent(t *testing.T) {
 			expected: "okmessage with\ntabs",
 		},
 		{
-			name: "twelve URLs in one message (regression for placeholder bug)",
-			input: "see https://a.example/1 and https://b.example/2 and https://c.example/3 " +
-				"and https://d.example/4 and https://e.example/5 and https://f.example/6 " +
-				"and https://g.example/7 and https://h.example/8 and https://i.example/9 " +
-				"and https://j.example/10 and https://k.example/11 and https://l.example/12",
-			expected: "see https://a.example/1 and https://b.example/2 and https://c.example/3 " +
-				"and https://d.example/4 and https://e.example/5 and https://f.example/6 " +
-				"and https://g.example/7 and https://h.example/8 and https://i.example/9 " +
-				"and https://j.example/10 and https://k.example/11 and https://l.example/12",
+			name: "twelve Slack-style links in one message (regression for placeholder bug)",
+			input: "see <https://a.example/1|one> and <https://b.example/2|two> and <https://c.example/3|three> " +
+				"and <https://d.example/4|four> and <https://e.example/5|five> and <https://f.example/6|six> " +
+				"and <https://g.example/7|seven> and <https://h.example/8|eight> and <https://i.example/9|nine> " +
+				"and <https://j.example/10|ten> and <https://k.example/11|eleven> and <https://l.example/12|twelve>",
+			expected: "see https://a.example/1 - one, and https://b.example/2 - two, and https://c.example/3 - three, " +
+				"and https://d.example/4 - four, and https://e.example/5 - five, and https://f.example/6 - six, " +
+				"and https://g.example/7 - seven, and https://h.example/8 - eight, and https://i.example/9 - nine, " +
+				"and https://j.example/10 - ten, and https://k.example/11 - eleven, and https://l.example/12 - twelve",
 		},
 	}
 
