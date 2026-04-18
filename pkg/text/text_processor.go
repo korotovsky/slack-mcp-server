@@ -236,8 +236,11 @@ func normalizeLinks(text string) string {
 }
 
 // stripUnsafeRunes removes runes that are display-corrupting or carry no
-// semantic content: C0/C1 controls (except \t \n \r), DEL, BOM, zero-width
-// joiners, and bidi overrides (a known prompt-injection vector in chat corpora).
+// semantic content: C0/C1 controls (except \t \n \r), DEL, BOM, ZWSP,
+// LRM/RLM, bidi overrides, and bidi isolates. Bidi overrides are a known
+// prompt-injection vector in chat corpora. U+200C (ZWNJ) and U+200D (ZWJ)
+// are preserved: they are required for Persian and Arabic letter joining
+// and for emoji ZWJ sequences such as family and flag emoji.
 func stripUnsafeRunes(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -251,7 +254,7 @@ func stripUnsafeRunes(s string) string {
 			continue
 		case r == 0xFEFF:
 			continue
-		case r >= 0x200B && r <= 0x200F:
+		case r == 0x200B, r == 0x200E, r == 0x200F: // ZWSP, LRM, RLM; U+200C ZWNJ and U+200D ZWJ preserved
 			continue
 		case r >= 0x202A && r <= 0x202E:
 			continue

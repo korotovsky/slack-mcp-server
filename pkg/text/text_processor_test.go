@@ -238,9 +238,24 @@ func TestProcessText_PreservesContent(t *testing.T) {
 			expected: "safetext",
 		},
 		{
-			name:     "strips zero-width joiner and BOM",
+			name:     "strips ZWSP and BOM",
 			input:    "a\u200bb\ufeffc",
 			expected: "abc",
+		},
+		{
+			name:     "preserves ZWJ in family emoji sequence",
+			input:    "hi \U0001F468\u200D\U0001F469\u200D\U0001F467 bye",
+			expected: "hi \U0001F468\u200D\U0001F469\u200D\U0001F467 bye",
+		},
+		{
+			name:     "preserves ZWJ and VS16 in rainbow flag",
+			input:    "\U0001F3F3\uFE0F\u200D\U0001F308",
+			expected: "\U0001F3F3\uFE0F\u200D\U0001F308",
+		},
+		{
+			name:     "preserves ZWNJ in Persian text",
+			input:    "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+			expected: "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
 		},
 		{
 			name:     "strips DEL and C0 controls; tabs collapse to space, newlines kept",
