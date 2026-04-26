@@ -200,7 +200,7 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 	}, nil
 }
 
-// ConversationsAddMessageHandler posts a message and returns it as CSV
+// ConversationsAddMessageHandler posts a message and returns a confirmation
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
@@ -266,23 +266,10 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		}
 	}
 
-	// fetch the single message we just posted
-	historyParams := slack.GetConversationHistoryParameters{
-		ChannelID: respChannel,
-		Limit:     1,
-		Oldest:    respTimestamp,
-		Latest:    respTimestamp,
-		Inclusive: true,
+	if params.threadTs != "" {
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)", respChannel, params.threadTs, respTimestamp)), nil
 	}
-	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
-	if err != nil {
-		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
-		return nil, err
-	}
-	ch.logger.Debug("Fetched conversation history", zap.Int("message_count", len(history.Messages)))
-
-	messages := ch.convertMessagesFromHistory(history.Messages, historyParams.ChannelID, false)
-	return marshalMessagesToCSV(messages)
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)", respChannel, respTimestamp)), nil
 }
 
 // ReactionsAddHandler adds an emoji reaction to a message
