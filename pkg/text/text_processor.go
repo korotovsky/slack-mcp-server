@@ -18,7 +18,11 @@ func AttachmentToText(att slack.Attachment) string {
 	var parts []string
 
 	if att.Title != "" {
-		parts = append(parts, fmt.Sprintf("Title: %s", att.Title))
+		if att.TitleLink != "" {
+			parts = append(parts, fmt.Sprintf("Title: %s (%s)", att.Title, att.TitleLink))
+		} else {
+			parts = append(parts, fmt.Sprintf("Title: %s", att.Title))
+		}
 	}
 
 	if att.AuthorName != "" {
@@ -225,6 +229,16 @@ func filterSpecialChars(text string) string {
 	slackLinkRegex := regexp.MustCompile(`<(https?://[^>|]+)\|([^>]+)>`)
 	slackMatches := slackLinkRegex.FindAllStringSubmatch(text, -1)
 	for _, match := range slackMatches {
+		original := match[0]
+		isLast := isLastInText(original, text)
+		replacement := replaceWithCommaCheck(match, isLast)
+		text = strings.Replace(text, original, replacement, 1)
+	}
+
+	// Handle markdown links with angle-bracket URLs: [text](<url>)
+	markdownAngleRegex := regexp.MustCompile(`\[([^\]]+)\]\(<([^)]+)>\)`)
+	markdownAngleMatches := markdownAngleRegex.FindAllStringSubmatch(text, -1)
+	for _, match := range markdownAngleMatches {
 		original := match[0]
 		isLast := isLastInText(original, text)
 		replacement := replaceWithCommaCheck(match, isLast)

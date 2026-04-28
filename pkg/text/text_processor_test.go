@@ -149,6 +149,16 @@ func TestFilterSpecialCharsWithCommas(t *testing.T) {
 			input:    "Check this [Google](https://google.com) out",
 			expected: "Check this https://google.com - Google, out",
 		},
+		{
+			name:     "Markdown link with angle-bracket URL",
+			input:    "Check this [Read timeout](<https://sentry.io/issues/123>)",
+			expected: "Check this https://sentry.io/issues/123 - Read timeout",
+		},
+		{
+			name:     "Markdown link with angle-bracket URL in middle",
+			input:    "Error [Read timeout](<https://sentry.io/issues/123>) occurred",
+			expected: "Error https://sentry.io/issues/123 - Read timeout, occurred",
+		},
 	}
 
 	for _, tt := range tests {
