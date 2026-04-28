@@ -266,7 +266,7 @@ func filterSpecialChars(text string) string {
 		protected = strings.Replace(protected, url, placeholder, 1)
 	}
 
-	cleanRegex := regexp.MustCompile(`[^0-9\p{L}\p{M}\s\.\,\-_:/\?=&%]`)
+	cleanRegex := regexp.MustCompile(`[^0-9\p{L}\p{M}\p{Zs}\s\.\,\-_:/\?=&%！-～]`)
 	cleaned := cleanRegex.ReplaceAllString(protected, "")
 
 	// Restore the URLs
