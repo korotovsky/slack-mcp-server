@@ -44,8 +44,6 @@ func AttachmentToText(att slack.Attachment) string {
 	result = strings.ReplaceAll(result, "\n", " ")
 	result = strings.ReplaceAll(result, "\r", " ")
 	result = strings.ReplaceAll(result, "\t", " ")
-	result = strings.ReplaceAll(result, "(", "[")
-	result = strings.ReplaceAll(result, ")", "]")
 	result = strings.TrimSpace(result)
 
 	return result
