@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1150,6 +1151,55 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 func (ap *ApiProvider) ProvideUsersMap() *UsersCache {
 	// Atomic load - no lock needed, snapshot is immutable
 	return ap.usersSnapshot.Load()
+}
+
+// PatchUser fetches a single user via users.info API and patches the in-memory cache.
+// This enables O(1) recovery for cache misses without triggering a full cache rebuild.
+func (ap *ApiProvider) PatchUser(ctx context.Context, userID string) error {
+	if userID == "" {
+		return fmt.Errorf("user ID is required")
+	}
+
+	// Fetch fresh user data from Slack API
+	usersInfo, err := ap.client.GetUsersInfo(userID)
+	if err != nil {
+		ap.logger.Debug("Failed to fetch user info",
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return err
+	}
+	if len(*usersInfo) == 0 {
+		return fmt.Errorf("user %q not found", userID)
+	}
+	user := (*usersInfo)[0]
+
+	// Load current snapshot
+	currentSnapshot := ap.usersSnapshot.Load()
+
+	// Create new snapshot with patched user
+	newSnapshot := &UsersCache{
+		Users:    make(map[string]slack.User, len(currentSnapshot.Users)+1),
+		UsersInv: make(map[string]string, len(currentSnapshot.UsersInv)+1),
+	}
+	for k, v := range currentSnapshot.Users {
+		newSnapshot.Users[k] = v
+	}
+	for k, v := range currentSnapshot.UsersInv {
+		newSnapshot.UsersInv[k] = v
+	}
+
+	// Apply patch
+	newSnapshot.Users[user.ID] = user
+	newSnapshot.UsersInv[user.Name] = user.ID
+
+	// Atomically replace snapshot
+	ap.usersSnapshot.Store(newSnapshot)
+
+	ap.logger.Debug("Patched user cache",
+		zap.String("user_id", userID),
+		zap.String("user_name", user.Name))
+
+	return nil
 }
 
 func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {

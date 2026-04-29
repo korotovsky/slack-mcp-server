@@ -1473,7 +1473,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 			continue
 		}
 
-		userName, realName, ok := getUserInfo(msg.User, usersMap.Users)
+		userName, realName, ok := getUserInfo(ch, msg.User, usersMap.Users)
 
 		if !ok && msg.SubType == "bot_message" {
 			userName, realName, ok = getBotInfo(msg.Username)
@@ -1545,7 +1545,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(slackMessages []slack.
 	warn := false
 
 	for _, msg := range slackMessages {
-		userName, realName, ok := getUserInfo(msg.User, usersMap.Users)
+		userName, realName, ok := getUserInfo(ch, msg.User, usersMap.Users)
 
 		if !ok && msg.User == "" && msg.Username != "" {
 			userName, realName, ok = getBotInfo(msg.Username)
@@ -1971,6 +1971,13 @@ func (ch *ConversationsHandler) paramFormatUser(raw string) (string, error) {
 	if isSlackUserIDPrefix(raw) {
 		u, ok := users.Users[raw]
 		if !ok {
+			// Attempt to recover from cache miss by fetching user via users.info
+			if err := ch.apiProvider.PatchUser(context.Background(), raw); err == nil {
+				users = ch.apiProvider.ProvideUsersMap()
+				if u, ok = users.Users[raw]; ok {
+					return fmt.Sprintf("<@%s>", u.ID), nil
+				}
+			}
 			return "", fmt.Errorf("user %q not found", raw)
 		}
 		return fmt.Sprintf("<@%s>", u.ID), nil
@@ -2015,9 +2022,16 @@ func marshalMessagesToCSV(messages []Message) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
-func getUserInfo(userID string, usersMap map[string]slack.User) (userName, realName string, ok bool) {
+func getUserInfo(ch *ConversationsHandler, userID string, usersMap map[string]slack.User) (userName, realName string, ok bool) {
 	if u, ok := usersMap[userID]; ok {
 		return u.Name, u.RealName, true
+	}
+	// Attempt to recover from cache miss by fetching user via users.info
+	if err := ch.apiProvider.PatchUser(context.Background(), userID); err == nil {
+		usersMap = ch.apiProvider.ProvideUsersMap().Users
+		if u, ok := usersMap[userID]; ok {
+			return u.Name, u.RealName, true
+		}
 	}
 	return userID, userID, false
 }
