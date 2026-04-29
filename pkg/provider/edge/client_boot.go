@@ -541,7 +541,7 @@ type Prefs struct {
 	SsoDisableEmails                                               bool                           `json:"sso_disable_emails"`
 	SsoOptional                                                    bool                           `json:"sso_optional"`
 	SsoSignupRestrictions                                          int64                          `json:"sso_signup_restrictions"`
-	SsoSyncWithProvider                                            bool                           `json:"sso_sync_with_provider"`
+	SsoSyncWithProvider                                            json.RawMessage `json:"sso_sync_with_provider"`
 	StatsOnlyAdmins                                                bool                           `json:"stats_only_admins"`
 	SubteamsAutoCreateAdmin                                        bool                           `json:"subteams_auto_create_admin"`
 	SubteamsAutoCreateOwner                                        bool                           `json:"subteams_auto_create_owner"`
