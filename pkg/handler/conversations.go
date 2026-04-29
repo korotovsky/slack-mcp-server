@@ -44,20 +44,21 @@ var validFilterKeys = map[string]struct{}{
 }
 
 type Message struct {
-	MsgID         string `json:"msgID"`
-	UserID        string `json:"userID"`
-	UserName      string `json:"userUser"`
-	RealName      string `json:"realName"`
-	Channel       string `json:"channelID"`
-	ThreadTs      string `json:"ThreadTs"`
-	Text          string `json:"text"`
-	Time          string `json:"time"`
-	Reactions     string `json:"reactions,omitempty"`
-	BotName       string `json:"botName,omitempty"`
-	FileCount     int    `json:"fileCount,omitempty"`
-	AttachmentIDs string `json:"attachmentIDs,omitempty"`
-	HasMedia      bool   `json:"hasMedia,omitempty"`
-	Cursor        string `json:"cursor"`
+	MsgID          string `json:"msgID"`
+	UserID         string `json:"userID"`
+	UserName       string `json:"userUser"`
+	RealName       string `json:"realName"`
+	Channel        string `json:"channelID"`
+	ThreadTs       string `json:"ThreadTs"`
+	Text           string `json:"text"`
+	Time           string `json:"time"`
+	Reactions      string `json:"reactions,omitempty"`
+	BotName        string `json:"botName,omitempty"`
+	FileCount      int    `json:"fileCount,omitempty"`
+	AttachmentIDs  string `json:"attachmentIDs,omitempty"`
+	AttachmentInfo string `json:"attachmentInfo,omitempty"`
+	HasMedia       bool   `json:"hasMedia,omitempty"`
+	Cursor         string `json:"cursor"`
 }
 
 type User struct {
@@ -1506,25 +1507,31 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(slackMessages []slack
 		hasMedia := fileCount > 0 || hasImageBlocks(msg.Blocks)
 
 		var attachmentIDs []string
+		var attachmentInfoParts []string
 		for _, f := range msg.Files {
 			attachmentIDs = append(attachmentIDs, f.ID)
+			// Include file_id, name, mimetype, and size for attachment access
+			info := fmt.Sprintf("%s (file_id: %s, filetype: %s, size: %d)", f.Name, f.ID, f.Mimetype, f.Size)
+			attachmentInfoParts = append(attachmentInfoParts, info)
 		}
 		attachmentIDsStr := strings.Join(attachmentIDs, ",")
+		attachmentInfoStr := strings.Join(attachmentInfoParts, ", ")
 
 		messages = append(messages, Message{
-			MsgID:         msg.Timestamp,
-			UserID:        msg.User,
-			UserName:      userName,
-			RealName:      realName,
-			Text:          text.ProcessText(msgText),
-			Channel:       channel,
-			ThreadTs:      msg.ThreadTimestamp,
-			Time:          timestamp,
-			Reactions:     reactionsString,
-			BotName:       botName,
-			FileCount:     fileCount,
-			AttachmentIDs: attachmentIDsStr,
-			HasMedia:      hasMedia,
+			MsgID:          msg.Timestamp,
+			UserID:         msg.User,
+			UserName:       userName,
+			RealName:       realName,
+			Text:           text.ProcessText(msgText),
+			Channel:        channel,
+			ThreadTs:       msg.ThreadTimestamp,
+			Time:           timestamp,
+			Reactions:      reactionsString,
+			BotName:        botName,
+			FileCount:      fileCount,
+			AttachmentIDs:  attachmentIDsStr,
+			AttachmentInfo: attachmentInfoStr,
+			HasMedia:       hasMedia,
 		})
 	}
 
