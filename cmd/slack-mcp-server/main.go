@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server"
@@ -76,14 +75,11 @@ func main() {
 		newChannelsWatcher(p, &once, logger)()
 	}()
 
-	switch transport {
+switch transport {
 	case "stdio":
-		for {
-			if ready, _ := p.IsReady(); ready {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		// Start serving immediately without waiting for cache warmup.
+		// This allows MCP initialize and tools/list to respond immediately
+		// while caching happens in the background.
 		if err := s.ServeStdio(); err != nil {
 			logger.Fatal("Server error",
 				zap.String("context", "console"),
