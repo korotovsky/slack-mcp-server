@@ -183,6 +183,13 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.DefaultString("text/markdown"),
 				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
 			),
+			mcp.WithArray("blocks",
+				mcp.Description("Optional raw Slack Block Kit blocks array. When provided, blocks are sent directly to Slack and text/payload is used only as fallback text."),
+				mcp.Items(map[string]any{
+					"type":                 "object",
+					"additionalProperties": true,
+				}),
+			),
 		), conversationsHandler.ConversationsAddMessageHandler)
 	}
 

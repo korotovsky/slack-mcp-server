@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -96,6 +97,27 @@ type addMessageParams struct {
 	threadTs    string
 	text        string
 	contentType string
+	blocks      []slack.Block
+}
+
+type rawSlackBlock map[string]any
+
+func (b rawSlackBlock) BlockType() slack.MessageBlockType {
+	if blockType, ok := b["type"].(string); ok {
+		return slack.MessageBlockType(blockType)
+	}
+	return ""
+}
+
+func (b rawSlackBlock) ID() string {
+	if id, ok := b["block_id"].(string); ok {
+		return id
+	}
+	return ""
+}
+
+func (b rawSlackBlock) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any(b))
 }
 
 type addReactionParams struct {
@@ -221,21 +243,28 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		options = append(options, slack.MsgOptionTS(params.threadTs))
 	}
 
-	switch params.contentType {
-	case "text/plain":
-		options = append(options, slack.MsgOptionDisableMarkdown())
-		options = append(options, slack.MsgOptionText(params.text, false))
-	case "text/markdown":
-		blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
-		if err != nil {
-			ch.logger.Warn("Markdown parsing error", zap.Error(err))
+	if len(params.blocks) > 0 {
+		if params.text != "" {
+			options = append(options, slack.MsgOptionText(params.text, false))
+		}
+		options = append(options, slack.MsgOptionBlocks(params.blocks...))
+	} else {
+		switch params.contentType {
+		case "text/plain":
 			options = append(options, slack.MsgOptionDisableMarkdown())
 			options = append(options, slack.MsgOptionText(params.text, false))
-		} else {
-			options = append(options, slack.MsgOptionBlocks(blocks...))
+		case "text/markdown":
+			blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+			if err != nil {
+				ch.logger.Warn("Markdown parsing error", zap.Error(err))
+				options = append(options, slack.MsgOptionDisableMarkdown())
+				options = append(options, slack.MsgOptionText(params.text, false))
+			} else {
+				options = append(options, slack.MsgOptionBlocks(blocks...))
+			}
+		default:
+			return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
 		}
-	default:
-		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
 	}
 
 	unfurlOpt := os.Getenv("SLACK_MCP_ADD_MESSAGE_UNFURLING")
@@ -1698,9 +1727,14 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		// Backward compatibility with "payload" parameter
 		msgText = request.GetString("payload", "")
 	}
-	if msgText == "" {
-		ch.logger.Error("Message text missing")
-		return nil, errors.New("text must be a string")
+	blocks, err := parseRawBlocks(request)
+	if err != nil {
+		ch.logger.Error("Invalid blocks", zap.Error(err))
+		return nil, err
+	}
+	if msgText == "" && len(blocks) == 0 {
+		ch.logger.Error("Message text and blocks missing")
+		return nil, errors.New("text or blocks must be provided")
 	}
 
 	contentType := request.GetString("content_type", "text/markdown")
@@ -1714,7 +1748,41 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		threadTs:    threadTs,
 		text:        msgText,
 		contentType: contentType,
+		blocks:      blocks,
 	}, nil
+}
+
+func parseRawBlocks(request mcp.CallToolRequest) ([]slack.Block, error) {
+	args := request.GetArguments()
+	if args == nil {
+		return nil, nil
+	}
+	blocksArg, ok := args["blocks"]
+	if !ok || blocksArg == nil {
+		return nil, nil
+	}
+
+	blocksJSON, err := json.Marshal(blocksArg)
+	if err != nil {
+		return nil, fmt.Errorf("blocks must be valid JSON: %w", err)
+	}
+
+	var rawBlocks []rawSlackBlock
+	if err := json.Unmarshal(blocksJSON, &rawBlocks); err != nil {
+		return nil, fmt.Errorf("blocks must be an array of Slack Block Kit block objects: %w", err)
+	}
+	if len(rawBlocks) == 0 {
+		return nil, errors.New("blocks must not be empty when provided")
+	}
+
+	blocks := make([]slack.Block, 0, len(rawBlocks))
+	for i, block := range rawBlocks {
+		if block.BlockType() == "" {
+			return nil, fmt.Errorf("blocks[%d].type is required", i)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks, nil
 }
 
 func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, request mcp.CallToolRequest) (*addReactionParams, error) {
