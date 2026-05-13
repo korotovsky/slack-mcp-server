@@ -100,6 +100,7 @@ func TestValidToolNames(t *testing.T) {
 			ToolReactionsAdd:                true,
 			ToolReactionsRemove:             true,
 			ToolAttachmentGetData:           true,
+			ToolFilesUpload:                 true,
 			ToolConversationsSearchMessages: true,
 			ToolConversationsUnreads:        true,
 			ToolConversationsMark:           true,
@@ -126,6 +127,7 @@ func TestValidToolNames(t *testing.T) {
 		assert.Equal(t, "reactions_add", ToolReactionsAdd)
 		assert.Equal(t, "reactions_remove", ToolReactionsRemove)
 		assert.Equal(t, "attachment_get_data", ToolAttachmentGetData)
+		assert.Equal(t, "files_upload", ToolFilesUpload)
 		assert.Equal(t, "conversations_search_messages", ToolConversationsSearchMessages)
 		assert.Equal(t, "conversations_unreads", ToolConversationsUnreads)
 		assert.Equal(t, "conversations_mark", ToolConversationsMark)
@@ -297,6 +299,32 @@ func TestShouldAddTool_WriteTool_Attachment(t *testing.T) {
 
 		result := shouldAddTool(ToolAttachmentGetData, []string{ToolAttachmentGetData}, "SLACK_MCP_ATTACHMENT_TOOL")
 		assert.True(t, result, "attachment_get_data should be registered when explicitly in enabledTools")
+	})
+}
+
+func TestShouldAddTool_WriteTool_FileUpload(t *testing.T) {
+	t.Run("empty enabledTools and no env var - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_FILE_UPLOAD_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddTool(ToolFilesUpload, []string{}, "SLACK_MCP_FILE_UPLOAD_TOOL")
+		assert.False(t, result, "files_upload should NOT be registered when env var is not set")
+	})
+
+	t.Run("empty enabledTools and env var set - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_FILE_UPLOAD_TOOL", "true")
+		defer cleanup()
+
+		result := shouldAddTool(ToolFilesUpload, []string{}, "SLACK_MCP_FILE_UPLOAD_TOOL")
+		assert.True(t, result, "files_upload should be registered when env var is set")
+	})
+
+	t.Run("explicit enabledTools includes tool - registered without env var", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_FILE_UPLOAD_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddTool(ToolFilesUpload, []string{ToolFilesUpload}, "SLACK_MCP_FILE_UPLOAD_TOOL")
+		assert.True(t, result, "files_upload should be registered when explicitly in enabledTools")
 	})
 }
 

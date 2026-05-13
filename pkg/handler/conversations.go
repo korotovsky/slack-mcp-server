@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -106,6 +108,16 @@ type addReactionParams struct {
 
 type filesGetParams struct {
 	fileID string
+}
+
+type fileUploadParams struct {
+	channel        string
+	threadTs       string
+	filePath       string
+	contentBase64  string
+	filename       string
+	title          string
+	initialComment string
 }
 
 type usersSearchParams struct {
@@ -481,6 +493,83 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		escapeJSON(contentStr))
 
 	return mcp.NewToolResultText(result), nil
+}
+
+func (ch *ConversationsHandler) FilesUploadHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesUploadHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolFilesUpload(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse files_upload params", zap.Error(err))
+		return nil, err
+	}
+
+	uploadParams := slack.UploadFileV2Parameters{
+		Filename:        params.filename,
+		Title:           params.title,
+		Channel:         params.channel,
+		InitialComment:  params.initialComment,
+		ThreadTimestamp: params.threadTs,
+	}
+
+	if params.filePath != "" {
+		info, err := os.Stat(params.filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to stat file_path: %w", err)
+		}
+		if info.IsDir() {
+			return nil, errors.New("file_path must point to a file, not a directory")
+		}
+		if info.Size() <= 0 {
+			return nil, errors.New("file size cannot be 0")
+		}
+		if info.Size() > int64(^uint(0)>>1) {
+			return nil, fmt.Errorf("file size %d bytes exceeds supported upload size", info.Size())
+		}
+		uploadParams.File = params.filePath
+		uploadParams.FileSize = int(info.Size())
+	} else {
+		content, err := base64.StdEncoding.DecodeString(params.contentBase64)
+		if err != nil {
+			return nil, fmt.Errorf("content_base64 must be valid base64: %w", err)
+		}
+		if len(content) == 0 {
+			return nil, errors.New("content_base64 decodes to an empty file")
+		}
+		uploadParams.Reader = bytes.NewReader(content)
+		uploadParams.FileSize = len(content)
+	}
+
+	ch.logger.Debug("Uploading Slack file",
+		zap.String("channel", params.channel),
+		zap.String("filename", params.filename),
+		zap.Int("size", uploadParams.FileSize),
+	)
+	file, err := ch.apiProvider.Slack().UploadFileV2Context(ctx, uploadParams)
+	if err != nil {
+		ch.logger.Error("Slack UploadFileV2Context failed", zap.Error(err))
+		return nil, err
+	}
+
+	resultBytes, err := json.Marshal(struct {
+		FileID  string `json:"file_id"`
+		Title   string `json:"title"`
+		Channel string `json:"channel_id"`
+	}{
+		FileID:  file.ID,
+		Title:   file.Title,
+		Channel: params.channel,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(string(resultBytes)), nil
 }
 
 func isTextMimetype(mimetype string) bool {
@@ -1791,6 +1880,75 @@ func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequ
 
 	return &filesGetParams{
 		fileID: fileID,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, request mcp.CallToolRequest) (*fileUploadParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_FILE_UPLOAD_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !strings.Contains(enabledTools, "files_upload") {
+			ch.logger.Error("File upload tool disabled by default")
+			return nil, errors.New(
+				"by default, the files_upload tool is disabled to guard Slack workspaces against accidental file uploads. " +
+					"To enable it, set the SLACK_MCP_FILE_UPLOAD_TOOL environment variable to true, 1, or comma separated list of channels " +
+					"to limit where the MCP can upload files, e.g. 'SLACK_MCP_FILE_UPLOAD_TOOL=C1234567890,D0987654321', 'SLACK_MCP_FILE_UPLOAD_TOOL=!C1234567890' " +
+					"to enable all except one or 'SLACK_MCP_FILE_UPLOAD_TOOL=true' for all channels and DMs",
+			)
+		}
+		toolConfig = "true"
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+	if !isChannelAllowedForConfig(channel, toolConfig) {
+		ch.logger.Warn("File upload tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("files_upload tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	threadTs := request.GetString("thread_ts", "")
+	if threadTs != "" && !strings.Contains(threadTs, ".") {
+		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	filePath := strings.TrimSpace(request.GetString("file_path", ""))
+	contentBase64 := strings.TrimSpace(request.GetString("content_base64", ""))
+	if filePath == "" && contentBase64 == "" {
+		return nil, errors.New("either file_path or content_base64 is required")
+	}
+	if filePath != "" && contentBase64 != "" {
+		return nil, errors.New("provide only one of file_path or content_base64")
+	}
+
+	filename := strings.TrimSpace(request.GetString("filename", ""))
+	if filename == "" && filePath != "" {
+		filename = filepath.Base(filePath)
+	}
+	if filename == "" {
+		return nil, errors.New("filename is required when content_base64 is provided")
+	}
+
+	title := strings.TrimSpace(request.GetString("title", ""))
+	if title == "" {
+		title = filename
+	}
+
+	return &fileUploadParams{
+		channel:        channel,
+		threadTs:       threadTs,
+		filePath:       filePath,
+		contentBase64:  contentBase64,
+		filename:       filename,
+		title:          title,
+		initialComment: request.GetString("initial_comment", ""),
 	}, nil
 }
 
