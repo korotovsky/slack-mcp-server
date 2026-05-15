@@ -4,6 +4,7 @@ services:
         context: .
         target: dev
         dockerfile: Dockerfile
+    entrypoint: []
     command: /dlv debug /app/cmd/slack-mcp-server/main.go --accept-multiclient --headless --listen=:40000 --api-version=2 --log -- --transport sse
     restart: unless-stopped
     networks:

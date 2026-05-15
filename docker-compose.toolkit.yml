@@ -4,7 +4,8 @@ services:
         context: .
         target: production
         dockerfile: Dockerfile
-    # Uncomment to have delve debug on port 40000
+    # Uncomment below to have delve debug on port 40000
+    # entrypoint: []
     # command: /dlv debug /app/cmd/slack-mcp-server/main.go --headless --listen=:40000 --api-version=2 --log -- --transport sse
     restart: unless-stopped
     networks:
