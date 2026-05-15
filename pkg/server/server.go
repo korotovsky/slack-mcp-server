@@ -47,6 +47,7 @@ const (
 	ToolSavedList                   = "saved_list"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
+	ToolFilesList                   = "files_list"
 )
 
 var ValidToolNames = []string{
@@ -72,6 +73,7 @@ var ValidToolNames = []string{
 	ToolSavedList,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
+	ToolFilesList,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -313,6 +315,31 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Maximum number of results to return (1-100). Default is 10."),
 			),
 		), conversationsHandler.UsersSearchHandler)
+	}
+
+	if shouldAddTool(ToolFilesList, enabledTools, "SLACK_MCP_FILES_LIST_TOOL") {
+		s.AddTool(mcp.NewTool(ToolFilesList,
+			mcp.WithDescription("List files shared in a Slack channel or workspace. Returns file metadata including ID, name, type, size, uploader, and permalink. Use the file_id from results with attachment_get_data to download file content. The last row cursor column is used for pagination."),
+			mcp.WithTitleAnnotation("List Files"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Description("Filter files by channel ID (format Cxxxxxxxxxx) or channel name (e.g. #general). If omitted, lists files across all channels."),
+			),
+			mcp.WithString("user_id",
+				mcp.Description("Filter files uploaded by a specific user ID (format Uxxxxxxxxxx)."),
+			),
+			mcp.WithString("types",
+				mcp.DefaultString("all"),
+				mcp.Description("Filter by file type. Comma-separated values: all, spaces, snippets, images, gdocs, zips, pdfs. Default is all."),
+			),
+			mcp.WithString("limit",
+				mcp.DefaultString("50"),
+				mcp.Description("Maximum number of files to return (1-200). Default is 50."),
+			),
+			mcp.WithString("cursor",
+				mcp.Description("Cursor for pagination. Use the value from the last row cursor column returned by the previous request."),
+			),
+		), conversationsHandler.FilesListHandler)
 	}
 
 	// Register unreads tool - gets all unread messages across channels efficiently.
