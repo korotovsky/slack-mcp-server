@@ -14,6 +14,8 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
+var UserMentionRegex = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]+)?>`)
+
 func AttachmentToText(att slack.Attachment) string {
 	var parts []string
 

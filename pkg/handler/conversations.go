@@ -1599,7 +1599,7 @@ func (ch *ConversationsHandler) convertMessagesFromHistory(ctx context.Context, 
 			UserID:        msg.User,
 			UserName:      userName,
 			RealName:      realName,
-			Text:          text.ProcessText(msgText),
+			Text:          processText(msgText, resolver.usersMap.Users),
 			Channel:       channel,
 			ThreadTs:      msg.ThreadTimestamp,
 			Time:          timestamp,
@@ -1659,7 +1659,7 @@ func (ch *ConversationsHandler) convertMessagesFromSearch(ctx context.Context, s
 			UserID:    msg.User,
 			UserName:  userName,
 			RealName:  realName,
-			Text:      text.ProcessText(msgText),
+			Text:      processText(msgText, resolver.usersMap.Users),
 			Channel:   fmt.Sprintf("%s (#%s)", msg.Channel.ID, msg.Channel.Name),
 			ThreadTs:  threadTs,
 			Time:      timestamp,
@@ -2457,4 +2457,28 @@ func hasImageBlocks(blocks slack.Blocks) bool {
 		}
 	}
 	return false
+}
+
+func processText(s string, userMaps map[string]slack.User) string {
+	protected := s
+	matches := text.UserMentionRegex.FindAllStringSubmatch(protected, -1)
+	for _, match := range matches {
+		userId := match[1]
+		var userName string
+		if u, ok := userMaps[userId]; ok {
+			name := u.Profile.DisplayName
+			if name == "" {
+				name = u.RealName
+			}
+			if name == "" {
+				name = u.Name
+			}
+			userName = name
+		} else {
+			userName = userId
+		}
+		protected = strings.Replace(protected, match[0], "@"+userName, 1)
+	}
+	cleaned := text.ProcessText(protected)
+	return cleaned
 }
