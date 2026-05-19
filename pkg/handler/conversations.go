@@ -101,6 +101,14 @@ type addMessageParams struct {
 	blocks      []slack.Block
 }
 
+type updateMessageParams struct {
+	channel     string
+	ts          string
+	text        string
+	contentType string
+	blocks      []slack.Block
+}
+
 type addReactionParams struct {
 	channel   string
 	timestamp string
@@ -282,6 +290,62 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)", respChannel, params.threadTs, respTimestamp)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)", respChannel, respTimestamp)), nil
+}
+
+// ConversationsUpdateMessageHandler edits an existing message and returns it as CSV
+func (ch *ConversationsHandler) ConversationsUpdateMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsUpdateMessageHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolUpdateMessage(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse update-message params", zap.Error(err))
+		return nil, err
+	}
+
+	var options []slack.MsgOption
+
+	if params.blocks != nil {
+		options = append(options, slack.MsgOptionBlocks(params.blocks...))
+		if params.text != "" {
+			options = append(options, slack.MsgOptionText(params.text, false))
+		}
+	} else {
+		switch params.contentType {
+		case "text/plain":
+			options = append(options, slack.MsgOptionDisableMarkdown())
+			options = append(options, slack.MsgOptionText(params.text, false))
+		case "text/markdown":
+			blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+			if err != nil {
+				ch.logger.Warn("Markdown parsing error", zap.Error(err))
+				options = append(options, slack.MsgOptionDisableMarkdown())
+				options = append(options, slack.MsgOptionText(params.text, false))
+			} else {
+				options = append(options, slack.MsgOptionBlocks(blocks...))
+			}
+		default:
+			return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
+		}
+	}
+
+	ch.logger.Debug("Updating Slack message",
+		zap.String("channel", params.channel),
+		zap.String("ts", params.ts),
+		zap.String("content_type", params.contentType),
+	)
+	respChannel, respTimestamp, _, err := ch.apiProvider.Slack().UpdateMessageContext(ctx, params.channel, params.ts, options...)
+	if err != nil {
+		ch.logger.Error("Slack UpdateMessageContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully updated message in channel %s (ts=%s)", respChannel, respTimestamp)), nil
 }
 
 // ReactionsAddHandler adds an emoji reaction to a message
@@ -1835,6 +1899,96 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 	return &addMessageParams{
 		channel:     channel,
 		threadTs:    threadTs,
+		text:        msgText,
+		contentType: contentType,
+		blocks:      blocks,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolUpdateMessage(ctx context.Context, request mcp.CallToolRequest) (*updateMessageParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !strings.Contains(enabledTools, "conversations_update_message") && !strings.Contains(enabledTools, "conversations_add_message") {
+			ch.logger.Error("Update-message tool disabled by default")
+			return nil, errors.New(
+				"by default, the conversations_update_message tool is disabled to guard Slack workspaces against accidental edits. " +
+					"It is gated by the same SLACK_MCP_ADD_MESSAGE_TOOL environment variable as conversations_add_message.",
+			)
+		}
+		toolConfig = "true"
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in update-message params")
+		return nil, errors.New("channel_id must be a string")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+	if !isChannelAllowed(channel) {
+		ch.logger.Warn("Update-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("conversations_update_message tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	ts := request.GetString("ts", "")
+	if ts == "" {
+		ch.logger.Error("ts missing in update-message params")
+		return nil, errors.New("ts must be a string")
+	}
+	if !strings.Contains(ts, ".") {
+		ch.logger.Error("Invalid ts format", zap.String("ts", ts))
+		return nil, errors.New("ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	msgText := request.GetString("text", "")
+
+	contentType := request.GetString("content_type", "text/markdown")
+	if contentType != "text/plain" && contentType != "text/markdown" {
+		ch.logger.Error("Invalid content_type", zap.String("content_type", contentType))
+		return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
+	}
+
+	// Parse optional raw blocks JSON (same logic as parseParamsToolAddMessage)
+	var blocks []slack.Block
+	args := request.GetArguments()
+	if rawBlocks, ok := args["blocks"]; ok && rawBlocks != nil {
+		var blocksJSON []byte
+		switch v := rawBlocks.(type) {
+		case string:
+			if v != "" {
+				blocksJSON = []byte(v)
+			}
+		default:
+			var err error
+			blocksJSON, err = json.Marshal(v)
+			if err != nil {
+				ch.logger.Error("Failed to marshal blocks argument", zap.Error(err))
+				return nil, fmt.Errorf("blocks must be valid Slack Block Kit JSON: %w", err)
+			}
+		}
+		if blocksJSON != nil {
+			var slackBlocks slack.Blocks
+			if err := json.Unmarshal(blocksJSON, &slackBlocks); err != nil {
+				ch.logger.Error("Failed to parse blocks JSON", zap.Error(err))
+				return nil, fmt.Errorf("blocks must be valid Slack Block Kit JSON: %w", err)
+			}
+			blocks = slackBlocks.BlockSet
+		}
+	}
+
+	if msgText == "" && blocks == nil {
+		ch.logger.Error("Message text and blocks both missing")
+		return nil, errors.New("either text or blocks must be provided")
+	}
+
+	return &updateMessageParams{
+		channel:     channel,
+		ts:          ts,
 		text:        msgText,
 		contentType: contentType,
 		blocks:      blocks,
