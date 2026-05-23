@@ -60,7 +60,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, err
 	}
 
-	ar, err := ch.apiProvider.Slack().AuthTest()
+	ar, err := ch.apiProvider.SlackForContext(ctx).AuthTest()
 	if err != nil {
 		ch.logger.Error("Auth test failed", zap.Error(err))
 		return nil, err
@@ -75,7 +75,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, fmt.Errorf("failed to parse workspace from URL: %v", err)
 	}
 
-	channels := ch.apiProvider.ProvideChannelsMaps().Channels
+	channels := ch.apiProvider.ProvideChannelsMapsForContext(ctx).Channels
 	ch.logger.Debug("Retrieved channels from provider", zap.Int("count", len(channels)))
 
 	for _, channel := range channels {
@@ -161,7 +161,7 @@ func (ch *ChannelsHandler) ChannelsHandler(ctx context.Context, request mcp.Call
 		channelList []Channel
 	)
 
-	allChannels := ch.apiProvider.ProvideChannelsMaps().Channels
+	allChannels := ch.apiProvider.ProvideChannelsMapsForContext(ctx).Channels
 	ch.logger.Debug("Total channels available", zap.Int("count", len(allChannels)))
 
 	channels := filterChannelsByTypes(allChannels, channelTypes)
@@ -278,7 +278,7 @@ func (ch *ChannelsHandler) ChannelsMeHandler(ctx context.Context, request mcp.Ca
 			Cursor:          apiCursor,
 			ExcludeArchived: true,
 		}
-		channels, nextCursor, err := ch.apiProvider.Slack().GetConversationsForUserContext(ctx, params)
+		channels, nextCursor, err := ch.apiProvider.SlackForContext(ctx).GetConversationsForUserContext(ctx, params)
 		if err != nil {
 			ch.logger.Error("Failed to fetch user conversations", zap.Error(err))
 			return nil, fmt.Errorf("failed to fetch your channels: %v", err)

@@ -23,6 +23,15 @@ func withAuthKey(ctx context.Context, auth string) context.Context {
 
 // Authenticate checks if the request is authenticated based on the provided context.
 func validateToken(ctx context.Context, logger *zap.Logger) (bool, error) {
+	// In pass-through auth mode the bearer token IS the Slack xoxp token; skip
+	// API key validation so it is forwarded to the Slack client unchanged.
+	if os.Getenv("SLACK_MCP_PASS_THROUGH_AUTH") == "true" {
+		logger.Debug("Pass-through auth mode: skipping API key validation",
+			zap.String("context", "http"),
+		)
+		return true, nil
+	}
+
 	// no configured token means no authentication
 	keyA := os.Getenv("SLACK_MCP_API_KEY")
 	if keyA == "" {
@@ -75,6 +84,14 @@ func AuthFromRequest(logger *zap.Logger) func(context.Context, *http.Request) co
 		authHeader := r.Header.Get("Authorization")
 		return withAuthKey(ctx, authHeader)
 	}
+}
+
+// AuthTokenFromContext returns the raw bearer token stored in the context by
+// AuthFromRequest, with the "Bearer " prefix stripped. Returns an empty string
+// if no token is present in the context.
+func AuthTokenFromContext(ctx context.Context) string {
+	token, _ := ctx.Value(authKey{}).(string)
+	return strings.TrimPrefix(token, "Bearer ")
 }
 
 // BuildMiddleware creates a middleware function that ensures authentication based on the provided transport type.

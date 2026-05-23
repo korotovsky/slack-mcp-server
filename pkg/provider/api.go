@@ -18,6 +18,7 @@ import (
 	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/korotovsky/slack-mcp-server/pkg/transport"
+	serverauth "github.com/korotovsky/slack-mcp-server/pkg/server/auth"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
@@ -251,6 +252,9 @@ type SlackAPI interface {
 	SavedUpdate(ctx context.Context, itemType, itemID, ts, mark string, dateDue int64) error
 	SavedClearCompleted(ctx context.Context) error
 
+	// Used to open/resume a direct message or multi-person direct message conversation
+	OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error)
+
 	// User groups API methods
 	GetUserGroupsContext(ctx context.Context, options ...slack.GetUserGroupsOption) ([]slack.UserGroup, error)
 	GetUserGroupMembersContext(ctx context.Context, userGroup string, options ...slack.GetUserGroupMembersOption) ([]string, error)
@@ -281,6 +285,9 @@ type ApiProvider struct {
 	rateLimiter        *rate.Limiter
 	cacheTTL           time.Duration
 	minRefreshInterval time.Duration
+
+	// tokenClients caches per-request Slack clients keyed by xoxp token (pass-through mode)
+	tokenClients sync.Map
 
 	// Users cache: atomic pointer to immutable snapshot (no copy on read)
 	usersSnapshot          atomic.Pointer[UsersCache]
@@ -410,6 +417,10 @@ func (c *MCPSlackClient) LeaveConversationContext(ctx context.Context, channelID
 
 func (c *MCPSlackClient) JoinConversationContext(ctx context.Context, channelID string) (*slack.Channel, string, []string, error) {
 	return c.slackClient.JoinConversationContext(ctx, channelID)
+}
+
+func (c *MCPSlackClient) OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error) {
+	return c.slackClient.OpenConversationContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
@@ -677,6 +688,14 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		return newWithXOXB(transport, authProvider, logger)
 	}
 
+	// Pass-through mode: per-request token from Authorization header
+	if os.Getenv("SLACK_MCP_PASS_THROUGH_AUTH") == "true" {
+		logger.Info("Pass-through auth mode enabled: using per-request Slack tokens from Authorization header",
+			zap.String("context", "console"),
+		)
+		return newPassThrough(transport, logger)
+	}
+
 	// Priority 3: XOXC/XOXD tokens (session-based)
 	if xoxcToken == "" || xoxdToken == "" {
 		logger.Fatal("Authentication required: Either SLACK_MCP_XOXP_TOKEN, SLACK_MCP_XOXB_TOKEN, or both SLACK_MCP_XOXC_TOKEN and SLACK_MCP_XOXD_TOKEN must be provided")
@@ -801,6 +820,33 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		Channels:    make(map[string]Channel),
 		ChannelsInv: make(map[string]string),
 	})
+	return ap
+}
+
+// newPassThrough creates an ApiProvider with no static Slack client. All
+// Slack API calls are expected to use SlackForContext, which creates per-request
+// clients from the token supplied in the Authorization header. The users and
+// channels caches are skipped (SkipCache) so tool handlers proceed immediately;
+// channel/user lookups by name won't work, but ID-based calls will.
+func newPassThrough(transport string, logger *zap.Logger) *ApiProvider {
+	ap := &ApiProvider{
+		transport: transport,
+		client:    nil,
+		logger:    logger,
+
+		rateLimiter:        limiter.Tier2.Limiter(),
+		cacheTTL:           getCacheTTL(),
+		minRefreshInterval: getMinRefreshInterval(),
+	}
+	ap.usersSnapshot.Store(&UsersCache{
+		Users:    make(map[string]slack.User),
+		UsersInv: make(map[string]string),
+	})
+	ap.channelsSnapshot.Store(&ChannelsCache{
+		Channels:    make(map[string]Channel),
+		ChannelsInv: make(map[string]string),
+	})
+	ap.SkipCache()
 	return ap
 }
 
@@ -954,6 +1000,10 @@ func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
 // fetchAndStoreUsers fetches all users from the Slack API and updates the snapshot and cache file.
 // Serialized by fetchUsersMu to prevent concurrent fetches from racing on snapshot/file writes.
 func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
+	if ap.client == nil {
+		// Pass-through mode: no static client; users cache is skipped.
+		return nil
+	}
 	ap.fetchUsersMu.Lock()
 	defer ap.fetchUsersMu.Unlock()
 
@@ -1161,6 +1211,10 @@ func (ap *ApiProvider) spawnBackgroundChannelsRefresh() {
 // fetchAndStoreChannels fetches all channels from the Slack API and updates the snapshot and cache file.
 // Serialized by fetchChannelsMu to prevent concurrent fetches from racing on snapshot/file writes.
 func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
+	if ap.client == nil {
+		// Pass-through mode: no static client; channels cache is skipped.
+		return nil
+	}
 	ap.fetchChannelsMu.Lock()
 	defer ap.fetchChannelsMu.Unlock()
 
@@ -1347,6 +1401,70 @@ func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
 	return ap.channelsSnapshot.Load()
 }
 
+// ProvideChannelsMapsForContext returns the channel cache for the given
+// request context. In normal mode it returns the pre-loaded snapshot. In
+// pass-through mode (SLACK_MCP_PASS_THROUGH_AUTH=true) there is no static
+// client, so channels are fetched on-demand using the per-request xoxp token
+// extracted from the context. The result is NOT stored in the shared snapshot
+// so different users get their own view.
+func (ap *ApiProvider) ProvideChannelsMapsForContext(ctx context.Context) *ChannelsCache {
+	if os.Getenv("SLACK_MCP_PASS_THROUGH_AUTH") != "true" {
+		return ap.channelsSnapshot.Load()
+	}
+	client := ap.SlackForContext(ctx)
+	return ap.fetchChannelsCacheForClient(ctx, client)
+}
+
+// fetchChannelsCacheForClient fetches all conversations for the given client
+// and returns them as an in-memory ChannelsCache (not persisted).
+func (ap *ApiProvider) fetchChannelsCacheForClient(ctx context.Context, client SlackAPI) *ChannelsCache {
+	params := &slack.GetConversationsParameters{
+		Types:           AllChanTypes,
+		Limit:           999,
+		ExcludeArchived: true,
+	}
+	cache := &ChannelsCache{
+		Channels:    make(map[string]Channel),
+		ChannelsInv: make(map[string]string),
+	}
+	usersMap := ap.ProvideUsersMap().Users
+	for {
+		if err := ap.rateLimiter.Wait(ctx); err != nil {
+			ap.logger.Error("Rate limiter wait failed during per-context channel fetch", zap.Error(err))
+			break
+		}
+		channels, nextcur, err := client.GetConversationsContext(ctx, params)
+		if err != nil {
+			ap.logger.Error("Failed to fetch channels for context", zap.Error(err))
+			break
+		}
+		for _, channel := range channels {
+			ch := mapChannel(
+				channel.ID,
+				channel.Name,
+				channel.NameNormalized,
+				channel.Topic.Value,
+				channel.Purpose.Value,
+				channel.User,
+				channel.Members,
+				channel.NumMembers,
+				channel.IsIM,
+				channel.IsMpIM,
+				channel.IsPrivate,
+				channel.IsExtShared,
+				usersMap,
+			)
+			cache.Channels[ch.ID] = ch
+			cache.ChannelsInv[ch.Name] = ch.ID
+		}
+		if nextcur == "" {
+			break
+		}
+		params.Cursor = nextcur
+	}
+	return cache
+}
+
 func (ap *ApiProvider) IsReady() (bool, error) {
 	if !ap.usersReady.Load() {
 		return false, ErrUsersNotReady
@@ -1373,6 +1491,41 @@ func (ap *ApiProvider) Slack() SlackAPI {
 	return ap.client
 }
 
+// SlackForContext returns the appropriate Slack client for the given request
+// context. When SLACK_MCP_PASS_THROUGH_AUTH=true and the context carries an
+// xoxp/xoxb token (from the Authorization header), a per-request Slack client
+// is created and cached for that token. This enables true per-user OAuth
+// delegation without a static SLACK_MCP_XOXP_TOKEN.
+func (ap *ApiProvider) SlackForContext(ctx context.Context) SlackAPI {
+	if os.Getenv("SLACK_MCP_PASS_THROUGH_AUTH") != "true" {
+		return ap.client
+	}
+
+	token := serverauth.AuthTokenFromContext(ctx)
+	if token == "" {
+		return ap.client
+	}
+
+	if cached, ok := ap.tokenClients.Load(token); ok {
+		return cached.(SlackAPI)
+	}
+
+	authProvider, err := auth.NewValueAuth(token, "")
+	if err != nil {
+		ap.logger.Error("SlackForContext: failed to create auth provider", zap.Error(err))
+		return ap.client
+	}
+
+	client, err := NewMCPSlackClient(authProvider, ap.logger)
+	if err != nil {
+		ap.logger.Error("SlackForContext: failed to create Slack client", zap.Error(err))
+		return ap.client
+	}
+
+	ap.tokenClients.Store(token, client)
+	return client
+}
+
 func (ap *ApiProvider) IsBotToken() bool {
 	client, ok := ap.client.(*MCPSlackClient)
 	return ok && client != nil && client.IsBotToken()
@@ -1390,10 +1543,15 @@ var slackUserIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]{2,}$`)
 // If the query matches a Slack user ID pattern (e.g., U07VCEPP4N5), it looks up the user
 // directly via the users.info API instead of searching.
 // For OAuth tokens (xoxp/xoxb), it searches the local users cache using regex matching.
+// In pass-through mode (no static cache), it fetches users on-demand with the per-request client.
 // For browser tokens (xoxc/xoxd), it uses the edge API's UsersSearch method.
 func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int) ([]slack.User, error) {
+	client := ap.SlackForContext(ctx)
+	if client == nil {
+		return nil, fmt.Errorf("no Slack client available")
+	}
 	if slackUserIDPattern.MatchString(query) {
-		users, err := ap.client.GetUsersInfo(query)
+		users, err := client.GetUsersInfo(query)
 		if err != nil {
 			return nil, err
 		}
@@ -1403,11 +1561,54 @@ func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int)
 		return nil, nil
 	}
 
-	if ap.IsOAuth() {
-		return ap.searchUsersInCache(query, limit)
+	// For OAuth clients (xoxp/xoxb), use in-memory regex search.
+	// In normal (non-pass-through) mode, search the pre-loaded cache.
+	// In pass-through mode, ap.client is nil so ap.IsOAuth() returns false even
+	// though the per-request token is xoxp. Detect that case and fetch on-demand.
+	if mcpClient, ok := client.(*MCPSlackClient); ok && mcpClient.IsOAuth() {
+		if ap.usersReady.Load() {
+			return ap.searchUsersInCache(query, limit)
+		}
+		return ap.searchUsersOnDemand(ctx, client, query, limit)
 	}
 
-	return ap.client.UsersSearch(ctx, query, limit)
+	return client.UsersSearch(ctx, query, limit)
+}
+
+// searchUsersOnDemand fetches the full user list via the standard users.list API
+// using the given per-request client, then searches in-memory. Used in pass-through
+// mode where no static users cache is pre-loaded.
+func (ap *ApiProvider) searchUsersOnDemand(ctx context.Context, client SlackAPI, query string, limit int) ([]slack.User, error) {
+	pattern, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ap.rateLimiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	users, err := client.GetUsersContext(ctx, slack.GetUsersOptionLimit(1000))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch users: %w", err)
+	}
+
+	var results []slack.User
+	for _, user := range users {
+		if user.Deleted {
+			continue
+		}
+		if pattern.MatchString(user.Name) ||
+			pattern.MatchString(user.RealName) ||
+			pattern.MatchString(user.Profile.DisplayName) ||
+			pattern.MatchString(user.Profile.Email) {
+			results = append(results, user)
+			if len(results) >= limit {
+				break
+			}
+		}
+	}
+	return results, nil
 }
 
 // searchUsersInCache performs a case-insensitive regex search on cached users.

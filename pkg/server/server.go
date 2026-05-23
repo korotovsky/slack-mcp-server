@@ -28,6 +28,7 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsOpen           = "conversations_open"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -44,6 +45,7 @@ const (
 	ToolUsergroupsUpdate            = "usergroups_update"
 	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
 	ToolUsersSearch                 = "users_search"
+	ToolAuthTest                    = "auth_test"
 	ToolSavedList                   = "saved_list"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
@@ -53,6 +55,7 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsOpen,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -69,6 +72,7 @@ var ValidToolNames = []string{
 	ToolUsergroupsUpdate,
 	ToolUsergroupsUsersUpdate,
 	ToolUsersSearch,
+	ToolAuthTest,
 	ToolSavedList,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
@@ -201,6 +205,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		), conversationsHandler.ConversationsAddMessageHandler)
 	}
 
+	if shouldAddTool(ToolConversationsOpen, enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsOpen,
+			mcp.WithDescription("Open or resume a direct message (DM) conversation with a user by their Slack user ID. Returns the DM channel ID (e.g. D01234ABCDE) which can then be used with conversations_add_message to send a message."),
+			mcp.WithTitleAnnotation("Open DM Conversation"),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("user_id",
+				mcp.Required(),
+				mcp.Description("Slack user ID of the person to open a DM with (e.g. U01234ABCDE). Use users_search to find a user's Slack ID by email or name."),
+			),
+		), conversationsHandler.ConversationsOpenHandler)
+	}
+
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
 		s.AddTool(mcp.NewTool(ToolReactionsAdd,
 			mcp.WithDescription("Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation."),
@@ -313,6 +329,14 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Maximum number of results to return (1-100). Default is 10."),
 			),
 		), conversationsHandler.UsersSearchHandler)
+	}
+
+	if shouldAddTool(ToolAuthTest, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolAuthTest,
+			mcp.WithDescription("Return the Slack identity of the currently authenticated user (user ID, username, team). Use this to get the caller's own Slack user ID before opening a DM to themselves."),
+			mcp.WithTitleAnnotation("Get My Slack Identity"),
+			mcp.WithReadOnlyHintAnnotation(true),
+		), conversationsHandler.AuthTestHandler)
 	}
 
 	// Register unreads tool - gets all unread messages across channels efficiently.
@@ -591,32 +615,43 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		}
 	}
 
-	logger.Info("Authenticating with Slack API...",
-		zap.String("context", "console"),
-	)
-	ar, err := provider.Slack().AuthTest()
-	if err != nil {
-		logger.Fatal("Failed to authenticate with Slack",
+	var ws string
+
+	if os.Getenv("SLACK_MCP_PASS_THROUGH_AUTH") == "true" {
+		// In pass-through mode there is no static Slack client; skip startup
+		// auth validation and use a generic workspace name for resource URLs.
+		logger.Info("Pass-through auth mode: skipping startup Slack authentication",
 			zap.String("context", "console"),
-			zap.Error(err),
 		)
-	}
-
-	logger.Info("Successfully authenticated with Slack",
-		zap.String("context", "console"),
-		zap.String("team", ar.Team),
-		zap.String("user", ar.User),
-		zap.String("enterprise", ar.EnterpriseID),
-		zap.String("url", ar.URL),
-	)
-
-	ws, err := text.Workspace(ar.URL)
-	if err != nil {
-		logger.Fatal("Failed to parse workspace from URL",
+		ws = "workspace"
+	} else {
+		logger.Info("Authenticating with Slack API...",
 			zap.String("context", "console"),
+		)
+		ar, err := provider.Slack().AuthTest()
+		if err != nil {
+			logger.Fatal("Failed to authenticate with Slack",
+				zap.String("context", "console"),
+				zap.Error(err),
+			)
+		}
+
+		logger.Info("Successfully authenticated with Slack",
+			zap.String("context", "console"),
+			zap.String("team", ar.Team),
+			zap.String("user", ar.User),
+			zap.String("enterprise", ar.EnterpriseID),
 			zap.String("url", ar.URL),
-			zap.Error(err),
 		)
+
+		ws, err = text.Workspace(ar.URL)
+		if err != nil {
+			logger.Fatal("Failed to parse workspace from URL",
+				zap.String("context", "console"),
+				zap.String("url", ar.URL),
+				zap.Error(err),
+			)
+		}
 	}
 
 	s.AddResource(mcp.NewResource(

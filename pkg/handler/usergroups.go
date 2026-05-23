@@ -63,7 +63,7 @@ func (h *UsergroupsHandler) UsergroupsListHandler(ctx context.Context, request m
 		slack.GetUserGroupsOptionIncludeDisabled(includeDisabled),
 	}
 
-	groups, err := h.apiProvider.Slack().GetUserGroupsContext(ctx, options...)
+	groups, err := h.apiProvider.SlackForContext(ctx).GetUserGroupsContext(ctx, options...)
 	if err != nil {
 		h.logger.Error("GetUserGroupsContext failed", zap.Error(err))
 		return nil, err
@@ -131,7 +131,7 @@ func (h *UsergroupsHandler) UsergroupsCreateHandler(ctx context.Context, request
 		userGroup.Prefs.Channels = channels
 	}
 
-	created, err := h.apiProvider.Slack().CreateUserGroupContext(ctx, userGroup)
+	created, err := h.apiProvider.SlackForContext(ctx).CreateUserGroupContext(ctx, userGroup)
 	if err != nil {
 		h.logger.Error("CreateUserGroupContext failed", zap.Error(err))
 		return nil, err
@@ -206,7 +206,7 @@ func (h *UsergroupsHandler) UsergroupsUpdateHandler(ctx context.Context, request
 		return nil, errors.New("at least one update field (name, handle, description, or channels) is required")
 	}
 
-	updated, err := h.apiProvider.Slack().UpdateUserGroupContext(ctx, usergroupID, options...)
+	updated, err := h.apiProvider.SlackForContext(ctx).UpdateUserGroupContext(ctx, usergroupID, options...)
 	if err != nil {
 		h.logger.Error("UpdateUserGroupContext failed", zap.Error(err))
 		return nil, err
@@ -259,7 +259,7 @@ func (h *UsergroupsHandler) UsergroupsUsersUpdateHandler(ctx context.Context, re
 	)
 
 	// UpdateUserGroupMembersContext expects a comma-separated string of user IDs
-	updated, err := h.apiProvider.Slack().UpdateUserGroupMembersContext(ctx, usergroupID, usersStr)
+	updated, err := h.apiProvider.SlackForContext(ctx).UpdateUserGroupMembersContext(ctx, usergroupID, usersStr)
 	if err != nil {
 		h.logger.Error("UpdateUserGroupMembersContext failed", zap.Error(err))
 		return nil, err
@@ -307,7 +307,7 @@ func (h *UsergroupsHandler) UsergroupsMeHandler(ctx context.Context, request mcp
 	}
 
 	// Get current user ID
-	authResp, err := h.apiProvider.Slack().AuthTest()
+	authResp, err := h.apiProvider.SlackForContext(ctx).AuthTest()
 	if err != nil {
 		h.logger.Error("AuthTest failed", zap.Error(err))
 		return nil, err
@@ -332,7 +332,7 @@ func (h *UsergroupsHandler) UsergroupsMeHandler(ctx context.Context, request mcp
 	)
 
 	// Get current members of the group
-	members, err := h.apiProvider.Slack().GetUserGroupMembersContext(ctx, usergroupID)
+	members, err := h.apiProvider.SlackForContext(ctx).GetUserGroupMembersContext(ctx, usergroupID)
 	if err != nil {
 		h.logger.Error("GetUserGroupMembersContext failed", zap.Error(err))
 		return nil, err
@@ -371,7 +371,7 @@ func (h *UsergroupsHandler) UsergroupsMeHandler(ctx context.Context, request mcp
 
 	// Update the group members
 	membersStr := strings.Join(newMembers, ",")
-	updated, err := h.apiProvider.Slack().UpdateUserGroupMembersContext(ctx, usergroupID, membersStr)
+	updated, err := h.apiProvider.SlackForContext(ctx).UpdateUserGroupMembersContext(ctx, usergroupID, membersStr)
 	if err != nil {
 		h.logger.Error("UpdateUserGroupMembersContext failed", zap.Error(err))
 		return nil, err
@@ -412,7 +412,7 @@ func (h *UsergroupsHandler) handleListMyGroups(ctx context.Context, currentUserI
 		slack.GetUserGroupsOptionIncludeDisabled(false),
 	}
 
-	groups, err := h.apiProvider.Slack().GetUserGroupsContext(ctx, options...)
+	groups, err := h.apiProvider.SlackForContext(ctx).GetUserGroupsContext(ctx, options...)
 	if err != nil {
 		h.logger.Error("GetUserGroupsContext failed", zap.Error(err))
 		return nil, err

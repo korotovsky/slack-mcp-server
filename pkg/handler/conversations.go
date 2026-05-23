@@ -160,7 +160,7 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 	}
 
 	// Slack auth test
-	ar, err := ch.apiProvider.Slack().AuthTest()
+	ar, err := ch.apiProvider.SlackForContext(ctx).AuthTest()
 	if err != nil {
 		ch.logger.Error("Slack AuthTest failed", zap.Error(err))
 		return nil, err
@@ -263,7 +263,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		zap.String("thread_ts", params.threadTs),
 		zap.String("content_type", params.contentType),
 	)
-	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
+	respChannel, respTimestamp, err := ch.apiProvider.SlackForContext(ctx).PostMessageContext(ctx, params.channel, options...)
 	if err != nil {
 		ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
 		return nil, err
@@ -271,7 +271,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 
 	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
 	if toolConfig == "1" || toolConfig == "true" || toolConfig == "yes" {
-		err := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
+		err := ch.apiProvider.SlackForContext(ctx).MarkConversationContext(ctx, params.channel, respTimestamp)
 		if err != nil {
 			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
 			return nil, err
@@ -311,7 +311,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().AddReactionContext(ctx, params.emoji, itemRef)
+	err = ch.apiProvider.SlackForContext(ctx).AddReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack AddReactionContext failed", zap.Error(err))
 		return nil, err
@@ -347,7 +347,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 		zap.String("emoji", params.emoji),
 	)
 
-	err = ch.apiProvider.Slack().RemoveReactionContext(ctx, params.emoji, itemRef)
+	err = ch.apiProvider.SlackForContext(ctx).RemoveReactionContext(ctx, params.emoji, itemRef)
 	if err != nil {
 		ch.logger.Error("Slack RemoveReactionContext failed", zap.Error(err))
 		return nil, err
@@ -381,7 +381,7 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 		return nil, fmt.Errorf("users search failed: %w", err)
 	}
 
-	channelsMap := ch.apiProvider.ProvideChannelsMaps()
+	channelsMap := ch.apiProvider.ProvideChannelsMapsForContext(ctx)
 
 	results := make([]UserSearchResult, 0, len(users))
 	for _, user := range users {
@@ -421,6 +421,57 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
+func (ch *ConversationsHandler) ConversationsOpenHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsOpenHandler called", zap.Any("params", request.Params))
+
+	userID, err := request.RequireString("user_id")
+	if err != nil {
+		return nil, err
+	}
+
+	client := ch.apiProvider.SlackForContext(ctx)
+	if client == nil {
+		return nil, fmt.Errorf("no Slack client available")
+	}
+
+	channel, _, _, err := client.OpenConversationContext(ctx, &slack.OpenConversationParameters{
+		Users: []string{userID},
+	})
+	if err != nil {
+		ch.logger.Error("Failed to open conversation", zap.String("user_id", userID), zap.Error(err))
+		return nil, fmt.Errorf("failed to open DM conversation: %w", err)
+	}
+
+	return mcp.NewToolResultText(channel.ID), nil
+}
+
+func (ch *ConversationsHandler) AuthTestHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("AuthTestHandler called")
+
+	client := ch.apiProvider.SlackForContext(ctx)
+	if client == nil {
+		return nil, fmt.Errorf("no Slack client available")
+	}
+
+	resp, err := client.AuthTestContext(ctx)
+	if err != nil {
+		ch.logger.Error("AuthTest failed", zap.Error(err))
+		return nil, fmt.Errorf("auth.test failed: %w", err)
+	}
+
+	result := map[string]string{
+		"user_id":  resp.UserID,
+		"user":     resp.User,
+		"team":     resp.Team,
+		"team_id":  resp.TeamID,
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
 
@@ -435,7 +486,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
+	fileInfo, _, _, err := ch.apiProvider.SlackForContext(ctx).GetFileInfoContext(ctx, params.fileID, 0, 0)
 	if err != nil {
 		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
 		return nil, err
@@ -454,7 +505,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, errors.New("file has no downloadable URL")
 	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	err = ch.apiProvider.SlackForContext(ctx).GetFileContext(ctx, downloadURL, &buf)
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
@@ -547,7 +598,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 		Cursor:    params.cursor,
 		Inclusive: false,
 	}
-	history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+	history, err := ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx, &historyParams)
 	if err != nil {
 		ch.logger.Error("GetConversationHistoryContext failed", zap.Error(err))
 		return nil, err
@@ -587,7 +638,7 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 		Cursor:    params.cursor,
 		Inclusive: false,
 	}
-	replies, hasMore, nextCursor, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &repliesParams)
+	replies, hasMore, nextCursor, err := ch.apiProvider.SlackForContext(ctx).GetConversationRepliesContext(ctx, &repliesParams)
 	if err != nil {
 		ch.logger.Error("GetConversationRepliesContext failed", zap.Error(err))
 		return nil, err
@@ -621,7 +672,7 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 
 	rl := limiter.Tier2.Limiter()
 	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.SearchMessages, error) {
-		msgs, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
+		msgs, _, err := ch.apiProvider.SlackForContext(ctx).SearchContext(ctx, params.query, searchParams)
 		return msgs, err
 	})
 	if err != nil {
@@ -662,7 +713,7 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 
 	// Fetch muted channels unless the caller wants them included
 	if !params.includeMuted {
-		mutedChannels, err := ch.apiProvider.Slack().GetMutedChannels(ctx)
+		mutedChannels, err := ch.apiProvider.SlackForContext(ctx).GetMutedChannels(ctx)
 		if err != nil {
 			ch.logger.Warn("Failed to fetch muted channels, proceeding without mute filter", zap.Error(err))
 			params.mutedUnavailable = true
@@ -687,7 +738,7 @@ func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context,
 		return ch.getUnreadsViaConversationsInfo(ctx, params)
 	}
 
-	counts, err := ch.apiProvider.Slack().ClientCounts(ctx)
+	counts, err := ch.apiProvider.SlackForContext(ctx).ClientCounts(ctx)
 	if err != nil {
 		ch.logger.Error("ClientCounts failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to get client counts: %v", err)
@@ -867,7 +918,7 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 			backfilled++
 			continue
 		}
-		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx,
+		history, err := ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx,
 			&slack.GetConversationHistoryParameters{
 				ChannelID: unreadChannels[i].ChannelID,
 				Oldest:    unreadChannels[i].LastRead,
@@ -906,7 +957,7 @@ func (ch *ConversationsHandler) processClientCountsResponse(ctx context.Context,
 			Inclusive: false,
 		}
 
-		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		history, err := ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx, &historyParams)
 		if err != nil {
 			ch.logger.Warn("Failed to get history for channel",
 				zap.String("channel", unreadChannels[i].ChannelID),
@@ -1035,7 +1086,7 @@ func (ch *ConversationsHandler) getUnreadsViaConversationsInfo(ctx context.Conte
 		}
 
 		history, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.GetConversationHistoryResponse, error) {
-			return ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+			return ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx, &historyParams)
 		})
 		if err != nil {
 			ch.logger.Warn("Failed to get history for channel",
@@ -1148,7 +1199,7 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 			Cursor:          cursor,
 		}
 
-		channels, nextCursor, err := ch.apiProvider.Slack().GetConversationsForUserContext(ctx, userConvParams)
+		channels, nextCursor, err := ch.apiProvider.SlackForContext(ctx).GetConversationsForUserContext(ctx, userConvParams)
 		apiCalls++
 		if err != nil {
 			ch.logger.Warn("Failed to list conversations for type group",
@@ -1181,7 +1232,7 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 			// that silently skip channels (see: slack-go does NOT auto-retry
 			// on *RateLimitedError for standard client methods).
 			info, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.Channel, error) {
-				return ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+				return ch.apiProvider.SlackForContext(ctx).GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
 					ChannelID: channel.ID,
 				})
 			})
@@ -1242,7 +1293,7 @@ func (ch *ConversationsHandler) scanTypeGroupForUnreads(
 					Inclusive: false,
 				}
 				history, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.GetConversationHistoryResponse, error) {
-					return ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+					return ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx, &historyParams)
 				})
 				apiCalls++
 				if err != nil {
@@ -1358,7 +1409,7 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 			ChannelID: channel,
 			Limit:     1,
 		}
-		history, err := ch.apiProvider.Slack().GetConversationHistoryContext(ctx, &historyParams)
+		history, err := ch.apiProvider.SlackForContext(ctx).GetConversationHistoryContext(ctx, &historyParams)
 		if err != nil {
 			ch.logger.Error("Failed to get latest message", zap.Error(err))
 			return nil, fmt.Errorf("failed to get latest message: %v", err)
@@ -1372,7 +1423,7 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 	}
 
 	// Mark the conversation as read
-	err = ch.apiProvider.Slack().MarkConversationContext(ctx, channel, ts)
+	err = ch.apiProvider.SlackForContext(ctx).MarkConversationContext(ctx, channel, ts)
 	if err != nil {
 		ch.logger.Error("Failed to mark conversation", zap.Error(err))
 		return nil, fmt.Errorf("failed to mark conversation as read: %v", err)
@@ -1398,7 +1449,7 @@ func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, r
 		return nil, fmt.Errorf("failed to resolve channel: %w", err)
 	}
 
-	notInChannel, err := ch.apiProvider.Slack().LeaveConversationContext(ctx, channel)
+	notInChannel, err := ch.apiProvider.SlackForContext(ctx).LeaveConversationContext(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Failed to leave conversation", zap.Error(err))
 		return nil, fmt.Errorf("failed to leave conversation: %v", err)
@@ -1426,7 +1477,7 @@ func (ch *ConversationsHandler) ConversationsJoinHandler(ctx context.Context, re
 		return nil, fmt.Errorf("failed to resolve channel: %w", err)
 	}
 
-	_, _, _, err = ch.apiProvider.Slack().JoinConversationContext(ctx, channel)
+	_, _, _, err = ch.apiProvider.SlackForContext(ctx).JoinConversationContext(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Failed to join conversation", zap.Error(err))
 		return nil, fmt.Errorf("failed to join conversation: %v", err)
@@ -1491,8 +1542,8 @@ func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel st
 		return channel, nil
 	}
 
-	// First attempt: try to resolve from current cache
-	channelsMaps := ch.apiProvider.ProvideChannelsMaps()
+	// First attempt: try to resolve from current cache (fetches on-demand in pass-through mode)
+	channelsMaps := ch.apiProvider.ProvideChannelsMapsForContext(ctx)
 	chn, ok := channelsMaps.ChannelsInv[channel]
 	if ok {
 		return channelsMaps.Channels[chn].ID, nil
@@ -1520,7 +1571,7 @@ func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel st
 	}
 
 	// Second attempt after successful refresh
-	channelsMaps = ch.apiProvider.ProvideChannelsMaps()
+	channelsMaps = ch.apiProvider.ProvideChannelsMapsForContext(ctx)
 	chn, ok = channelsMaps.ChannelsInv[channel]
 	if !ok {
 		ch.logger.Error("Channel not found even after cache refresh",
