@@ -112,7 +112,7 @@ func TestBlocksToText(t *testing.T) {
 			want: "Hello World",
 		},
 		{
-			name: "rich text block with link element",
+			name: "rich text block with link element preserves URL alongside display text",
 			blocks: slack.Blocks{
 				BlockSet: []slack.Block{
 					&slack.RichTextBlock{
@@ -136,7 +136,7 @@ func TestBlocksToText(t *testing.T) {
 					},
 				},
 			},
-			want: "Click here",
+			want: "Click [here](https://example.com)",
 		},
 		{
 			name: "rich text link without display text falls back to URL",
@@ -159,6 +159,56 @@ func TestBlocksToText(t *testing.T) {
 				},
 			},
 			want: "https://example.com",
+		},
+		{
+			name: "rich text link with display text equal to URL emits URL once",
+			blocks: slack.Blocks{
+				BlockSet: []slack.Block{
+					&slack.RichTextBlock{
+						Type: slack.MBTRichText,
+						Elements: []slack.RichTextElement{
+							&slack.RichTextSection{
+								Type: slack.RTESection,
+								Elements: []slack.RichTextSectionElement{
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://example.com",
+										Text: "https://example.com",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "https://example.com",
+		},
+		{
+			name: "rich text alert with droplet link preserves URL and display text",
+			blocks: slack.Blocks{
+				BlockSet: []slack.Block{
+					&slack.RichTextBlock{
+						Type: slack.MBTRichText,
+						Elements: []slack.RichTextElement{
+							&slack.RichTextSection{
+								Type: slack.RTESection,
+								Elements: []slack.RichTextSectionElement{
+									&slack.RichTextSectionTextElement{
+										Type: slack.RTSEText,
+										Text: "CPU alert on ",
+									},
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://cloud.digitalocean.com/droplets/562716273",
+										Text: "web-prod-01",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "CPU alert on [web-prod-01](https://cloud.digitalocean.com/droplets/562716273)",
 		},
 		{
 			name: "multiple blocks combined",
@@ -371,8 +421,8 @@ func TestAttachmentToText(t *testing.T) {
 		{
 			name: "fields_with_all_parts",
 			att: slack.Attachment{
-				Title:  "Alert",
-				Text:   "Failed workflow",
+				Title: "Alert",
+				Text:  "Failed workflow",
 				Fields: []slack.AttachmentField{
 					{Title: "Env", Value: "prod"},
 					{Title: "Version", Value: "v1.9.0"},
@@ -919,3 +969,110 @@ func TestFilesToTextProcessTextPipeline(t *testing.T) {
 	}
 }
 
+// TestBlocksToTextProcessTextPipeline asserts the shape of rich_text link
+// content as it appears in the CSV output column, after BlocksToText emits
+// [text](url) and ProcessText's normalizeLinks rewrites to "url - text".
+func TestBlocksToTextProcessTextPipeline(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks slack.Blocks
+		want   string
+	}{
+		{
+			name: "droplet alert link survives to CSV",
+			blocks: slack.Blocks{
+				BlockSet: []slack.Block{
+					&slack.RichTextBlock{
+						Type: slack.MBTRichText,
+						Elements: []slack.RichTextElement{
+							&slack.RichTextSection{
+								Type: slack.RTESection,
+								Elements: []slack.RichTextSectionElement{
+									&slack.RichTextSectionTextElement{
+										Type: slack.RTSEText,
+										Text: "CPU alert on ",
+									},
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://cloud.digitalocean.com/droplets/562716273",
+										Text: "web-prod-01",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "CPU alert on https://cloud.digitalocean.com/droplets/562716273 - web-prod-01",
+		},
+		{
+			name: "trailing link gets no comma; preceding link gets comma",
+			blocks: slack.Blocks{
+				BlockSet: []slack.Block{
+					&slack.RichTextBlock{
+						Type: slack.MBTRichText,
+						Elements: []slack.RichTextElement{
+							&slack.RichTextSection{
+								Type: slack.RTESection,
+								Elements: []slack.RichTextSectionElement{
+									&slack.RichTextSectionTextElement{
+										Type: slack.RTSEText,
+										Text: "see ",
+									},
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://a.example/1",
+										Text: "one",
+									},
+									&slack.RichTextSectionTextElement{
+										Type: slack.RTSEText,
+										Text: " and ",
+									},
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://b.example/2",
+										Text: "two",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "see https://a.example/1 - one, and https://b.example/2 - two",
+		},
+		{
+			name: "bare URL paste is not double-emitted",
+			blocks: slack.Blocks{
+				BlockSet: []slack.Block{
+					&slack.RichTextBlock{
+						Type: slack.MBTRichText,
+						Elements: []slack.RichTextElement{
+							&slack.RichTextSection{
+								Type: slack.RTESection,
+								Elements: []slack.RichTextSectionElement{
+									&slack.RichTextSectionLinkElement{
+										Type: slack.RTSELink,
+										URL:  "https://example.com",
+										Text: "https://example.com",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "https://example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := BlocksToText(tt.blocks)
+			got := ProcessText(raw)
+			if got != tt.want {
+				t.Errorf("ProcessText(BlocksToText()) = %q, want %q\n  raw = %q", got, tt.want, raw)
+			}
+		})
+	}
+}

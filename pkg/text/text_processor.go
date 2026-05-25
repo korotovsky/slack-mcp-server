@@ -204,9 +204,12 @@ func richTextSectionToText(section *slack.RichTextSection) string {
 				parts = append(parts, e.Text)
 			}
 		case *slack.RichTextSectionLinkElement:
-			if e.Text != "" {
+			switch {
+			case e.Text != "" && e.URL != "" && e.Text != e.URL:
+				parts = append(parts, fmt.Sprintf("[%s](%s)", e.Text, e.URL))
+			case e.Text != "":
 				parts = append(parts, e.Text)
-			} else if e.URL != "" {
+			case e.URL != "":
 				parts = append(parts, e.URL)
 			}
 		case *slack.RichTextSectionBroadcastElement:
