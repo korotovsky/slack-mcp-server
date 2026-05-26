@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/csv"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,12 +15,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestIntegrationConversations(t *testing.T) {
@@ -652,4 +656,228 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnitResolveAllowedFilePath(t *testing.T) {
+	tmp := t.TempDir()
+	allowed := filepath.Join(tmp, "allowed")
+	outside := filepath.Join(tmp, "outside")
+	require.NoError(t, os.MkdirAll(allowed, 0o755))
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+
+	goodFile := filepath.Join(allowed, "ok.txt")
+	require.NoError(t, os.WriteFile(goodFile, []byte("hello"), 0o644))
+
+	outsideFile := filepath.Join(outside, "bad.txt")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("nope"), 0o644))
+
+	escape := filepath.Join(allowed, "escape.txt")
+	require.NoError(t, os.Symlink(outsideFile, escape))
+
+	bigFile := filepath.Join(allowed, "big.bin")
+	big := make([]byte, maxFileSizeBytes+1)
+	require.NoError(t, os.WriteFile(bigFile, big, 0o644))
+
+	t.Run("empty allowlist rejects all paths", func(t *testing.T) {
+		_, _, err := resolveAllowedFilePath(goodFile, "")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "SLACK_MCP_FILES_UPLOAD_PATHS")
+	})
+
+	t.Run("path inside allowlist is accepted", func(t *testing.T) {
+		resolved, size, err := resolveAllowedFilePath(goodFile, allowed)
+		require.NoError(t, err)
+		assert.Equal(t, goodFile, resolved)
+		assert.Equal(t, 5, size)
+	})
+
+	t.Run("path outside allowlist is rejected", func(t *testing.T) {
+		_, _, err := resolveAllowedFilePath(outsideFile, allowed)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not inside any directory")
+	})
+
+	t.Run("symlink escaping allowlist is rejected", func(t *testing.T) {
+		_, _, err := resolveAllowedFilePath(escape, allowed)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not inside any directory")
+	})
+
+	t.Run("file exceeding size cap is rejected", func(t *testing.T) {
+		_, _, err := resolveAllowedFilePath(bigFile, allowed)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds maximum allowed size")
+	})
+
+	t.Run("directory path is rejected", func(t *testing.T) {
+		_, _, err := resolveAllowedFilePath(allowed, allowed)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "is a directory")
+	})
+
+	t.Run("multi-entry allowlist accepts second entry", func(t *testing.T) {
+		other := filepath.Join(tmp, "other")
+		require.NoError(t, os.MkdirAll(other, 0o755))
+		resolved, _, err := resolveAllowedFilePath(goodFile, other+", "+allowed)
+		require.NoError(t, err)
+		assert.Equal(t, goodFile, resolved)
+	})
+
+	t.Run("relative path resolves against cwd", func(t *testing.T) {
+		// Use the symlink-evaluated tmp dir as the allowlist so the comparison
+		// against EvalSymlinks(goodFile) succeeds on platforms where TempDir
+		// itself is a symlink (e.g. macOS /var -> /private/var).
+		resolvedTmp, err := filepath.EvalSymlinks(allowed)
+		require.NoError(t, err)
+		_, _, err = resolveAllowedFilePath(goodFile, resolvedTmp)
+		require.NoError(t, err)
+	})
+}
+
+func TestUnitParseFilesUploadParams(t *testing.T) {
+	ch := &ConversationsHandler{logger: zap.NewNop()}
+
+	makeReq := func(args map[string]any) mcp.CallToolRequest {
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = args
+		return req
+	}
+
+	t.Run("disabled when env var unset", func(t *testing.T) {
+		t.Setenv("SLACK_MCP_FILES_UPLOAD_TOOL", "")
+		t.Setenv("SLACK_MCP_ENABLED_TOOLS", "")
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename": "a.txt", "content": "hi",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "disabled")
+	})
+
+	t.Run("enabled via SLACK_MCP_ENABLED_TOOLS", func(t *testing.T) {
+		t.Setenv("SLACK_MCP_FILES_UPLOAD_TOOL", "")
+		t.Setenv("SLACK_MCP_ENABLED_TOOLS", "files_upload")
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename": "a.txt", "content": "hi",
+		}))
+		require.NoError(t, err)
+	})
+
+	// All remaining cases run with the tool enabled.
+	t.Setenv("SLACK_MCP_FILES_UPLOAD_TOOL", "true")
+	t.Setenv("SLACK_MCP_ENABLED_TOOLS", "")
+
+	t.Run("missing filename is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"content": "hi",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "filename")
+	})
+
+	t.Run("no content source is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename": "a.txt",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one")
+	})
+
+	t.Run("two content sources are mutually exclusive", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.txt",
+			"content":        "hi",
+			"content_base64": base64.StdEncoding.EncodeToString([]byte("hi")),
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("text content sets content and size", func(t *testing.T) {
+		p, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":     "a.txt",
+			"content":      "hello",
+			"snippet_type": "python",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "hello", p.content)
+		assert.Equal(t, 5, p.fileSize)
+		assert.Equal(t, "python", p.snippetType)
+		assert.Empty(t, p.contentBytes)
+		assert.Empty(t, p.filePath)
+	})
+
+	t.Run("text content exceeding size cap is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename": "a.txt",
+			"content":  strings.Repeat("a", maxFileSizeBytes+1),
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds maximum")
+	})
+
+	t.Run("invalid base64 is rejected with a clear message", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.bin",
+			"content_base64": "not valid base64!",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not valid base64")
+	})
+
+	t.Run("base64 decoded over cap is rejected", func(t *testing.T) {
+		payload := base64.StdEncoding.EncodeToString(make([]byte, maxFileSizeBytes+1))
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.bin",
+			"content_base64": payload,
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds maximum")
+	})
+
+	t.Run("base64 content populates bytes and size", func(t *testing.T) {
+		p, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.bin",
+			"content_base64": base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03}),
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, []byte{0x01, 0x02, 0x03}, p.contentBytes)
+		assert.Equal(t, 3, p.fileSize)
+	})
+
+	t.Run("file_path without allowlist env var is rejected", func(t *testing.T) {
+		t.Setenv("SLACK_MCP_FILES_UPLOAD_PATHS", "")
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "x.txt")
+		require.NoError(t, os.WriteFile(path, []byte("x"), 0o644))
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":  "x.txt",
+			"file_path": path,
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "SLACK_MCP_FILES_UPLOAD_PATHS")
+	})
+
+	t.Run("file_path inside allowlist is accepted", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "x.txt")
+		require.NoError(t, os.WriteFile(path, []byte("xyz"), 0o644))
+		t.Setenv("SLACK_MCP_FILES_UPLOAD_PATHS", tmp)
+		p, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":  "x.txt",
+			"file_path": path,
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, 3, p.fileSize)
+		assert.NotEmpty(t, p.filePath)
+	})
+
+	t.Run("invalid thread_ts format is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":  "a.txt",
+			"content":   "hi",
+			"thread_ts": "not-a-ts",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread_ts")
+	})
 }

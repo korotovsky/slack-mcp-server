@@ -31,6 +31,7 @@ const (
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
+	ToolFilesUpload                 = "files_upload"
 	ToolConversationsSearchMessages = "conversations_search_messages"
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
@@ -56,6 +57,7 @@ var ValidToolNames = []string{
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
+	ToolFilesUpload,
 	ToolConversationsSearchMessages,
 	ToolConversationsUnreads,
 	ToolConversationsMark,
@@ -249,6 +251,45 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs (with filenames) can be found in the AttachmentIDs field of message metadata when FileCount > 0."),
 			),
 		), conversationsHandler.FilesGetHandler)
+	}
+
+	if shouldAddTool(ToolFilesUpload, enabledTools, "SLACK_MCP_FILES_UPLOAD_TOOL") {
+		s.AddTool(mcp.NewTool(ToolFilesUpload,
+			mcp.WithDescription("Upload a file to Slack and optionally share it to a channel or DM. Provide exactly one content source: 'content' for text/snippets, 'content_base64' for binary, or 'file_path' for a local file (allowlist-gated). Requires an xoxp or xoxb token; xoxc/xoxd browser-session tokens are not supported by Slack's files.* API. Maximum file size is 5MB."),
+			mcp.WithTitleAnnotation("Upload File"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("filename",
+				mcp.Required(),
+				mcp.Description("Name of the file as it will appear in Slack, including extension. Example: 'logs.txt', 'report.csv', 'logo.png'."),
+			),
+			mcp.WithString("channel_id",
+				mcp.Description("Optional. ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm. If omitted, the file is uploaded but not shared."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Optional. If provided, the file is shared as a reply in the given thread. Format 1234567890.123456. Requires channel_id."),
+			),
+			mcp.WithString("title",
+				mcp.Description("Optional display title shown above the file in Slack."),
+			),
+			mcp.WithString("initial_comment",
+				mcp.Description("Optional message posted alongside the file when it is shared to a channel."),
+			),
+			mcp.WithString("snippet_type",
+				mcp.Description("Optional snippet syntax for text content (e.g. 'python', 'json', 'go'). Used for syntax highlighting in the Slack UI."),
+			),
+			mcp.WithString("alt_txt",
+				mcp.Description("Optional accessibility text describing the file (mainly used for images)."),
+			),
+			mcp.WithString("content",
+				mcp.Description("Text content of the file. Use this for plain text or code snippets. Mutually exclusive with content_base64 and file_path."),
+			),
+			mcp.WithString("content_base64",
+				mcp.Description("Base64-encoded file bytes. Use this for binary uploads. Mutually exclusive with content and file_path."),
+			),
+			mcp.WithString("file_path",
+				mcp.Description("Absolute or relative path to a file on the server's filesystem. The path must resolve (after symlink evaluation) inside one of the directories listed in SLACK_MCP_FILES_UPLOAD_PATHS. Mutually exclusive with content and content_base64."),
+			),
+		), conversationsHandler.FilesUploadHandler)
 	}
 
 	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,

@@ -231,6 +231,9 @@ type SlackAPI interface {
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
+	// Used to upload files (modern files.getUploadURLExternal + completeUploadExternal flow)
+	UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error)
+
 	// Used to get channel info (for unread counts with xoxp tokens)
 	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
 
@@ -277,6 +280,7 @@ type ApiProvider struct {
 	transport string
 	client    SlackAPI
 	logger    *zap.Logger
+	tokenType string
 
 	rateLimiter        *rate.Limiter
 	cacheTTL           time.Duration
@@ -549,6 +553,10 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
 }
 
+func (c *MCPSlackClient) UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error) {
+	return c.slackClient.UploadFileContext(ctx, params)
+}
+
 func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
 	return c.slackClient.GetConversationInfoContext(ctx, input)
 }
@@ -659,7 +667,9 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 			logger.Fatal("Failed to create auth provider with XOXP token", zap.Error(err))
 		}
 
-		return newWithXOXP(transport, authProvider, logger)
+		ap := newWithXOXP(transport, authProvider, logger)
+		ap.tokenType = "xoxp"
+		return ap
 	}
 
 	// Priority 2: XOXB token (Bot)
@@ -674,7 +684,9 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 			zap.String("token_type", "xoxb"),
 		)
 
-		return newWithXOXB(transport, authProvider, logger)
+		ap := newWithXOXB(transport, authProvider, logger)
+		ap.tokenType = "xoxb"
+		return ap
 	}
 
 	// Priority 3: XOXC/XOXD tokens (session-based)
@@ -687,7 +699,16 @@ func New(transport string, logger *zap.Logger) *ApiProvider {
 		logger.Fatal("Failed to create auth provider with XOXC/XOXD tokens", zap.Error(err))
 	}
 
-	return newWithXOXC(transport, authProvider, logger)
+	ap := newWithXOXC(transport, authProvider, logger)
+	ap.tokenType = "xoxc"
+	return ap
+}
+
+// TokenType returns the auth mode the provider was constructed with: "xoxp"
+// for user OAuth (including xoxe rotated variants), "xoxb" for bot OAuth,
+// "xoxc" for browser-session (xoxc + xoxd pair).
+func (ap *ApiProvider) TokenType() string {
+	return ap.tokenType
 }
 
 func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
