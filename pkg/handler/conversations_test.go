@@ -844,6 +844,32 @@ func TestUnitParseFilesUploadParams(t *testing.T) {
 		assert.Equal(t, 3, p.fileSize)
 	})
 
+	t.Run("line-wrapped base64 with whitespace decodes cleanly", func(t *testing.T) {
+		// Emulate `base64` CLI output: 76-col line wrap plus stray surrounding
+		// whitespace from the LLM concatenating fragments.
+		payload := make([]byte, 200)
+		for i := range payload {
+			payload[i] = byte(i)
+		}
+		encoded := base64.StdEncoding.EncodeToString(payload)
+		var wrapped strings.Builder
+		for i := 0; i < len(encoded); i += 76 {
+			end := i + 76
+			if end > len(encoded) {
+				end = len(encoded)
+			}
+			wrapped.WriteString(encoded[i:end])
+			wrapped.WriteString("\n")
+		}
+		p, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.bin",
+			"content_base64": "  \n" + wrapped.String() + "\n  ",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, payload, p.contentBytes)
+		assert.Equal(t, len(payload), p.fileSize)
+	})
+
 	t.Run("file_path without allowlist env var is rejected", func(t *testing.T) {
 		t.Setenv("SLACK_MCP_FILES_UPLOAD_PATHS", "")
 		tmp := t.TempDir()

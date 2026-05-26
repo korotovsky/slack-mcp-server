@@ -2029,7 +2029,10 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		params.content = content
 		params.fileSize = len(content)
 	case contentBase64 != "":
-		decoded, err := base64.StdEncoding.DecodeString(contentBase64)
+		// `base64` CLI wraps at 76 cols by default and clients often forward
+		// that line-wrapped output verbatim. StdEncoding rejects whitespace,
+		// so strip it before decoding.
+		decoded, err := base64.StdEncoding.DecodeString(stripBase64Whitespace(contentBase64))
 		if err != nil {
 			return nil, fmt.Errorf("content_base64 is not valid base64: %w", err)
 		}
@@ -2061,6 +2064,19 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 	}
 
 	return params, nil
+}
+
+// stripBase64Whitespace removes ASCII whitespace from s. Standard base64
+// encoders (including the `base64` CLI) line-wrap their output, but Go's
+// base64.StdEncoding rejects any whitespace, so callers must clean it first.
+func stripBase64Whitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // resolveAllowedFilePath validates that path is inside one of the directories
