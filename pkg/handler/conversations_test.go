@@ -909,6 +909,16 @@ func TestUnitParseFilesUploadParams(t *testing.T) {
 		assert.Equal(t, []byte("xyz"), p.contentBytes)
 	})
 
+	t.Run("dotted non-numeric thread_ts is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":  "a.txt",
+			"content":   "hi",
+			"thread_ts": "abc.def",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread_ts")
+	})
+
 	t.Run("invalid thread_ts format is rejected", func(t *testing.T) {
 		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
 			"filename":  "a.txt",

@@ -1964,6 +1964,10 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 	}, nil
 }
 
+// slackTimestampRegex matches a Slack message timestamp (10-digit seconds,
+// 6-digit microseconds), e.g. 1234567890.123456.
+var slackTimestampRegex = regexp.MustCompile(`^\d{10}\.\d{6}$`)
+
 // isToolInEnabledList reports whether name is an exact entry in the
 // comma-separated SLACK_MCP_ENABLED_TOOLS value, matching the registration-time
 // semantics in pkg/server.
@@ -2028,7 +2032,7 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		altTxt:         request.GetString("alt_txt", ""),
 	}
 
-	if params.threadTs != "" && !strings.Contains(params.threadTs, ".") {
+	if params.threadTs != "" && !slackTimestampRegex.MatchString(params.threadTs) {
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
