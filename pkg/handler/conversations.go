@@ -1965,12 +1965,24 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 	}, nil
 }
 
+// isToolInEnabledList reports whether name is an exact entry in the
+// comma-separated SLACK_MCP_ENABLED_TOOLS value, matching the registration-time
+// semantics in pkg/server.
+func isToolInEnabledList(enabledTools, name string) bool {
+	for _, t := range strings.Split(enabledTools, ",") {
+		if strings.TrimSpace(t) == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, request mcp.CallToolRequest) (*filesUploadParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_FILES_UPLOAD_TOOL")
 	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
 
 	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "files_upload") {
+		if !isToolInEnabledList(enabledTools, "files_upload") {
 			ch.logger.Error("files_upload tool disabled by default")
 			return nil, errors.New(
 				"by default, the files_upload tool is disabled to guard Slack workspaces against accidental uploads. " +
