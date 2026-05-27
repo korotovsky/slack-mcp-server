@@ -521,8 +521,8 @@ func (ch *ConversationsHandler) FilesUploadHandler(ctx context.Context, request 
 		return nil, err
 	}
 
-	if tt := ch.apiProvider.TokenType(); tt == "xoxc" {
-		ch.logger.Error("files_upload invoked with browser-session token", zap.String("token_type", tt))
+	if tt := ch.apiProvider.TokenType(); tt != "xoxp" && tt != "xoxb" {
+		ch.logger.Error("files_upload invoked with unsupported token type", zap.String("token_type", tt))
 		return nil, errors.New("files_upload requires xoxp or xoxb token; xoxc/xoxd browser-session tokens are not supported by Slack's files.* API")
 	}
 
