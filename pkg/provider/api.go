@@ -36,6 +36,7 @@ var PubChanType = "public_channel"
 
 var ErrUsersNotReady = errors.New(usersNotReadyMsg)
 var ErrChannelsNotReady = errors.New(channelsNotReadyMsg)
+var ErrClientNotReady = errors.New("slack client is not initialized (no usable token, or running in demo mode)")
 var ErrRefreshRateLimited = errors.New("refresh skipped due to rate limiting")
 
 // atomicWriteFile writes data to a file atomically using a temp file and rename.
@@ -1369,6 +1370,16 @@ func (ap *ApiProvider) ProvideChannelsMaps() *ChannelsCache {
 }
 
 func (ap *ApiProvider) IsReady() (bool, error) {
+	// Guard a nil client (demo mode, or any path that skipped client init):
+	// the client is stored behind an interface, so a nil *MCPSlackClient is a
+	// non-nil interface and must be unwrapped. Checked before the ready flags
+	// because SkipCache can set those true even when the client is nil.
+	if ap.client == nil {
+		return false, ErrClientNotReady
+	}
+	if client, ok := ap.client.(*MCPSlackClient); ok && client == nil {
+		return false, ErrClientNotReady
+	}
 	if !ap.usersReady.Load() {
 		return false, ErrUsersNotReady
 	}
