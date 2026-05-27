@@ -687,7 +687,12 @@ func TestUnitResolveAllowedFilePath(t *testing.T) {
 	t.Run("path inside allowlist is accepted", func(t *testing.T) {
 		resolved, size, err := resolveAllowedFilePath(goodFile, allowed)
 		require.NoError(t, err)
-		assert.Equal(t, goodFile, resolved)
+		// resolveAllowedFilePath returns the EvalSymlinks form; compare against
+		// that, since TempDir is reached through a symlink on some platforms
+		// (see https://github.com/golang/go/issues/56259).
+		wantResolved, evalErr := filepath.EvalSymlinks(goodFile)
+		require.NoError(t, evalErr)
+		assert.Equal(t, wantResolved, resolved)
 		assert.Equal(t, 5, size)
 	})
 
