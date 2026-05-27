@@ -2125,7 +2125,10 @@ func resolveAllowedFilePath(path, allowlist string) (string, int, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", 0, fmt.Errorf("cannot resolve symlinks for file_path: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", 0, fmt.Errorf("file_path %q does not exist", path)
+		}
+		return "", 0, fmt.Errorf("cannot resolve file_path: %w", err)
 	}
 
 	allowed := false
