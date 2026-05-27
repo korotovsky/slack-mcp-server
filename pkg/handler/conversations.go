@@ -1968,6 +1968,30 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 // 6-digit microseconds), e.g. 1234567890.123456.
 var slackTimestampRegex = regexp.MustCompile(`^\d{10}\.\d{6}$`)
 
+// ensureChannelKnown verifies channelID exists in the channels cache before an
+// upload is staged. resolveChannelID passes raw IDs through unchecked, so an
+// invalid ID would only fail at CompleteUploadExternal, after the file is
+// already created in Slack and left orphaned. Refresh once on a cache miss to
+// tolerate channels created since the last sync.
+func (ch *ConversationsHandler) ensureChannelKnown(ctx context.Context, channelID string) error {
+	if _, ok := ch.apiProvider.ProvideChannelsMaps().Channels[channelID]; ok {
+		return nil
+	}
+
+	refreshErr := ch.apiProvider.ForceRefreshChannels(ctx)
+	if errors.Is(refreshErr, provider.ErrRefreshRateLimited) {
+		return fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channelID)
+	}
+	if refreshErr != nil {
+		return fmt.Errorf("channel %q not found and cache refresh failed: %w", channelID, refreshErr)
+	}
+
+	if _, ok := ch.apiProvider.ProvideChannelsMaps().Channels[channelID]; !ok {
+		return fmt.Errorf("channel %q not found", channelID)
+	}
+	return nil
+}
+
 // isToolInEnabledList reports whether name is an exact entry in the
 // comma-separated SLACK_MCP_ENABLED_TOOLS value, matching the registration-time
 // semantics in pkg/server.
@@ -2108,6 +2132,9 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		if !isChannelAllowedForConfig(resolvedChannel, toolConfig) {
 			ch.logger.Warn("files_upload tool not allowed for channel", zap.String("channel", resolvedChannel), zap.String("policy", toolConfig))
 			return nil, fmt.Errorf("files_upload tool is not allowed for channel %q, applied policy: %s", resolvedChannel, toolConfig)
+		}
+		if err := ch.ensureChannelKnown(ctx, resolvedChannel); err != nil {
+			return nil, err
 		}
 		params.channel = resolvedChannel
 	}
