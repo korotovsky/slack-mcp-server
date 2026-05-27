@@ -2048,6 +2048,9 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		if err != nil {
 			return nil, fmt.Errorf("content_base64 is not valid base64: %w", err)
 		}
+		if len(decoded) == 0 {
+			return nil, errors.New("content_base64 decoded to zero bytes; provide non-empty content")
+		}
 		if len(decoded) > maxFileSizeBytes {
 			return nil, fmt.Errorf("decoded content_base64 size %d bytes exceeds maximum allowed size of %d bytes", len(decoded), maxFileSizeBytes)
 		}

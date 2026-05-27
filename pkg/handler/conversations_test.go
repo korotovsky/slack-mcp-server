@@ -844,6 +844,15 @@ func TestUnitParseFilesUploadParams(t *testing.T) {
 		assert.Equal(t, 3, p.fileSize)
 	})
 
+	t.Run("whitespace-only base64 is rejected as zero bytes", func(t *testing.T) {
+		_, err := ch.parseParamsToolFilesUpload(context.Background(), makeReq(map[string]any{
+			"filename":       "a.bin",
+			"content_base64": "   \n\t ",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "zero bytes")
+	})
+
 	t.Run("line-wrapped base64 with whitespace decodes cleanly", func(t *testing.T) {
 		// Emulate `base64` CLI output: 76-col line wrap plus stray surrounding
 		// whitespace from the LLM concatenating fragments.
