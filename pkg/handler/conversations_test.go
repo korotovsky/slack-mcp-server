@@ -724,13 +724,12 @@ func TestUnitResolveAllowedFilePath(t *testing.T) {
 	})
 
 	t.Run("relative path resolves against cwd", func(t *testing.T) {
-		// Use the symlink-evaluated tmp dir as the allowlist so the comparison
-		// against EvalSymlinks(goodFile) succeeds on platforms where TempDir
-		// itself is a symlink (e.g. macOS /var -> /private/var).
-		resolvedTmp, err := filepath.EvalSymlinks(allowed)
+		// chdir into the allowed dir and pass a bare filename so the
+		// filepath.Abs (relative-to-cwd) branch is actually exercised.
+		t.Chdir(allowed)
+		_, size, err := resolveAllowedFilePath("ok.txt", allowed)
 		require.NoError(t, err)
-		_, _, err = resolveAllowedFilePath(goodFile, resolvedTmp)
-		require.NoError(t, err)
+		assert.Equal(t, 5, size)
 	})
 }
 
