@@ -2041,6 +2041,12 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		params.content = content
 		params.fileSize = len(content)
 	case contentBase64 != "":
+		// Reject oversized payloads before the strip/decode allocations: a
+		// value under the cap cannot encode to more than EncodedLen(cap), and
+		// the 2x margin leaves ample room for line-wrap whitespace.
+		if len(contentBase64) > 2*base64.StdEncoding.EncodedLen(maxFileSizeBytes) {
+			return nil, fmt.Errorf("content_base64 exceeds maximum allowed size of %d bytes", maxFileSizeBytes)
+		}
 		// `base64` CLI wraps at 76 cols by default and clients often forward
 		// that line-wrapped output verbatim. StdEncoding rejects whitespace,
 		// so strip it before decoding.
