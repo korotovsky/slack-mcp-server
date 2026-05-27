@@ -2063,6 +2063,9 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 	}
 
 	channel := strings.TrimSpace(request.GetString("channel_id", ""))
+	if params.threadTs != "" && channel == "" {
+		return nil, errors.New("thread_ts requires channel_id; a file with no channel cannot be placed in a thread")
+	}
 	if channel != "" {
 		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
 		if err != nil {
