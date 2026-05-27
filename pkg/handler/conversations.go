@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -109,6 +111,23 @@ type addReactionParams struct {
 
 type filesGetParams struct {
 	fileID string
+}
+
+type filesUploadParams struct {
+	channel        string
+	threadTs       string
+	filename       string
+	title          string
+	initialComment string
+	snippetType    string
+	altTxt         string
+
+	// Exactly one of content / contentBytes is set. A file_path source is
+	// read into contentBytes at parse time.
+	content      string
+	contentBytes []byte
+
+	fileSize int
 }
 
 type usersSearchParams struct {
@@ -493,6 +512,62 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		escapeJSON(contentStr))
 
 	return mcp.NewToolResultText(result), nil
+}
+
+func (ch *ConversationsHandler) FilesUploadHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesUploadHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	if tt := ch.apiProvider.TokenType(); tt != "xoxp" && tt != "xoxb" {
+		ch.logger.Error("files_upload invoked with unsupported token type", zap.String("token_type", tt))
+		return nil, errors.New("files_upload requires xoxp or xoxb token; xoxc/xoxd browser-session tokens are not supported by Slack's files.* API")
+	}
+
+	params, err := ch.parseParamsToolFilesUpload(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse files_upload params", zap.Error(err))
+		return nil, err
+	}
+
+	uploadParams := slack.UploadFileParameters{
+		Filename:        params.filename,
+		Title:           params.title,
+		InitialComment:  params.initialComment,
+		SnippetType:     params.snippetType,
+		AltTxt:          params.altTxt,
+		Channel:         params.channel,
+		ThreadTimestamp: params.threadTs,
+		FileSize:        params.fileSize,
+	}
+	switch {
+	case params.content != "":
+		uploadParams.Content = params.content
+	case params.contentBytes != nil:
+		uploadParams.Reader = bytes.NewReader(params.contentBytes)
+	}
+
+	ch.logger.Debug("Uploading file to Slack",
+		zap.String("filename", params.filename),
+		zap.String("channel", params.channel),
+		zap.Int("size", params.fileSize),
+	)
+	summary, err := ch.apiProvider.Slack().UploadFileContext(ctx, uploadParams)
+	if err != nil {
+		ch.logger.Error("Slack UploadFileContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	if params.channel != "" {
+		if params.threadTs != "" {
+			return mcp.NewToolResultText(fmt.Sprintf("Successfully uploaded file %s (file_id=%s) to channel %s in thread %s", params.filename, summary.ID, params.channel, params.threadTs)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully uploaded file %s (file_id=%s) to channel %s", params.filename, summary.ID, params.channel)), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully uploaded file %s (file_id=%s); not shared to any channel", params.filename, summary.ID)), nil
 }
 
 func isImageMimetype(mimetype string) bool {
@@ -1887,6 +1962,261 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 		timestamp: timestamp,
 		emoji:     emoji,
 	}, nil
+}
+
+// slackTimestampRegex matches a Slack message timestamp (10-digit seconds,
+// 6-digit microseconds), e.g. 1234567890.123456.
+var slackTimestampRegex = regexp.MustCompile(`^\d{10}\.\d{6}$`)
+
+// ensureChannelKnown verifies channelID exists in the channels cache before an
+// upload is staged. resolveChannelID passes raw IDs through unchecked, so an
+// invalid ID would only fail at CompleteUploadExternal, after the file is
+// already created in Slack and left orphaned. Refresh once on a cache miss to
+// tolerate channels created since the last sync.
+func (ch *ConversationsHandler) ensureChannelKnown(ctx context.Context, channelID string) error {
+	if _, ok := ch.apiProvider.ProvideChannelsMaps().Channels[channelID]; ok {
+		return nil
+	}
+
+	refreshErr := ch.apiProvider.ForceRefreshChannels(ctx)
+	if errors.Is(refreshErr, provider.ErrRefreshRateLimited) {
+		return fmt.Errorf("channel %q not found (cache refresh was rate-limited, try again later)", channelID)
+	}
+	if refreshErr != nil {
+		return fmt.Errorf("channel %q not found and cache refresh failed: %w", channelID, refreshErr)
+	}
+
+	if _, ok := ch.apiProvider.ProvideChannelsMaps().Channels[channelID]; !ok {
+		return fmt.Errorf("channel %q not found", channelID)
+	}
+	return nil
+}
+
+// isToolInEnabledList reports whether name is an exact entry in the
+// comma-separated SLACK_MCP_ENABLED_TOOLS value, matching the registration-time
+// semantics in pkg/server.
+func isToolInEnabledList(enabledTools, name string) bool {
+	for _, t := range strings.Split(enabledTools, ",") {
+		if strings.TrimSpace(t) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, request mcp.CallToolRequest) (*filesUploadParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_FILES_UPLOAD_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !isToolInEnabledList(enabledTools, "files_upload") {
+			ch.logger.Error("files_upload tool disabled by default")
+			return nil, errors.New(
+				"by default, the files_upload tool is disabled to guard Slack workspaces against accidental uploads. " +
+					"To enable it, set the SLACK_MCP_FILES_UPLOAD_TOOL environment variable to true, 1, or a comma-separated list of channels " +
+					"to limit where the MCP can post files, e.g. 'SLACK_MCP_FILES_UPLOAD_TOOL=C1234567890,D0987654321', 'SLACK_MCP_FILES_UPLOAD_TOOL=!C1234567890' " +
+					"to enable all except one, or 'SLACK_MCP_FILES_UPLOAD_TOOL=true' for all channels and DMs",
+			)
+		}
+		toolConfig = "true"
+	}
+
+	filename := strings.TrimSpace(request.GetString("filename", ""))
+	if filename == "" {
+		return nil, errors.New("filename is required")
+	}
+
+	content := request.GetString("content", "")
+	contentBase64 := request.GetString("content_base64", "")
+	filePath := request.GetString("file_path", "")
+
+	sources := 0
+	if content != "" {
+		sources++
+	}
+	if contentBase64 != "" {
+		sources++
+	}
+	if filePath != "" {
+		sources++
+	}
+	if sources == 0 {
+		return nil, errors.New("exactly one of content, content_base64, or file_path must be provided")
+	}
+	if sources > 1 {
+		return nil, errors.New("content, content_base64, and file_path are mutually exclusive; provide exactly one")
+	}
+
+	params := &filesUploadParams{
+		filename:       filename,
+		threadTs:       request.GetString("thread_ts", ""),
+		title:          request.GetString("title", ""),
+		initialComment: request.GetString("initial_comment", ""),
+		snippetType:    request.GetString("snippet_type", ""),
+		altTxt:         request.GetString("alt_txt", ""),
+	}
+
+	if params.threadTs != "" && !slackTimestampRegex.MatchString(params.threadTs) {
+		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	switch {
+	case content != "":
+		if len(content) > maxFileSizeBytes {
+			return nil, fmt.Errorf("content size %d bytes exceeds maximum allowed size of %d bytes", len(content), maxFileSizeBytes)
+		}
+		params.content = content
+		params.fileSize = len(content)
+	case contentBase64 != "":
+		// Reject oversized payloads before the strip/decode allocations: a
+		// value under the cap cannot encode to more than EncodedLen(cap), and
+		// the 2x margin leaves ample room for line-wrap whitespace.
+		if len(contentBase64) > 2*base64.StdEncoding.EncodedLen(maxFileSizeBytes) {
+			return nil, fmt.Errorf("content_base64 exceeds maximum allowed size of %d bytes", maxFileSizeBytes)
+		}
+		// `base64` CLI wraps at 76 cols by default and clients often forward
+		// that line-wrapped output verbatim. StdEncoding rejects whitespace,
+		// so strip it before decoding.
+		decoded, err := base64.StdEncoding.DecodeString(stripBase64Whitespace(contentBase64))
+		if err != nil {
+			return nil, fmt.Errorf("content_base64 is not valid base64: %w", err)
+		}
+		if len(decoded) == 0 {
+			return nil, errors.New("content_base64 decoded to zero bytes; provide non-empty content")
+		}
+		if len(decoded) > maxFileSizeBytes {
+			return nil, fmt.Errorf("decoded content_base64 size %d bytes exceeds maximum allowed size of %d bytes", len(decoded), maxFileSizeBytes)
+		}
+		params.contentBytes = decoded
+		params.fileSize = len(decoded)
+	case filePath != "":
+		resolved, _, err := resolveAllowedFilePath(filePath, os.Getenv("SLACK_MCP_FILES_UPLOAD_PATHS"))
+		if err != nil {
+			return nil, err
+		}
+		// Read the validated file through a single fd, capped, so the bytes
+		// uploaded are exactly what passed validation and Slack never re-opens
+		// the path (which would reintroduce a validate-vs-upload race).
+		f, err := os.Open(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("cannot open file_path: %w", err)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxFileSizeBytes+1))
+		f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("cannot read file_path: %w", err)
+		}
+		if len(data) > maxFileSizeBytes {
+			return nil, fmt.Errorf("file_path size exceeds maximum allowed size of %d bytes", maxFileSizeBytes)
+		}
+		params.contentBytes = data
+		params.fileSize = len(data)
+	}
+
+	channel := strings.TrimSpace(request.GetString("channel_id", ""))
+	if params.threadTs != "" && channel == "" {
+		return nil, errors.New("thread_ts requires channel_id; a file with no channel cannot be placed in a thread")
+	}
+	if channel == "" {
+		// A channel allowlist/blocklist policy can only be enforced against a
+		// target channel. An unshared upload (no channel_id) would sidestep it,
+		// so require channel_id whenever the policy is anything but allow-all.
+		if toolConfig != "true" && toolConfig != "1" {
+			return nil, fmt.Errorf("channel_id is required because SLACK_MCP_FILES_UPLOAD_TOOL restricts uploads to specific channels (policy: %s)", toolConfig)
+		}
+	} else {
+		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
+		if err != nil {
+			return nil, err
+		}
+		if !isChannelAllowedForConfig(resolvedChannel, toolConfig) {
+			ch.logger.Warn("files_upload tool not allowed for channel", zap.String("channel", resolvedChannel), zap.String("policy", toolConfig))
+			return nil, fmt.Errorf("files_upload tool is not allowed for channel %q, applied policy: %s", resolvedChannel, toolConfig)
+		}
+		if err := ch.ensureChannelKnown(ctx, resolvedChannel); err != nil {
+			return nil, err
+		}
+		params.channel = resolvedChannel
+	}
+
+	return params, nil
+}
+
+// stripBase64Whitespace removes ASCII whitespace from s. Standard base64
+// encoders (including the `base64` CLI) line-wrap their output, but Go's
+// base64.StdEncoding rejects any whitespace, so callers must clean it first.
+func stripBase64Whitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// resolveAllowedFilePath validates that path is inside one of the directories
+// listed in allowlist (CSV). It returns the symlink-resolved absolute path and
+// the file's size. Path components are evaluated through filepath.EvalSymlinks
+// before the allowlist check so a symlink inside an allowed dir cannot escape.
+func resolveAllowedFilePath(path, allowlist string) (string, int, error) {
+	if strings.TrimSpace(allowlist) == "" {
+		return "", 0, errors.New("file_path uploads require SLACK_MCP_FILES_UPLOAD_PATHS to be set with a comma-separated list of allowed directory prefixes")
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("cannot resolve absolute path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", 0, fmt.Errorf("file_path %q does not exist", path)
+		}
+		return "", 0, fmt.Errorf("cannot resolve file_path: %w", err)
+	}
+
+	allowed := false
+	for _, entry := range strings.Split(allowlist, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		entryAbs, err := filepath.Abs(entry)
+		if err != nil {
+			continue
+		}
+		entryResolved, err := filepath.EvalSymlinks(entryAbs)
+		if err != nil {
+			// Allow non-existent prefixes to be skipped rather than failing the whole call.
+			continue
+		}
+		rel, err := filepath.Rel(entryResolved, resolved)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		allowed = true
+		break
+	}
+	if !allowed {
+		return "", 0, fmt.Errorf("file_path %q is not inside any directory listed in SLACK_MCP_FILES_UPLOAD_PATHS", path)
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", 0, fmt.Errorf("cannot stat file_path: %w", err)
+	}
+	if info.IsDir() {
+		return "", 0, fmt.Errorf("file_path %q is a directory; provide a file path", path)
+	}
+	if info.Size() > maxFileSizeBytes {
+		return "", 0, fmt.Errorf("file_path size %d bytes exceeds maximum allowed size of %d bytes", info.Size(), maxFileSizeBytes)
+	}
+
+	return resolved, int(info.Size()), nil
 }
 
 func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
