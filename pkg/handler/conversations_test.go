@@ -803,7 +803,6 @@ func TestUnitParseFilesUploadParams(t *testing.T) {
 		assert.Equal(t, 5, p.fileSize)
 		assert.Equal(t, "python", p.snippetType)
 		assert.Empty(t, p.contentBytes)
-		assert.Empty(t, p.filePath)
 	})
 
 	t.Run("text content exceeding size cap is rejected", func(t *testing.T) {
@@ -903,7 +902,7 @@ func TestUnitParseFilesUploadParams(t *testing.T) {
 		}))
 		require.NoError(t, err)
 		assert.Equal(t, 3, p.fileSize)
-		assert.NotEmpty(t, p.filePath)
+		assert.Equal(t, []byte("xyz"), p.contentBytes)
 	})
 
 	t.Run("invalid thread_ts format is rejected", func(t *testing.T) {

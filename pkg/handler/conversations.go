@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -121,10 +122,10 @@ type filesUploadParams struct {
 	snippetType    string
 	altTxt         string
 
-	// Exactly one of content / contentBytes / filePath is set.
+	// Exactly one of content / contentBytes is set. A file_path source is
+	// read into contentBytes at parse time.
 	content      string
 	contentBytes []byte
-	filePath     string
 
 	fileSize int
 }
@@ -547,8 +548,6 @@ func (ch *ConversationsHandler) FilesUploadHandler(ctx context.Context, request 
 		uploadParams.Content = params.content
 	case params.contentBytes != nil:
 		uploadParams.Reader = bytes.NewReader(params.contentBytes)
-	case params.filePath != "":
-		uploadParams.File = params.filePath
 	}
 
 	ch.logger.Debug("Uploading file to Slack",
@@ -2063,12 +2062,27 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 		params.contentBytes = decoded
 		params.fileSize = len(decoded)
 	case filePath != "":
-		resolved, size, err := resolveAllowedFilePath(filePath, os.Getenv("SLACK_MCP_FILES_UPLOAD_PATHS"))
+		resolved, _, err := resolveAllowedFilePath(filePath, os.Getenv("SLACK_MCP_FILES_UPLOAD_PATHS"))
 		if err != nil {
 			return nil, err
 		}
-		params.filePath = resolved
-		params.fileSize = size
+		// Read the validated file through a single fd, capped, so the bytes
+		// uploaded are exactly what passed validation and Slack never re-opens
+		// the path (which would reintroduce a validate-vs-upload race).
+		f, err := os.Open(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("cannot open file_path: %w", err)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxFileSizeBytes+1))
+		f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("cannot read file_path: %w", err)
+		}
+		if len(data) > maxFileSizeBytes {
+			return nil, fmt.Errorf("file_path size exceeds maximum allowed size of %d bytes", maxFileSizeBytes)
+		}
+		params.contentBytes = data
+		params.fileSize = len(data)
 	}
 
 	channel := strings.TrimSpace(request.GetString("channel_id", ""))
