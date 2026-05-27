@@ -2066,7 +2066,14 @@ func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, 
 	if params.threadTs != "" && channel == "" {
 		return nil, errors.New("thread_ts requires channel_id; a file with no channel cannot be placed in a thread")
 	}
-	if channel != "" {
+	if channel == "" {
+		// A channel allowlist/blocklist policy can only be enforced against a
+		// target channel. An unshared upload (no channel_id) would sidestep it,
+		// so require channel_id whenever the policy is anything but allow-all.
+		if toolConfig != "true" && toolConfig != "1" {
+			return nil, fmt.Errorf("channel_id is required because SLACK_MCP_FILES_UPLOAD_TOOL restricts uploads to specific channels (policy: %s)", toolConfig)
+		}
+	} else {
 		resolvedChannel, err := ch.resolveChannelID(ctx, channel)
 		if err != nil {
 			return nil, err
