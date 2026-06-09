@@ -198,6 +198,9 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.WithString("blocks",
 				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
 			),
+			mcp.WithBoolean("reply_broadcast",
+				mcp.Description("When posting a threaded reply (thread_ts is set), also make the reply visible in the channel ('also send to channel'). Has no effect on top-level messages. Default is boolean false."),
+			),
 		), conversationsHandler.ConversationsAddMessageHandler)
 	}
 
