@@ -301,6 +301,10 @@ Fetches a CSV directory of all users in the workspace.
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
 
+#### Personal Docker Compose override
+
+Docker Compose auto-merges a `docker-compose.override.yml` next to the base file (no `-f` needed). A template is shipped as `docker-compose.override.yml.dist` — copy it, fill your `.env` with real tokens, and `docker compose up -d` picks it up. Both `docker-compose.override.yml` and `.env` are gitignored, so secrets stay local. See [Configuration and Usage](docs/03-configuration-and-usage.md#personal-override-via-docker-composeoverrideyml) for details.
+
 ### Limitations matrix & Cache
 
 | Users Cache        | Channels Cache     | Limitations                                                                                                                                                                                                                                                                                                                  |
