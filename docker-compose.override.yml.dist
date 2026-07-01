@@ -1,0 +1,18 @@
+# Personal override — copy to docker-compose.override.yml and fill .env.
+# docker-compose.override.yml is gitignored and auto-merged by `docker compose up`,
+# so `docker compose up -d` picks it up automatically without `-f`.
+#
+# Put your real Slack tokens in a local .env file (already gitignored):
+#   SLACK_MCP_XOXP_TOKEN=xoxp-...
+#   SLACK_MCP_XOXB_TOKEN=xoxb-...
+# See docs/01-authentication-setup.md for how to obtain tokens.
+services:
+  mcp-server:
+    env_file:
+      - .env
+    environment:
+      SLACK_MCP_HOST: "0.0.0.0"
+      SLACK_MCP_PORT: "3001"
+      SLACK_MCP_ADD_MESSAGE_TOOL: "true"
+    ports:
+      - "3001:3001"

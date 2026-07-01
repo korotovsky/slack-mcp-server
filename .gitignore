@@ -14,4 +14,6 @@
 /npm/slack-mcp-server/.npmrc
 /npm/slack-mcp-server/LICENSE
 /npm/slack-mcp-server/README.md
+# Personal docker-compose override (auto-merged by compose, local-only)
+docker-compose.override.yml
 docker-compose.release.yml

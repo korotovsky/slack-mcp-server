@@ -246,6 +246,27 @@ docker network create app-tier
 docker-compose up -d
 ```
 
+#### Personal override via `docker-compose.override.yml`
+
+Docker Compose automatically merges a `docker-compose.override.yml` next to the base `docker-compose.yml` — no `-f` flag needed. This is the recommended way to personalise the deployment (tokens, host, port, feature flags) without editing the base file or committing secrets.
+
+A template is shipped as `docker-compose.override.yml.dist`. To use it:
+
+```bash
+cp docker-compose.override.yml.dist docker-compose.override.yml
+cp .env.dist .env          # if you don't already have one
+nano .env                  # add your real Slack tokens (see docs/01-authentication-setup.md)
+docker compose up -d
+```
+
+`docker-compose.override.yml` is listed in `.gitignore`, and `.env` is already gitignored, so your tokens never end up in version control.
+
+The override template references `env_file: .env`, so the same variables documented in [Environment Variables](#environment-variables) (`SLACK_MCP_XOXP_TOKEN`, `SLACK_MCP_XOXB_TOKEN`, etc.) are loaded from your local `.env`. Override `SLACK_MCP_HOST`, `SLACK_MCP_PORT`, and feature flags like `SLACK_MCP_ADD_MESSAGE_TOOL` directly in the override file when needed.
+
+> **Note on port merging:** Compose *appends* `ports` from the base file and the override, so with the template above both `3001:3001` (base) and `3001:3001` (override) are published. To suppress the base ports, set `ports: []` in your local override.
+
+> **Security:** Never commit real tokens. Keep them in `.env` (gitignored) or in your local `docker-compose.override.yml` (gitignored). See [SECURITY.md](../SECURITY.md).
+
 ### Console Arguments
 
 | Argument                    | Required ? | Description                                                                                                                                                                                                         |
