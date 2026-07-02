@@ -101,6 +101,16 @@ type addMessageParams struct {
 	blocks      []slack.Block
 }
 
+type deleteMessageParams struct {
+	channel   string
+	timestamp string
+}
+
+type openConversationParams struct {
+	users    []string
+	returnIM bool
+}
+
 type addReactionParams struct {
 	channel   string
 	timestamp string
@@ -282,6 +292,174 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)", respChannel, params.threadTs, respTimestamp)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)", respChannel, respTimestamp)), nil
+}
+
+// ConversationsDeleteMessageHandler deletes a message and returns a confirmation
+func (ch *ConversationsHandler) ConversationsDeleteMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsDeleteMessageHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolDeleteMessage(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse delete-message params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Deleting Slack message",
+		zap.String("channel", params.channel),
+		zap.String("timestamp", params.timestamp),
+	)
+	respChannel, respTimestamp, err := ch.apiProvider.Slack().DeleteMessageContext(ctx, params.channel, params.timestamp)
+	if err != nil {
+		ch.logger.Error("Slack DeleteMessageContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully deleted message from channel %s (ts=%s)", respChannel, respTimestamp)), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolDeleteMessage(ctx context.Context, request mcp.CallToolRequest) (*deleteMessageParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_DELETE_MESSAGE_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+
+	if toolConfig == "" {
+		if !strings.Contains(enabledTools, "conversations_delete_message") {
+			ch.logger.Error("Delete-message tool disabled by default")
+			return nil, errors.New(
+				"by default, the conversations_delete_message tool is disabled to guard Slack workspaces against accidental deletion. " +
+					"To enable it, set the SLACK_MCP_DELETE_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels, " +
+					"e.g. 'SLACK_MCP_DELETE_MESSAGE_TOOL=true' for all channels and DMs",
+			)
+		}
+		toolConfig = "true"
+	}
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in delete-message params")
+		return nil, errors.New("channel_id must be a string")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+	if !isChannelAllowedForConfig(channel, toolConfig) {
+		ch.logger.Warn("Delete-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return nil, fmt.Errorf("conversations_delete_message tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	}
+
+	timestamp := request.GetString("timestamp", "")
+	if timestamp == "" {
+		ch.logger.Error("timestamp missing in delete-message params")
+		return nil, errors.New("timestamp must be a string")
+	}
+	if !strings.Contains(timestamp, ".") {
+		ch.logger.Error("Invalid timestamp format", zap.String("timestamp", timestamp))
+		return nil, errors.New("timestamp must be a valid timestamp in format 1234567890.123456")
+	}
+
+	return &deleteMessageParams{
+		channel:   channel,
+		timestamp: timestamp,
+	}, nil
+}
+
+// ConversationsOpenHandler opens (or resumes) a direct message or multi-person
+// direct message and returns the resulting channel ID.
+func (ch *ConversationsHandler) ConversationsOpenHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsOpenHandler called", zap.Any("params", request.Params))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolOpenConversation(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse open-conversation params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Opening Slack conversation", zap.Strings("users", params.users))
+	channel, noOp, alreadyOpen, err := ch.apiProvider.Slack().OpenConversationContext(ctx, &slack.OpenConversationParameters{
+		Users:    params.users,
+		ReturnIM: params.returnIM,
+	})
+	if err != nil {
+		ch.logger.Error("Slack OpenConversationContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"Opened conversation %s with users [%s] (already_open=%v, no_op=%v)",
+		channel.ID, strings.Join(params.users, ", "), alreadyOpen, noOp,
+	)), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolOpenConversation(ctx context.Context, request mcp.CallToolRequest) (*openConversationParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_OPEN_CONVERSATION_TOOL")
+	if toolConfig == "" {
+		ch.logger.Error("Open-conversation tool disabled by default")
+		return nil, errors.New(
+			"by default, the conversations_open tool is disabled to guard against accidentally creating new DMs or group DMs. " +
+				"To enable it, set the SLACK_MCP_OPEN_CONVERSATION_TOOL environment variable to true, " +
+				"e.g. 'SLACK_MCP_OPEN_CONVERSATION_TOOL=true'",
+		)
+	}
+
+	raw := request.GetString("users", "")
+	if raw == "" {
+		ch.logger.Error("users missing in open-conversation params")
+		return nil, errors.New("users must be a non-empty comma-separated list of Slack user IDs, @handles, or emails")
+	}
+
+	tokens := strings.Split(raw, ",")
+	userIDs := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "@"))
+		if token == "" {
+			continue
+		}
+
+		// SearchUsers already short-circuits to an exact ID lookup when token
+		// looks like a Slack user ID (Uxxxxxxxxxx), so we don't duplicate that
+		// pattern match here - every token, ID or handle, goes through it.
+		matches, err := ch.apiProvider.SearchUsers(ctx, token, 5)
+		if err != nil {
+			ch.logger.Error("Failed to resolve user for open-conversation", zap.String("query", token), zap.Error(err))
+			return nil, fmt.Errorf("failed to resolve user %q: %w", token, err)
+		}
+		exact := make([]slack.User, 0, 1)
+		for _, m := range matches {
+			if strings.EqualFold(m.Name, token) || strings.EqualFold(m.Profile.DisplayName, token) || strings.EqualFold(m.Profile.Email, token) {
+				exact = append(exact, m)
+			}
+		}
+		switch {
+		case len(exact) == 1:
+			userIDs = append(userIDs, exact[0].ID)
+		case len(matches) == 1:
+			userIDs = append(userIDs, matches[0].ID)
+		case len(matches) == 0:
+			return nil, fmt.Errorf("no Slack user found matching %q", token)
+		default:
+			return nil, fmt.Errorf("ambiguous user %q matched %d users, use a raw user ID (Uxxxxxxxxxx) instead", token, len(matches))
+		}
+	}
+
+	if len(userIDs) == 0 {
+		return nil, errors.New("no valid users resolved from the users parameter")
+	}
+
+	return &openConversationParams{
+		users:    userIDs,
+		returnIM: request.GetBool("return_im", false),
+	}, nil
 }
 
 // ReactionsAddHandler adds an emoji reaction to a message

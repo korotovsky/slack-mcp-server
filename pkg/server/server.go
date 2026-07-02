@@ -28,6 +28,8 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsDeleteMessage  = "conversations_delete_message"
+	ToolConversationsOpen           = "conversations_open"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -53,6 +55,8 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsDeleteMessage,
+	ToolConversationsOpen,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -199,6 +203,38 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
 			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteMessage, enabledTools, "SLACK_MCP_DELETE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteMessage,
+			mcp.WithDescription("Delete a message from a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and timestamp."),
+			mcp.WithTitleAnnotation("Delete Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("timestamp",
+				mcp.Required(),
+				mcp.Description("The timestamp of the message to delete in format 1234567890.123456."),
+			),
+		), conversationsHandler.ConversationsDeleteMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsOpen, enabledTools, "SLACK_MCP_OPEN_CONVERSATION_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsOpen,
+			mcp.WithDescription("Open or resume a direct message (1 user) or multi-person direct message / group DM (2+ users). Returns the resulting channel_id, which can then be used with conversations_add_message."),
+			mcp.WithTitleAnnotation("Open Conversation"),
+			mcp.WithIdempotentHintAnnotation(true),
+			mcp.WithString("users",
+				mcp.Required(),
+				mcp.Description("Comma-separated list of Slack user IDs, @handles, or emails to open a conversation with, e.g. 'U0123456,U0654321' or '@iffat.hasan,@mary.toledano'. One user opens/resumes a 1:1 DM; two or more open/resume a group DM (mpim)."),
+			),
+			mcp.WithBoolean("return_im",
+				mcp.DefaultBool(false),
+				mcp.Description("Whether to return the full IM channel definition in the response. Only meaningful for a single-user (1:1 DM) request."),
+			),
+		), conversationsHandler.ConversationsOpenHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
