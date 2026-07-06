@@ -1711,6 +1711,17 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 		}
 	}
 
+	// An explicit `oldest` timestamp takes precedence over the window derived
+	// from a duration `limit`, letting a client fetch messages strictly after a
+	// known marker (e.g. a channel's last_read).
+	if oldest := request.GetString("oldest", ""); oldest != "" {
+		if !isValidSlackTimestamp(oldest) {
+			ch.logger.Error("Invalid oldest timestamp", zap.String("oldest", oldest))
+			return nil, fmt.Errorf("invalid oldest timestamp %q: expected a Slack ts like 1234567890.123456", oldest)
+		}
+		paramOldest = oldest
+	}
+
 	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
 		if ready, err := ch.apiProvider.IsReady(); !ready {
 			if errors.Is(err, provider.ErrUsersNotReady) {
@@ -2235,6 +2246,16 @@ func limitByExpression(limit, defaultLimit string) (slackLimit int, oldest, late
 	latest = fmt.Sprintf("%d.000000", now.Unix())
 	oldest = fmt.Sprintf("%d.000000", oldestTime.Unix())
 	return 100, oldest, latest, nil
+}
+
+// slackTimestampRegex matches a Slack message timestamp: unix seconds with an
+// optional fractional part, e.g. "1234567890.123456".
+var slackTimestampRegex = regexp.MustCompile(`^\d+(\.\d+)?$`)
+
+// isValidSlackTimestamp reports whether s is a Slack timestamp usable as an
+// `oldest` bound (unix seconds, optionally with a fractional part).
+func isValidSlackTimestamp(s string) bool {
+	return slackTimestampRegex.MatchString(s)
 }
 
 func extractThreadTS(rawurl string) (string, error) {

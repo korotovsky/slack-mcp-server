@@ -13,12 +13,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestIntegrationConversations(t *testing.T) {
@@ -652,4 +654,107 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnitIsValidSlackTimestamp(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   string
+		want bool
+	}{
+		{"canonical last_read", "1234567890.123456", true},
+		{"bare unix seconds", "1700000000", true},
+		{"zero sentinel", "0000000000.000000", true},
+		{"empty", "", false},
+		{"non-numeric", "not-a-ts", false},
+		{"channel name", "#general", false},
+		{"trailing dot", "123.", false},
+		{"leading dot", ".123", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidSlackTimestamp(tt.ts); got != tt.want {
+				t.Errorf("isValidSlackTimestamp(%q) = %v, want %v", tt.ts, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUnitParseParamsToolConversationsOldest covers the client-settable absolute
+// `oldest` param on conversations_history: it is used when provided, overrides the
+// window derived from a duration `limit`, and is validated as a Slack timestamp.
+func TestUnitParseParamsToolConversationsOldest(t *testing.T) {
+	ch := &ConversationsHandler{logger: zap.NewNop()}
+	ctx := context.Background()
+
+	newReq := func(args map[string]any) mcp.CallToolRequest {
+		req := mcp.CallToolRequest{}
+		req.Params.Arguments = args
+		return req
+	}
+
+	t.Run("explicit oldest is used", func(t *testing.T) {
+		params, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"oldest":     "1700000000.000100",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "1700000000.000100", params.oldest)
+	})
+
+	t.Run("explicit oldest overrides duration-derived oldest, latest preserved", func(t *testing.T) {
+		params, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"limit":      "1d",
+			"oldest":     "1700000000.000100",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "1700000000.000100", params.oldest)
+		assert.NotEmpty(t, params.latest, "duration-derived latest upper bound should survive the oldest override")
+	})
+
+	t.Run("numeric limit with oldest sets both, no latest bound", func(t *testing.T) {
+		params, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"limit":      "50",
+			"oldest":     "1700000000.000100",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "1700000000.000100", params.oldest)
+		assert.Equal(t, 50, params.limit)
+		assert.Empty(t, params.latest, "numeric limit should not set a latest upper bound")
+	})
+
+	t.Run("no oldest keeps duration-derived oldest", func(t *testing.T) {
+		params, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"limit":      "1d",
+		}))
+		require.NoError(t, err)
+		assert.NotEmpty(t, params.oldest)
+		assert.True(t, strings.HasSuffix(params.oldest, ".000000"),
+			"duration-derived oldest should be a whole-second ts, got %q", params.oldest)
+	})
+
+	t.Run("invalid oldest returns error", func(t *testing.T) {
+		_, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"oldest":     "not-a-ts",
+		}))
+		require.Error(t, err)
+	})
+
+	// Bounded pagination requires oldest to survive alongside a cursor: Slack's
+	// cursor encodes only a position, not the oldest floor, so a client must
+	// re-send oldest on each page or the lower bound is lost.
+	t.Run("oldest is kept alongside a cursor", func(t *testing.T) {
+		params, err := ch.parseParamsToolConversations(ctx, newReq(map[string]any{
+			"channel_id": "C123",
+			"cursor":     "bmV4dF90czoxNzgz",
+			"oldest":     "1700000000.000100",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "1700000000.000100", params.oldest)
+		assert.Equal(t, "bmV4dF90czoxNzgz", params.cursor)
+	})
 }
