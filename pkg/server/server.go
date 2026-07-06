@@ -146,6 +146,9 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.DefaultString("1d"),
 				mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 1w - 1 week, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
 			),
+			mcp.WithString("oldest",
+				mcp.Description("Only include messages after this Slack timestamp (e.g. '1234567890.123456'), exclusive (a message whose ts equals 'oldest' is excluded). Useful to fetch only what is new since a known point, such as a channel's last_read marker. When more messages match than fit in one page, Slack returns the earliest ones first; keep 'oldest' set on each request and follow the returned 'cursor' to page through the rest (dropping 'oldest' while paging loses the lower bound)."),
+			),
 		), conversationsHandler.ConversationsHistoryHandler)
 	}
 
@@ -172,6 +175,9 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.WithString("limit",
 				mcp.DefaultString("1d"),
 				mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
+			),
+			mcp.WithString("oldest",
+				mcp.Description("Only include replies after this Slack timestamp (e.g. '1234567890.123456'), exclusive (a reply whose ts equals 'oldest' is excluded). The thread's parent message is always returned. When more replies match than fit in one page, Slack returns the earliest ones first; keep 'oldest' set on each request and follow the returned 'cursor' to page through the rest (dropping 'oldest' while paging loses the lower bound)."),
 			),
 		), conversationsHandler.ConversationsRepliesHandler)
 	}
