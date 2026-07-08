@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -652,4 +653,60 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnitToChannelInfo(t *testing.T) {
+	t.Run("maps every field from a channel", func(t *testing.T) {
+		c := &slack.Channel{
+			GroupConversation: slack.GroupConversation{
+				Conversation: slack.Conversation{
+					ID:          "C0123456789",
+					LastRead:    "1783012455.512009",
+					UnreadCount: 3,
+					IsPrivate:   true,
+					IsExtShared: true,
+					NumMembers:  42,
+				},
+				Name: "general",
+			},
+			IsMember: true,
+		}
+
+		got := toChannelInfo(c)
+
+		assert.Equal(t, ChannelInfo{
+			ID:          "C0123456789",
+			Name:        "general",
+			LastRead:    "1783012455.512009",
+			UnreadCount: 3,
+			IsMember:    true,
+			IsPrivate:   true,
+			IsExtShared: true,
+			NumMembers:  42,
+		}, got)
+	})
+
+	t.Run("zero-value channel maps to zero-value info", func(t *testing.T) {
+		assert.Equal(t, ChannelInfo{}, toChannelInfo(&slack.Channel{}))
+	})
+
+	t.Run("DM carries id and unread_count but no name or membership", func(t *testing.T) {
+		c := &slack.Channel{
+			GroupConversation: slack.GroupConversation{
+				Conversation: slack.Conversation{
+					ID:          "D0123456789",
+					IsIM:        true,
+					LastRead:    "1783000000.000100",
+					UnreadCount: 5,
+				},
+			},
+		}
+
+		got := toChannelInfo(c)
+
+		assert.Equal(t, "D0123456789", got.ID)
+		assert.Empty(t, got.Name)
+		assert.Equal(t, 5, got.UnreadCount)
+		assert.False(t, got.IsMember)
+	})
 }

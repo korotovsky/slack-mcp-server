@@ -563,6 +563,70 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 	return marshalMessagesToCSV(messages)
 }
 
+// ChannelInfo is the conversations_info output: a single channel's or DM's
+// metadata plus the caller's read state.
+type ChannelInfo struct {
+	ID          string `csv:"ID"`
+	Name        string `csv:"Name"`
+	LastRead    string `csv:"LastRead"`
+	UnreadCount int    `csv:"UnreadCount"`
+	IsMember    bool   `csv:"IsMember"`
+	IsPrivate   bool   `csv:"IsPrivate"`
+	IsExtShared bool   `csv:"IsExtShared"`
+	NumMembers  int    `csv:"NumMembers"`
+}
+
+// toChannelInfo projects a slack.Channel onto the conversations_info output.
+func toChannelInfo(c *slack.Channel) ChannelInfo {
+	return ChannelInfo{
+		ID:          c.ID,
+		Name:        c.Name,
+		LastRead:    c.LastRead,
+		UnreadCount: c.UnreadCount,
+		IsMember:    c.IsMember,
+		IsPrivate:   c.IsPrivate,
+		IsExtShared: c.IsExtShared,
+		NumMembers:  c.NumMembers,
+	}
+}
+
+// ConversationsInfoHandler returns metadata and read state for a single
+// channel or DM as CSV. LastRead is the read boundary (a Slack ts) a caller
+// can use as a lower bound when fetching newer messages.
+func (ch *ConversationsHandler) ConversationsInfoHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsInfoHandler called", zap.Any("params", request.Params))
+
+	channel := request.GetString("channel_id", "")
+	if channel == "" {
+		ch.logger.Error("channel_id missing in conversations_info params")
+		return nil, errors.New("channel_id must be a string")
+	}
+
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+
+	// IncludeNumMembers so num_members is populated; conversations.info omits it otherwise.
+	info, err := ch.apiProvider.Slack().GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+		ChannelID:         channel,
+		IncludeNumMembers: true,
+	})
+	if err != nil {
+		ch.logger.Error("GetConversationInfoContext failed", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
+
+	rows := []ChannelInfo{toChannelInfo(info)}
+	csvBytes, err := gocsv.MarshalBytes(&rows)
+	if err != nil {
+		ch.logger.Error("Failed to marshal channel info to CSV", zap.Error(err))
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
 // ConversationsRepliesHandler streams thread replies as CSV
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))

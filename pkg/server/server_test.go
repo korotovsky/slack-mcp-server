@@ -96,6 +96,7 @@ func TestValidToolNames(t *testing.T) {
 		expectedTools := map[string]bool{
 			ToolConversationsHistory:        true,
 			ToolConversationsReplies:        true,
+			ToolConversationsInfo:           true,
 			ToolConversationsAddMessage:     true,
 			ToolReactionsAdd:                true,
 			ToolReactionsRemove:             true,
@@ -128,6 +129,7 @@ func TestValidToolNames(t *testing.T) {
 	t.Run("constants match their string values", func(t *testing.T) {
 		assert.Equal(t, "conversations_history", ToolConversationsHistory)
 		assert.Equal(t, "conversations_replies", ToolConversationsReplies)
+		assert.Equal(t, "conversations_info", ToolConversationsInfo)
 		assert.Equal(t, "conversations_add_message", ToolConversationsAddMessage)
 		assert.Equal(t, "reactions_add", ToolReactionsAdd)
 		assert.Equal(t, "reactions_remove", ToolReactionsRemove)
