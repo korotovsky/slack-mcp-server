@@ -27,6 +27,7 @@ type MCPServer struct {
 const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
+	ToolConversationsInfo           = "conversations_info"
 	ToolConversationsAddMessage     = "conversations_add_message"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
@@ -52,6 +53,7 @@ const (
 var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
+	ToolConversationsInfo,
 	ToolConversationsAddMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
@@ -174,6 +176,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Limit of messages to fetch in format of maximum ranges of time (e.g. 1d - 1 day, 30d - 30 days, 90d - 90 days which is a default limit for free tier history) or number of messages (e.g. 50). Must be empty when 'cursor' is provided."),
 			),
 		), conversationsHandler.ConversationsRepliesHandler)
+	}
+
+	if shouldAddTool(ToolConversationsInfo, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsInfo,
+			mcp.WithDescription("Get metadata and your read state for a single channel or DM by channel_id. Returns a one-row CSV with columns ID, Name, LastRead, UnreadCount, IsMember, IsPrivate, IsExtShared, NumMembers. LastRead is the Slack timestamp of the last message you read: the read boundary you can use as a lower bound when fetching newer messages. Read state depends on the token: with OAuth user tokens (xoxp), UnreadCount is populated only for DMs; for channels, groups, and MPIMs it is 0, so rely on LastRead rather than UnreadCount. With bot tokens (xoxb) Slack populates neither, so LastRead and UnreadCount come back empty."),
+			mcp.WithTitleAnnotation("Get Conversation Info"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+		), conversationsHandler.ConversationsInfoHandler)
 	}
 
 	if shouldAddTool(ToolConversationsAddMessage, enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL") {
