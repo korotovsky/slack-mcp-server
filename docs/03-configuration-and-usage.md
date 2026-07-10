@@ -102,6 +102,16 @@ Open your `claude_desktop_config.json` and add the mcp server to the list of `mc
 }
 ```
 
+#### Autohand Code
+
+With [Autohand Code](https://github.com/autohandai/code-cli/), register the npm server and provide one of the supported Slack tokens through `env`:
+
+```shell
+autohand mcp add slack env SLACK_MCP_XOXP_TOKEN=xoxp-... npx -y slack-mcp-server@latest --transport stdio
+```
+
+Replace the example token before running the command. Add `--scope project` after `mcp add` to keep the registration in the current workspace.
+
 <details>
 <summary>Or, stdio transport with docker.</summary>
 
