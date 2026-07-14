@@ -93,12 +93,18 @@ type searchParams struct {
 	page  int
 }
 
-type addMessageParams struct {
+type writeMessageParams struct {
 	channel     string
-	threadTs    string
+	messageTs   string // non-empty = edit mode
+	threadTs    string // only used in add mode
 	text        string
 	contentType string
 	blocks      []slack.Block
+}
+
+type deleteMessageParams struct {
+	channel   string
+	messageTs string
 }
 
 type addReactionParams struct {
@@ -203,9 +209,10 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 	}, nil
 }
 
-// ConversationsAddMessageHandler posts a message and returns a confirmation
-func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
+// ConversationsWriteMessageHandler posts or edits a message and returns a confirmation.
+// If message_ts is provided, it edits the existing message; otherwise it posts a new one.
+func (ch *ConversationsHandler) ConversationsWriteMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsWriteMessageHandler called", zap.Any("params", request.Params))
 
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
@@ -213,16 +220,13 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolAddMessage(ctx, request)
+	params, err := ch.parseParamsToolWriteMessage(ctx, request)
 	if err != nil {
-		ch.logger.Error("Failed to parse add-message params", zap.Error(err))
+		ch.logger.Error("Failed to parse write-message params", zap.Error(err))
 		return nil, err
 	}
 
 	var options []slack.MsgOption
-	if params.threadTs != "" {
-		options = append(options, slack.MsgOptionTS(params.threadTs))
-	}
 
 	if params.blocks != nil {
 		// Raw blocks provided: use them directly. If text is also provided, it
@@ -250,38 +254,91 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		}
 	}
 
-	unfurlOpt := os.Getenv("SLACK_MCP_ADD_MESSAGE_UNFURLING")
-	if text.IsUnfurlingEnabled(params.text, unfurlOpt, ch.logger) {
-		options = append(options, slack.MsgOptionEnableLinkUnfurl())
-	} else {
-		options = append(options, slack.MsgOptionDisableLinkUnfurl())
-		options = append(options, slack.MsgOptionDisableMediaUnfurl())
-	}
+	var respChannel, respTimestamp string
 
-	ch.logger.Debug("Posting Slack message",
-		zap.String("channel", params.channel),
-		zap.String("thread_ts", params.threadTs),
-		zap.String("content_type", params.contentType),
-	)
-	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
-	if err != nil {
-		ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
-		return nil, err
-	}
-
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
-	if toolConfig == "1" || toolConfig == "true" || toolConfig == "yes" {
-		err := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
+	if params.messageTs != "" {
+		// Edit mode
+		ch.logger.Debug("Updating Slack message",
+			zap.String("channel", params.channel),
+			zap.String("message_ts", params.messageTs),
+			zap.String("content_type", params.contentType),
+		)
+		respChannel, respTimestamp, _, err = ch.apiProvider.Slack().UpdateMessageContext(ctx, params.channel, params.messageTs, options...)
 		if err != nil {
-			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
+			ch.logger.Error("Slack UpdateMessageContext failed", zap.Error(err))
 			return nil, err
+		}
+	} else {
+		// Add mode
+		if params.threadTs != "" {
+			options = append(options, slack.MsgOptionTS(params.threadTs))
+		}
+
+		unfurlOpt := os.Getenv("SLACK_MCP_ADD_MESSAGE_UNFURLING")
+		if text.IsUnfurlingEnabled(params.text, unfurlOpt, ch.logger) {
+			options = append(options, slack.MsgOptionEnableLinkUnfurl())
+		} else {
+			options = append(options, slack.MsgOptionDisableLinkUnfurl())
+			options = append(options, slack.MsgOptionDisableMediaUnfurl())
+		}
+
+		ch.logger.Debug("Posting Slack message",
+			zap.String("channel", params.channel),
+			zap.String("thread_ts", params.threadTs),
+			zap.String("content_type", params.contentType),
+		)
+		respChannel, respTimestamp, err = ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
+		if err != nil {
+			ch.logger.Error("Slack PostMessageContext failed", zap.Error(err))
+			return nil, err
+		}
+
+		markConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
+		if markConfig == "1" || markConfig == "true" || markConfig == "yes" {
+			err := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
+			if err != nil {
+				ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
+				return nil, err
+			}
 		}
 	}
 
+	if params.messageTs != "" {
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully updated message in channel %s (ts=%s)", respChannel, respTimestamp)), nil
+	}
 	if params.threadTs != "" {
 		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)", respChannel, params.threadTs, respTimestamp)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)", respChannel, respTimestamp)), nil
+}
+
+// ConversationsDeleteMessageHandler deletes a message
+func (ch *ConversationsHandler) ConversationsDeleteMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("ConversationsDeleteMessageHandler called", zap.Any("params", request.Params))
+
+	// provider readiness
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		ch.logger.Error("API provider not ready", zap.Error(err))
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolDeleteMessage(ctx, request)
+	if err != nil {
+		ch.logger.Error("Failed to parse delete-message params", zap.Error(err))
+		return nil, err
+	}
+
+	ch.logger.Debug("Deleting Slack message",
+		zap.String("channel", params.channel),
+		zap.String("message_ts", params.messageTs),
+	)
+	respChannel, respTimestamp, err := ch.apiProvider.Slack().DeleteMessageContext(ctx, params.channel, params.messageTs)
+	if err != nil {
+		ch.logger.Error("Slack DeleteMessageContext failed", zap.Error(err))
+		return nil, err
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully deleted message %s in channel %s", respTimestamp, respChannel)), nil
 }
 
 // ReactionsAddHandler adds an emoji reaction to a message
@@ -1482,10 +1539,6 @@ func isChannelAllowedForConfig(channel, config string) bool {
 	return isNegated
 }
 
-func isChannelAllowed(channel string) bool {
-	return isChannelAllowedForConfig(channel, os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL"))
-}
-
 func (ch *ConversationsHandler) resolveChannelID(ctx context.Context, channel string) (string, error) {
 	if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "@") {
 		return channel, nil
@@ -1745,42 +1798,77 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
+// resolveToolGate checks the env-var gate for a write/delete tool, resolves the channel ID,
+// and verifies the channel is allowed by the configured policy.
+func (ch *ConversationsHandler) resolveToolGate(ctx context.Context, request mcp.CallToolRequest, envVarName, enabledToolName, disabledMsg string) (string, error) {
+	toolConfig := os.Getenv(envVarName)
 	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
 
 	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "conversations_add_message") {
-			ch.logger.Error("Add-message tool disabled by default")
-			return nil, errors.New(
-				"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming. " +
-					"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
-					"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
-					"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
-			)
+		if !strings.Contains(enabledTools, enabledToolName) {
+			ch.logger.Error(enabledToolName + " tool disabled by default")
+			return "", errors.New(disabledMsg)
 		}
 		toolConfig = "true"
 	}
 
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
-		ch.logger.Error("channel_id missing in add-message params")
-		return nil, errors.New("channel_id must be a string")
+		ch.logger.Error("channel_id missing in " + enabledToolName + " params")
+		return "", errors.New("channel_id must be a string")
 	}
 	channel, err := ch.resolveChannelID(ctx, channel)
 	if err != nil {
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
-		return nil, err
+		return "", err
 	}
-	if !isChannelAllowed(channel) {
-		ch.logger.Warn("Add-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
-		return nil, fmt.Errorf("conversations_add_message tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
+	if !isChannelAllowedForConfig(channel, toolConfig) {
+		ch.logger.Warn(enabledToolName+" tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
+		return "", fmt.Errorf("%s tool is not allowed for channel %q, applied policy: %s", enabledToolName, channel, toolConfig)
 	}
 
-	threadTs := request.GetString("thread_ts", "")
-	if threadTs != "" && !strings.Contains(threadTs, ".") {
-		ch.logger.Error("Invalid thread_ts format", zap.String("thread_ts", threadTs))
-		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	return channel, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolWriteMessage(ctx context.Context, request mcp.CallToolRequest) (*writeMessageParams, error) {
+	messageTs := request.GetString("message_ts", "")
+
+	var envVarName, enabledToolName, disabledMsg string
+	if messageTs != "" {
+		envVarName = "SLACK_MCP_EDIT_MESSAGE_TOOL"
+		enabledToolName = "conversations_edit_message"
+		disabledMsg = "by default, the conversations_edit_message tool is disabled to guard Slack workspaces against accidental modifications. " +
+			"To enable it, set the SLACK_MCP_EDIT_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+			"to limit where the MCP can edit messages, e.g. 'SLACK_MCP_EDIT_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_EDIT_MESSAGE_TOOL=!C1234567890' " +
+			"to enable all except one or 'SLACK_MCP_EDIT_MESSAGE_TOOL=true' for all channels and DMs"
+	} else {
+		envVarName = "SLACK_MCP_ADD_MESSAGE_TOOL"
+		enabledToolName = "conversations_add_message"
+		disabledMsg = "by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming. " +
+			"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
+			"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
+			"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs"
+	}
+
+	channel, err := ch.resolveToolGate(ctx, request, envVarName, enabledToolName, disabledMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	if messageTs != "" {
+		if !strings.Contains(messageTs, ".") {
+			ch.logger.Error("Invalid message_ts format", zap.String("message_ts", messageTs))
+			return nil, errors.New("message_ts must be a valid timestamp in format 1234567890.123456")
+		}
+	}
+
+	threadTs := ""
+	if messageTs == "" {
+		threadTs = request.GetString("thread_ts", "")
+		if threadTs != "" && !strings.Contains(threadTs, ".") {
+			ch.logger.Error("Invalid thread_ts format", zap.String("thread_ts", threadTs))
+			return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+		}
 	}
 
 	msgText := request.GetString("text", "")
@@ -1832,12 +1920,42 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		return nil, errors.New("either text or blocks must be provided")
 	}
 
-	return &addMessageParams{
+	return &writeMessageParams{
 		channel:     channel,
+		messageTs:   messageTs,
 		threadTs:    threadTs,
 		text:        msgText,
 		contentType: contentType,
 		blocks:      blocks,
+	}, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolDeleteMessage(ctx context.Context, request mcp.CallToolRequest) (*deleteMessageParams, error) {
+	channel, err := ch.resolveToolGate(ctx, request,
+		"SLACK_MCP_DELETE_MESSAGE_TOOL",
+		"conversations_delete_message",
+		"by default, the conversations_delete_message tool is disabled to guard Slack workspaces against accidental deletions. "+
+			"To enable it, set the SLACK_MCP_DELETE_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels "+
+			"to limit where the MCP can delete messages, e.g. 'SLACK_MCP_DELETE_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_DELETE_MESSAGE_TOOL=!C1234567890' "+
+			"to enable all except one or 'SLACK_MCP_DELETE_MESSAGE_TOOL=true' for all channels and DMs",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	messageTs := request.GetString("message_ts", "")
+	if messageTs == "" {
+		ch.logger.Error("message_ts missing in delete-message params")
+		return nil, errors.New("message_ts is required")
+	}
+	if !strings.Contains(messageTs, ".") {
+		ch.logger.Error("Invalid message_ts format", zap.String("message_ts", messageTs))
+		return nil, errors.New("message_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	return &deleteMessageParams{
+		channel:   channel,
+		messageTs: messageTs,
 	}, nil
 }
 
