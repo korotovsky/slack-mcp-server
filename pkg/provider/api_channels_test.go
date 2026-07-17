@@ -101,3 +101,11 @@ func TestAllChanTypesConstant(t *testing.T) {
 	assert.Contains(t, AllChanTypes, "im")
 	assert.Contains(t, AllChanTypes, "mpim")
 }
+
+func TestStartupChanTypesExcludeIM(t *testing.T) {
+	assert.Len(t, StartupChanTypes, 3)
+	assert.Contains(t, StartupChanTypes, "public_channel")
+	assert.Contains(t, StartupChanTypes, "private_channel")
+	assert.Contains(t, StartupChanTypes, "mpim")
+	assert.NotContains(t, StartupChanTypes, "im")
+}

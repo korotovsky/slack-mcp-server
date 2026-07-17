@@ -88,9 +88,17 @@ type conversationParams struct {
 }
 
 type searchParams struct {
-	query string
-	limit int
-	page  int
+	query            string
+	limit            int
+	cursor           string
+	contextChannelID string
+	channelTypes     []string
+	authorFilter     *searchAuthorFilter
+}
+
+type searchAuthorFilter struct {
+	UserID string
+	Name   string
 }
 
 type addMessageParams struct {
@@ -609,33 +617,228 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 		ch.logger.Error("Failed to parse search params", zap.Error(err))
 		return nil, err
 	}
-	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.Int("page", params.page))
+	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.String("cursor", params.cursor))
 
-	searchParams := slack.SearchParameters{
-		Sort:          slack.DEFAULT_SEARCH_SORT,
-		SortDirection: slack.DEFAULT_SEARCH_SORT_DIR,
-		Highlight:     false,
-		Count:         params.limit,
-		Page:          params.page,
+	limit := params.limit
+	if limit > 20 {
+		limit = 20 // Slack assistant.search.context has a hard 20-result maximum.
 	}
 
+	// Author filtering is performed against the structured author_user_id returned
+	// by assistant.search.context. Slack accepts from: modifiers on this endpoint
+	// but currently does not enforce them, so relying on the modifier returns mixed
+	// authors. Scan a bounded number of pages to avoid returning a false empty first
+	// page when the requested historical author is not among the first 20 results.
+	maxPages := 1
+	if params.authorFilter != nil {
+		maxPages = 10
+	}
+
+	cursor := params.cursor
 	rl := limiter.Tier2.Limiter()
-	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.SearchMessages, error) {
-		msgs, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
-		return msgs, err
+	for page := 0; page < maxPages; page++ {
+		result, callErr := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (json.RawMessage, error) {
+			return ch.apiProvider.Slack().AssistantSearchContext(ctx, provider.AssistantSearchContextRequest{
+				Query:                  params.query,
+				ChannelTypes:           params.channelTypes,
+				ContentTypes:           []string{"messages"},
+				ContextChannelID:       params.contextChannelID,
+				Cursor:                 cursor,
+				Limit:                  limit,
+				IncludeContextMessages: true,
+				DisableSemanticSearch:  true,
+			})
+		})
+		if callErr != nil {
+			ch.logger.Error("Slack AssistantSearchContext failed", zap.Error(callErr))
+			return nil, callErr
+		}
+		if params.authorFilter == nil {
+			return mcp.NewToolResultText(string(result)), nil
+		}
+
+		filtered, matchCount, nextCursor, filterErr := filterAssistantSearchPage(result, params.authorFilter)
+		if filterErr != nil {
+			ch.logger.Error("Failed to filter assistant search response", zap.Error(filterErr))
+			return nil, filterErr
+		}
+		if matchCount > 0 || nextCursor == "" || page == maxPages-1 {
+			return mcp.NewToolResultText(string(filtered)), nil
+		}
+		cursor = nextCursor
+	}
+
+	return nil, errors.New("assistant search pagination ended unexpectedly")
+}
+
+func newSearchAuthorFilter(raw string, usersInv map[string]string) *searchAuthorFilter {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(raw, ">")
+	raw = strings.TrimPrefix(raw, "<@")
+	raw = strings.TrimPrefix(raw, "@")
+	if raw == "" {
+		return nil
+	}
+	if isSlackUserIDPrefix(raw) {
+		return &searchAuthorFilter{UserID: raw}
+	}
+	if userID, ok := usersInv[raw]; ok {
+		return &searchAuthorFilter{UserID: userID}
+	}
+	for name, userID := range usersInv {
+		if strings.EqualFold(strings.TrimSpace(name), raw) {
+			return &searchAuthorFilter{UserID: userID}
+		}
+	}
+	return &searchAuthorFilter{Name: raw}
+}
+
+func searchAuthorFromUsersResponse(raw json.RawMessage, requestedName string) (*searchAuthorFilter, error) {
+	var response struct {
+		OK       bool   `json:"ok"`
+		APIError string `json:"error"`
+		Results  struct {
+			Users []struct {
+				UserID   string `json:"user_id"`
+				FullName string `json:"full_name"`
+				Email    string `json:"email"`
+			} `json:"users"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode historical user search response: %w", err)
+	}
+	if !response.OK {
+		if response.APIError == "" {
+			response.APIError = "unknown_error"
+		}
+		return nil, fmt.Errorf("historical user search failed: %s", response.APIError)
+	}
+
+	requested := strings.TrimSpace(strings.TrimPrefix(requestedName, "@"))
+	for _, user := range response.Results.Users {
+		emailName := user.Email
+		if at := strings.IndexByte(emailName, '@'); at >= 0 {
+			emailName = emailName[:at]
+		}
+		if strings.EqualFold(user.UserID, requested) ||
+			strings.EqualFold(strings.TrimSpace(user.FullName), requested) ||
+			strings.EqualFold(strings.TrimSpace(user.Email), requested) ||
+			strings.EqualFold(strings.TrimSpace(emailName), requested) {
+			return &searchAuthorFilter{UserID: user.UserID}, nil
+		}
+	}
+	if len(response.Results.Users) == 1 && response.Results.Users[0].UserID != "" {
+		return &searchAuthorFilter{UserID: response.Results.Users[0].UserID}, nil
+	}
+	return nil, nil
+}
+
+func (ch *ConversationsHandler) resolveSearchAuthorFilter(ctx context.Context, raw string) (*searchAuthorFilter, error) {
+	filter := newSearchAuthorFilter(raw, ch.apiProvider.ProvideUsersMap().UsersInv)
+	if filter == nil {
+		return nil, errors.New("filter_users_from must not be empty")
+	}
+	if filter.UserID != "" {
+		return filter, nil
+	}
+
+	// Current users may be absent from users.list/users.info after deactivation,
+	// while their historical messages remain searchable. The assistant search API
+	// can include deleted users and returns the stable historical user ID.
+	rl := limiter.Tier2.Limiter()
+	result, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (json.RawMessage, error) {
+		return ch.apiProvider.Slack().AssistantSearchContext(ctx, provider.AssistantSearchContextRequest{
+			Query:                 filter.Name,
+			ContentTypes:          []string{"users"},
+			Limit:                 20,
+			IncludeDeletedUsers:   true,
+			DisableSemanticSearch: true,
+		})
 	})
 	if err != nil {
-		ch.logger.Error("Slack SearchContext failed", zap.Error(err))
-		return nil, err
+		ch.logger.Warn("Historical user lookup unavailable; falling back to returned author name",
+			zap.String("author", filter.Name), zap.Error(err))
+		return filter, nil
 	}
-	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
+	resolved, err := searchAuthorFromUsersResponse(result, filter.Name)
+	if err != nil {
+		ch.logger.Warn("Historical user lookup could not be decoded; falling back to returned author name",
+			zap.String("author", filter.Name), zap.Error(err))
+		return filter, nil
+	}
+	if resolved != nil {
+		return resolved, nil
+	}
+	return filter, nil
+}
 
-	messages := ch.convertMessagesFromSearch(ctx, messagesRes.Matches)
-	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
-		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
-		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
+func filterAssistantSearchPage(raw json.RawMessage, author *searchAuthorFilter) (json.RawMessage, int, string, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, 0, "", fmt.Errorf("decode assistant search response: %w", err)
 	}
-	return marshalMessagesToCSV(messages)
+
+	var metadata struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if metadataRaw, ok := envelope["response_metadata"]; ok {
+		if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+			return nil, 0, "", fmt.Errorf("decode assistant search cursor: %w", err)
+		}
+	}
+
+	var results map[string]json.RawMessage
+	if resultsRaw, ok := envelope["results"]; ok {
+		if err := json.Unmarshal(resultsRaw, &results); err != nil {
+			return nil, 0, "", fmt.Errorf("decode assistant search results: %w", err)
+		}
+	} else {
+		return raw, 0, metadata.NextCursor, nil
+	}
+
+	var messages []json.RawMessage
+	if messagesRaw, ok := results["messages"]; ok {
+		if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+			return nil, 0, "", fmt.Errorf("decode assistant search messages: %w", err)
+		}
+	}
+
+	filtered := make([]json.RawMessage, 0, len(messages))
+	for _, message := range messages {
+		var identity struct {
+			AuthorUserID string `json:"author_user_id"`
+			AuthorName   string `json:"author_name"`
+		}
+		if err := json.Unmarshal(message, &identity); err != nil {
+			return nil, 0, "", fmt.Errorf("decode assistant search message author: %w", err)
+		}
+		matches := author == nil
+		if author != nil && author.UserID != "" {
+			matches = identity.AuthorUserID == author.UserID
+		} else if author != nil && author.Name != "" {
+			matches = strings.EqualFold(strings.TrimSpace(identity.AuthorName), strings.TrimSpace(author.Name))
+		}
+		if matches {
+			filtered = append(filtered, message)
+		}
+	}
+
+	filteredJSON, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("encode filtered assistant search messages: %w", err)
+	}
+	results["messages"] = filteredJSON
+	resultsJSON, err := json.Marshal(results)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("encode filtered assistant search results: %w", err)
+	}
+	envelope["results"] = resultsJSON
+	responseJSON, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("encode filtered assistant search response: %w", err)
+	}
+	return responseJSON, len(filtered), metadata.NextCursor, nil
 }
 
 // UnreadChannel represents a channel with unread messages
@@ -1993,7 +2196,11 @@ func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest)
 }
 func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req mcp.CallToolRequest) (*searchParams, error) {
 	rawQuery := strings.TrimSpace(req.GetString("search_query", ""))
-	freeText, filters := splitQuery(rawQuery)
+	freeTextParts, filters := splitQuery(rawQuery)
+	freeText := strings.Join(freeTextParts, " ")
+	channelTypes := []string{"public_channel", "private_channel", "mpim"}
+	contextChannelID := ""
+	var authorFilter *searchAuthorFilter
 
 	if req.GetBool("filter_threads_only", false) {
 		addFilter(filters, "is", "thread")
@@ -2005,13 +2212,17 @@ func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req m
 			return nil, err
 		}
 		addFilter(filters, "in", f)
-	} else if im := req.GetString("filter_in_im_or_mpim", ""); im != "" {
-		f, err := ch.paramFormatUser(ctx, im)
+		contextChannelID, err = ch.resolveChannelID(ctx, chName)
 		if err != nil {
-			ch.logger.Error("Invalid IM/MPIM filter", zap.String("filter", im), zap.Error(err))
 			return nil, err
 		}
-		addFilter(filters, "in", f)
+		if cached, ok := ch.apiProvider.ProvideChannelsMaps().Channels[contextChannelID]; ok && cached.IsPrivate {
+			channelTypes = []string{"private_channel"}
+		} else {
+			channelTypes = []string{"public_channel"}
+		}
+	} else if im := req.GetString("filter_in_im_or_mpim", ""); im != "" {
+		return nil, fmt.Errorf("DM-specific search is unavailable because this Slack app cannot obtain im:read; search public/private channels or MPIMs instead")
 	}
 	if with := req.GetString("filter_users_with", ""); with != "" {
 		f, err := ch.paramFormatUser(ctx, with)
@@ -2022,12 +2233,17 @@ func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req m
 		addFilter(filters, "with", f)
 	}
 	if from := req.GetString("filter_users_from", ""); from != "" {
-		f, err := ch.paramFormatUser(ctx, from)
+		f, err := ch.resolveSearchAuthorFilter(ctx, from)
 		if err != nil {
 			ch.logger.Error("Invalid from-user filter", zap.String("filter", from), zap.Error(err))
 			return nil, err
 		}
-		addFilter(filters, "from", f)
+		authorFilter = f
+		if f.UserID != "" {
+			addFilter(filters, "from", fmt.Sprintf("<@%s>", f.UserID))
+		} else {
+			addFilter(filters, "from", f.Name)
+		}
 	}
 
 	dateMap, err := buildDateFilters(
@@ -2044,43 +2260,28 @@ func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req m
 		addFilter(filters, key, val)
 	}
 
-	finalQuery := buildQuery(freeText, filters)
-	limit := req.GetInt("limit", 100)
+	finalQuery := buildQuery(freeTextParts, filters)
+	if freeText == "" {
+		return nil, errors.New("search_query must include search text")
+	}
+	limit := req.GetInt("limit", 20)
+	if limit < 1 {
+		return nil, errors.New("limit must be at least 1")
+	}
 	cursor := req.GetString("cursor", "")
 
-	var (
-		page          int
-		decodedCursor []byte
-	)
-	if cursor != "" {
-		decodedCursor, err = base64.StdEncoding.DecodeString(cursor)
-		if err != nil {
-			ch.logger.Error("Invalid cursor decoding", zap.String("cursor", cursor), zap.Error(err))
-			return nil, fmt.Errorf("invalid cursor: %v", err)
-		}
-		parts := strings.Split(string(decodedCursor), ":")
-		if len(parts) != 2 {
-			ch.logger.Error("Invalid cursor format", zap.String("cursor", cursor))
-			return nil, fmt.Errorf("invalid cursor: %v", cursor)
-		}
-		page, err = strconv.Atoi(parts[1])
-		if err != nil || page < 1 {
-			ch.logger.Error("Invalid cursor page", zap.String("cursor", cursor), zap.Error(err))
-			return nil, fmt.Errorf("invalid cursor page: %v", err)
-		}
-	} else {
-		page = 1
-	}
-
 	ch.logger.Debug("Search parameters built",
-		zap.String("query", finalQuery),
+		zap.String("query", freeText),
+		zap.String("legacy_query", finalQuery),
 		zap.Int("limit", limit),
-		zap.Int("page", page),
 	)
 	return &searchParams{
-		query: finalQuery,
-		limit: limit,
-		page:  page,
+		query:            freeText,
+		limit:            limit,
+		cursor:           cursor,
+		contextChannelID: contextChannelID,
+		channelTypes:     channelTypes,
+		authorFilter:     authorFilter,
 	}, nil
 }
 

@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,6 +33,12 @@ const defaultCacheTTL = 24 * time.Hour
 const defaultMinRefreshInterval = 30 * time.Second
 
 var AllChanTypes = []string{"mpim", "im", "public_channel", "private_channel"}
+
+// StartupChanTypes excludes direct messages. Some Slack Enterprise workspaces
+// do not offer im:read to user-token apps, although other conversation scopes
+// are available. Bootstrap the cache only with conversation types the local
+// app can enumerate; direct-message operations remain scope-gated at use time.
+var StartupChanTypes = []string{"mpim", "public_channel", "private_channel"}
 var PrivateChanType = "private_channel"
 var PubChanType = "public_channel"
 
@@ -226,6 +234,7 @@ type SlackAPI interface {
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
+	AssistantSearchContext(ctx context.Context, params AssistantSearchContextRequest) (json.RawMessage, error)
 
 	// Used to get files
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
@@ -262,6 +271,7 @@ type SlackAPI interface {
 type MCPSlackClient struct {
 	slackClient *slack.Client
 	edgeClient  *edge.Client
+	httpClient  *http.Client
 
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
@@ -350,6 +360,7 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	return &MCPSlackClient{
 		slackClient:  slackClient,
 		edgeClient:   edgeClient,
+		httpClient:   httpClient,
 		authResponse: authResponse,
 		authProvider: authProvider,
 		isEnterprise: isEnterprise,
@@ -527,6 +538,60 @@ func (c *MCPSlackClient) GetConversationRepliesContext(ctx context.Context, para
 
 func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error) {
 	return c.slackClient.SearchContext(ctx, query, params)
+}
+
+// AssistantSearchContextRequest is the supported Slack Real-time Search API
+// request for apps granted granular search:read.* scopes.
+type AssistantSearchContextRequest struct {
+	Query                  string   `json:"query"`
+	ChannelTypes           []string `json:"channel_types,omitempty"`
+	ContentTypes           []string `json:"content_types,omitempty"`
+	ContextChannelID       string   `json:"context_channel_id,omitempty"`
+	Cursor                 string   `json:"cursor,omitempty"`
+	Limit                  int      `json:"limit,omitempty"`
+	IncludeDeletedUsers    bool     `json:"include_deleted_users,omitempty"`
+	IncludeContextMessages bool     `json:"include_context_messages,omitempty"`
+	DisableSemanticSearch  bool     `json:"disable_semantic_search,omitempty"`
+}
+
+// AssistantSearchContext calls Slack's current AI search API directly. The
+// slack-go version pinned by v1.3.0 only implements legacy search.messages,
+// which requires the unavailable aggregate search:read scope.
+func (c *MCPSlackClient) AssistantSearchContext(ctx context.Context, params AssistantSearchContextRequest) (json.RawMessage, error) {
+	body, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal assistant search request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.teamEndpoint+"api/assistant.search.context", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create assistant search request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.authProvider.SlackToken())
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("assistant search request: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read assistant search response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("assistant search HTTP %d", resp.StatusCode)
+	}
+	var envelope struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &envelope); err != nil {
+		return nil, fmt.Errorf("decode assistant search response: %w", err)
+	}
+	if !envelope.OK {
+		return nil, fmt.Errorf("assistant search failed: %s", envelope.Error)
+	}
+	return json.RawMessage(responseBody), nil
 }
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
@@ -1164,7 +1229,7 @@ func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 	ap.fetchChannelsMu.Lock()
 	defer ap.fetchChannelsMu.Unlock()
 
-	channels := ap.GetChannels(ctx, AllChanTypes)
+	channels := ap.GetChannels(ctx, StartupChanTypes)
 
 	if len(channels) == 0 {
 		if ap.channelsReady.Load() {
@@ -1302,7 +1367,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	// conversations.list API supports multiple types per request, and the edge
 	// API (Enterprise Grid + non-OAuth) returns all types regardless. This
 	// avoids making 4 separate API round-trips (one per type).
-	chans := ap.getChannelsMultiType(ctx, AllChanTypes)
+	chans := ap.getChannelsMultiType(ctx, channelTypes)
 
 	// Build new snapshot with all fetched channels
 	newSnapshot := &ChannelsCache{

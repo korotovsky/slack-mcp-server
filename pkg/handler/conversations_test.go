@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -652,4 +653,76 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnitNewSearchAuthorFilterAcceptsOrphanedSlackID(t *testing.T) {
+	filter := newSearchAuthorFilter("<@UDELETED123>", nil)
+	require.NotNil(t, filter)
+	assert.Equal(t, "UDELETED123", filter.UserID)
+	assert.Empty(t, filter.Name)
+}
+
+func TestUnitSearchAuthorFromUsersResponseResolvesDeletedUser(t *testing.T) {
+	raw := json.RawMessage(`{
+		"ok": true,
+		"results": {
+			"users": [
+				{"user_id": "UDELETED123", "full_name": "Former Engineer"}
+			]
+		}
+	}`)
+
+	filter, err := searchAuthorFromUsersResponse(raw, "Former Engineer")
+	require.NoError(t, err)
+	require.NotNil(t, filter)
+	assert.Equal(t, "UDELETED123", filter.UserID)
+}
+
+func TestUnitFilterAssistantSearchPageByHistoricalAuthor(t *testing.T) {
+	raw := json.RawMessage(`{
+		"ok": true,
+		"results": {
+			"messages": [
+				{"author_user_id": "UDELETED123", "author_name": "Former Engineer", "content": "matching"},
+				{"author_user_id": "UCURRENT456", "author_name": "Current Engineer", "content": "not matching"}
+			],
+			"files": []
+		},
+		"response_metadata": {"next_cursor": "next-page"}
+	}`)
+
+	filtered, count, nextCursor, err := filterAssistantSearchPage(raw, &searchAuthorFilter{UserID: "UDELETED123"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, "next-page", nextCursor)
+
+	var response struct {
+		Results struct {
+			Messages []struct {
+				AuthorUserID string `json:"author_user_id"`
+				Content      string `json:"content"`
+			} `json:"messages"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(filtered, &response))
+	require.Len(t, response.Results.Messages, 1)
+	assert.Equal(t, "UDELETED123", response.Results.Messages[0].AuthorUserID)
+	assert.Equal(t, "matching", response.Results.Messages[0].Content)
+}
+
+func TestUnitFilterAssistantSearchPageFallsBackToHistoricalName(t *testing.T) {
+	raw := json.RawMessage(`{
+		"ok": true,
+		"results": {
+			"messages": [
+				{"author_user_id": "UOLD", "author_name": "Former Engineer"},
+				{"author_user_id": "UNEW", "author_name": "Someone Else"}
+			]
+		},
+		"response_metadata": {"next_cursor": ""}
+	}`)
+
+	_, count, _, err := filterAssistantSearchPage(raw, &searchAuthorFilter{Name: "former engineer"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
 }

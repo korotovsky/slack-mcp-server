@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -31,6 +32,12 @@ func newTestApiProvider(client SlackAPI, snapshot *UsersCache) *ApiProvider {
 	}
 	ap.usersSnapshot.Store(snapshot)
 	return ap
+}
+
+func TestUnitAssistantSearchContextRequestIncludesDeletedUsers(t *testing.T) {
+	body, err := json.Marshal(AssistantSearchContextRequest{IncludeDeletedUsers: true})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"query":"","include_deleted_users":true}`, string(body))
 }
 
 // TestUnitPatchUser verifies the targeted single-user cache patch behavior.
