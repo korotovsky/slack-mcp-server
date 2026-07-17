@@ -43,6 +43,34 @@ func TestShouldAddTool_ReadOnly_EmptyEnabledTools(t *testing.T) {
 	})
 }
 
+func TestUnitSupportsAssistantSearch(t *testing.T) {
+	tests := []struct {
+		name       string
+		isOAuth    bool
+		isBotToken bool
+		want       bool
+	}{
+		{name: "user OAuth including rotating xoxp", isOAuth: true, isBotToken: false, want: true},
+		{name: "bot OAuth including rotating xoxb", isOAuth: true, isBotToken: true, want: false},
+		{name: "browser session token", isOAuth: false, isBotToken: false, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, supportsAssistantSearch(tt.isOAuth, tt.isBotToken))
+		})
+	}
+}
+
+func TestUnitAssistantSearchLimitSchema(t *testing.T) {
+	tool := mcp.NewTool("test", mcp.WithNumber("limit", assistantSearchLimitOptions()...))
+	property, ok := tool.InputSchema.Properties["limit"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "integer", property["type"])
+	assert.Equal(t, float64(1), property["minimum"])
+	assert.Equal(t, float64(100), property["maximum"])
+}
+
 func TestShouldAddTool_ReadOnly_ExplicitEnabledTools(t *testing.T) {
 	tests := []struct {
 		name         string

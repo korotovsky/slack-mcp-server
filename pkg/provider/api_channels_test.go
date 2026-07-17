@@ -1,103 +1,156 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
-// TestChannelTypeFiltering verifies the channel type classification logic used
-// in GetChannels to filter the snapshot by requested types.
-func TestChannelTypeFiltering(t *testing.T) {
-	channels := map[string]Channel{
-		"C1": {ID: "C1", Name: "#general", IsPrivate: false, IsIM: false, IsMpIM: false},
-		"C2": {ID: "C2", Name: "#secret", IsPrivate: true, IsIM: false, IsMpIM: false},
-		"D1": {ID: "D1", Name: "@alice", IsPrivate: true, IsIM: true, IsMpIM: false},
-		"G1": {ID: "G1", Name: "mpdm-a-b-c", IsPrivate: true, IsIM: false, IsMpIM: true},
-	}
-
-	// This mirrors the filtering logic in GetChannels
-	filterByTypes := func(channels map[string]Channel, types []string) []Channel {
-		var res []Channel
-		for _, t := range types {
-			for _, ch := range channels {
-				switch {
-				case t == "public_channel" && !ch.IsPrivate && !ch.IsIM && !ch.IsMpIM:
-					res = append(res, ch)
-				case t == "private_channel" && ch.IsPrivate && !ch.IsIM && !ch.IsMpIM:
-					res = append(res, ch)
-				case t == "im" && ch.IsIM:
-					res = append(res, ch)
-				case t == "mpim" && ch.IsMpIM:
-					res = append(res, ch)
-				}
-			}
-		}
-		return res
-	}
-
-	t.Run("public_channel only", func(t *testing.T) {
-		res := filterByTypes(channels, []string{"public_channel"})
-		assert.Len(t, res, 1)
-		assert.Equal(t, "C1", res[0].ID)
-	})
-
-	t.Run("private_channel only", func(t *testing.T) {
-		res := filterByTypes(channels, []string{"private_channel"})
-		assert.Len(t, res, 1)
-		assert.Equal(t, "C2", res[0].ID)
-	})
-
-	t.Run("im only", func(t *testing.T) {
-		res := filterByTypes(channels, []string{"im"})
-		assert.Len(t, res, 1)
-		assert.Equal(t, "D1", res[0].ID)
-	})
-
-	t.Run("mpim only", func(t *testing.T) {
-		res := filterByTypes(channels, []string{"mpim"})
-		assert.Len(t, res, 1)
-		assert.Equal(t, "G1", res[0].ID)
-	})
-
-	t.Run("all types returns all channels", func(t *testing.T) {
-		res := filterByTypes(channels, AllChanTypes)
-		assert.Len(t, res, 4)
-	})
-
-	t.Run("multiple types", func(t *testing.T) {
-		res := filterByTypes(channels, []string{"public_channel", "im"})
-		assert.Len(t, res, 2)
-		ids := map[string]bool{}
-		for _, ch := range res {
-			ids[ch.ID] = true
-		}
-		assert.True(t, ids["C1"], "should include public channel")
-		assert.True(t, ids["D1"], "should include IM")
-	})
-
-	t.Run("im is not classified as private_channel", func(t *testing.T) {
-		// IMs have IsPrivate=true but should only match "im", not "private_channel"
-		res := filterByTypes(channels, []string{"private_channel"})
-		for _, ch := range res {
-			assert.False(t, ch.IsIM, "IMs should not appear in private_channel results")
-		}
-	})
-
-	t.Run("mpim is not classified as private_channel", func(t *testing.T) {
-		// MPIMs have IsPrivate=true but should only match "mpim", not "private_channel"
-		res := filterByTypes(channels, []string{"private_channel"})
-		for _, ch := range res {
-			assert.False(t, ch.IsMpIM, "MPIMs should not appear in private_channel results")
-		}
-	})
+type channelListSlack struct {
+	SlackAPI
+	channels []slack.Channel
 }
 
-// TestAllChanTypesConstant verifies the expected channel types are defined.
-func TestAllChanTypesConstant(t *testing.T) {
-	assert.Len(t, AllChanTypes, 4, "should have 4 channel types")
-	assert.Contains(t, AllChanTypes, "public_channel")
-	assert.Contains(t, AllChanTypes, "private_channel")
-	assert.Contains(t, AllChanTypes, "im")
-	assert.Contains(t, AllChanTypes, "mpim")
+func (f *channelListSlack) GetConversationsContext(context.Context, *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
+	return f.channels, "", nil
+}
+
+func TestUnitFilterChannelsByTypes(t *testing.T) {
+	channels := []Channel{
+		{ID: "C1", Name: "#general"},
+		{ID: "C2", Name: "#secret", IsPrivate: true},
+		{ID: "D1", Name: "@alice", IsPrivate: true, IsIM: true},
+		{ID: "G1", Name: "mpdm-a-b-c", IsPrivate: true, IsMpIM: true},
+	}
+
+	tests := []struct {
+		name  string
+		types []string
+		ids   []string
+	}{
+		{name: "public channel only", types: []string{"public_channel"}, ids: []string{"C1"}},
+		{name: "private channel only", types: []string{"private_channel"}, ids: []string{"C2"}},
+		{name: "IM only", types: []string{"im"}, ids: []string{"D1"}},
+		{name: "MPIM only", types: []string{"mpim"}, ids: []string{"G1"}},
+		{name: "all types", types: AllChanTypes, ids: []string{"C1", "C2", "D1", "G1"}},
+		{name: "user OAuth startup excludes only IM", types: UserOAuthStartupChanTypes, ids: []string{"C1", "C2", "G1"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := filterChannelsByTypes(channels, test.types)
+			ids := make([]string, 0, len(got))
+			for _, channel := range got {
+				ids = append(ids, channel.ID)
+			}
+			assert.ElementsMatch(t, test.ids, ids)
+		})
+	}
+}
+
+func TestUnitGetChannelsFiltersEnterpriseLikeExtraIMBeforeSnapshot(t *testing.T) {
+	client := &channelListSlack{channels: []slack.Channel{
+		{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C1"}, Name: "general"}},
+		{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "C2", IsPrivate: true}, Name: "secret"}},
+		{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "G1", IsPrivate: true, IsMpIM: true}, Name: "mpdm-a-b-c"}},
+		{GroupConversation: slack.GroupConversation{Conversation: slack.Conversation{ID: "D1", IsPrivate: true, IsIM: true}}},
+	}}
+	ap := &ApiProvider{client: client, logger: zap.NewNop(), rateLimiter: limiter.Tier2.Limiter()}
+	ap.usersSnapshot.Store(&UsersCache{Users: map[string]slack.User{}, UsersInv: map[string]string{}})
+
+	got := ap.GetChannels(context.Background(), UserOAuthStartupChanTypes)
+	require.Len(t, got, 3)
+	for _, channel := range got {
+		assert.False(t, channel.IsIM)
+	}
+	snapshot := ap.ProvideChannelsMaps()
+	require.Len(t, snapshot.Channels, 3)
+	_, foundIM := snapshot.Channels["D1"]
+	assert.False(t, foundIM, "unsupported IM must not enter the startup snapshot")
+}
+
+func TestUnitRefreshChannelsDropsLegacyCachedIM(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "channels.json")
+	cached := []Channel{
+		{ID: "C1", Name: "#general"},
+		{ID: "C2", Name: "#secret", IsPrivate: true},
+		{ID: "G1", Name: "@mpdm-a-b-c", IsPrivate: true, IsMpIM: true},
+		{ID: "D1", Name: "@alice_dm", IsPrivate: true, IsIM: true, User: "U1"},
+	}
+	data, err := json.Marshal(cached)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(cachePath, data, 0o600))
+
+	ap := &ApiProvider{logger: zap.NewNop(), channelsCachePath: cachePath, cacheTTL: time.Hour, isOAuth: true}
+	ap.usersSnapshot.Store(&UsersCache{Users: map[string]slack.User{}, UsersInv: map[string]string{}})
+	require.NoError(t, ap.refreshChannelsInternal(context.Background(), false))
+
+	snapshot := ap.ProvideChannelsMaps()
+	require.Len(t, snapshot.Channels, 3)
+	_, foundIM := snapshot.Channels["D1"]
+	assert.False(t, foundIM, "legacy cached IM must be discarded before snapshot use")
+	assert.Contains(t, snapshot.Channels, "C1")
+	assert.Contains(t, snapshot.Channels, "C2")
+	assert.Contains(t, snapshot.Channels, "G1")
+}
+
+func TestUnitRefreshChannelsRetainsCachedIMForSessionAuth(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "channels.json")
+	cached := []Channel{
+		{ID: "C1", Name: "#general"},
+		{ID: "D1", Name: "@alice_dm", IsPrivate: true, IsIM: true, User: "U1"},
+	}
+	data, err := json.Marshal(cached)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(cachePath, data, 0o600))
+
+	ap := &ApiProvider{logger: zap.NewNop(), channelsCachePath: cachePath, cacheTTL: time.Hour}
+	ap.usersSnapshot.Store(&UsersCache{
+		Users:    map[string]slack.User{"U1": {ID: "U1", Name: "alice"}},
+		UsersInv: map[string]string{"alice": "U1"},
+	})
+	require.NoError(t, ap.refreshChannelsInternal(context.Background(), false))
+
+	snapshot := ap.ProvideChannelsMaps()
+	require.Len(t, snapshot.Channels, 2)
+	assert.Contains(t, snapshot.Channels, "D1", "session auth must preserve available direct messages")
+}
+
+func TestUnitStartupChannelTypesAreAuthSpecific(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  *ApiProvider
+		wantTypes []string
+	}{
+		{name: "user OAuth omits IM", provider: &ApiProvider{isOAuth: true}, wantTypes: UserOAuthStartupChanTypes},
+		{name: "bot OAuth preserves IM", provider: &ApiProvider{isOAuth: true, isBotToken: true}, wantTypes: AllChanTypes},
+		{name: "session auth preserves IM", provider: &ApiProvider{}, wantTypes: AllChanTypes},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.ElementsMatch(t, test.wantTypes, test.provider.startupChannelTypes())
+		})
+	}
+}
+
+func TestUnitOAuthChannelCacheFilenamesPreventUserCacheContamination(t *testing.T) {
+	assert.Equal(t, "channels_cache_v2_user_oauth.json", oauthChannelsCacheFilename(false))
+	assert.Equal(t, "channels_cache_v2.json", oauthChannelsCacheFilename(true))
+}
+
+func TestUnitAllChanTypesConstant(t *testing.T) {
+	assert.ElementsMatch(t, []string{"public_channel", "private_channel", "im", "mpim"}, AllChanTypes)
+}
+
+func TestUnitUserOAuthStartupChanTypesExcludeIM(t *testing.T) {
+	assert.ElementsMatch(t, []string{"public_channel", "private_channel", "mpim"}, UserOAuthStartupChanTypes)
+	assert.NotContains(t, UserOAuthStartupChanTypes, "im")
 }
