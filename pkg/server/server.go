@@ -49,6 +49,20 @@ const (
 	ToolSavedClearCompleted         = "saved_clear_completed"
 )
 
+func supportsAssistantSearch(isOAuth, isBotToken bool) bool {
+	return isOAuth && !isBotToken
+}
+
+func assistantSearchLimitOptions() []mcp.PropertyOption {
+	return []mcp.PropertyOption{
+		func(schema map[string]any) { schema["type"] = "integer" },
+		mcp.DefaultNumber(20),
+		mcp.Min(1),
+		mcp.Max(100),
+		mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
+	}
+}
+
 var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
@@ -252,20 +266,17 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	}
 
 	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,
-		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
+		mcp.WithDescription("Search messages in public channels, private channels, or multi-person direct messages (MPIMs) using filters. All filters are optional; if none are provided, search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("search_query",
-			mcp.Description("Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored."),
+			mcp.Description("Free-text search query with optional Slack search modifiers such as 'in:#general' or 'from:@alice'. Structured filter parameters are combined with this query."),
 		),
 		mcp.WithString("filter_in_channel",
-			mcp.Description("Filter messages in a specific public/private channel by its ID or name. Example: 'C1234567890', 'G1234567890', or '#general'. If not provided, all channels will be searched."),
+			mcp.Description("Filter messages in a specific public or private channel by its ID or name. Example: 'C1234567890', 'G1234567890', or '#general'. Use filter_in_im_or_mpim for cached MPIMs. If not provided, all supported conversations will be searched."),
 		),
 		mcp.WithString("filter_in_im_or_mpim",
-			mcp.Description("Filter messages in a direct message (DM) or multi-person direct message (MPIM) conversation by its ID or name. Example: 'D1234567890' or '@username_dm'. If not provided, all DMs and MPIMs will be searched."),
-		),
-		mcp.WithString("filter_users_with",
-			mcp.Description("Filter messages with a specific user by their ID or display name in threads and DMs. Example: 'U1234567890' or '@username'. If not provided, all threads and DMs will be searched."),
+			mcp.Description("Filter messages in a cached multi-person direct message (MPIM) by its ID or name. One-to-one DM search is unavailable because search:read.im is not part of the documented search configuration."),
 		),
 		mcp.WithString("filter_users_from",
 			mcp.Description("Filter messages from a specific user by their ID or display name. Example: 'U1234567890' or '@username'. If not provided, all users will be searched."),
@@ -289,13 +300,11 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.DefaultString(""),
 			mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),
 		),
-		mcp.WithNumber("limit",
-			mcp.DefaultNumber(20),
-			mcp.Description("The maximum number of items to return. Must be an integer between 1 and 100."),
-		),
+		mcp.WithNumber("limit", assistantSearchLimitOptions()...),
 	)
-	// Only register search tool for non-bot tokens (bot tokens cannot use search.messages API)
-	if !provider.IsBotToken() && shouldAddTool(ToolConversationsSearchMessages, enabledTools, "") {
+	// assistant.search.context requires an event action_token for bot tokens,
+	// which is unavailable to this stdio handler.
+	if supportsAssistantSearch(provider.IsOAuth(), provider.IsBotToken()) && shouldAddTool(ToolConversationsSearchMessages, enabledTools, "") {
 		s.AddTool(conversationsSearchTool, conversationsHandler.ConversationsSearchHandler)
 	}
 

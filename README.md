@@ -14,7 +14,7 @@ This feature-rich Slack MCP Server has:
 - **Channel and Thread Support with `#Name` `@Lookup`**: Fetch messages from channels and threads, including activity messages, and retrieve channels using their names (e.g., #general) as well as their IDs.
 - **Smart History**: Fetch messages with pagination by date (d1, 7d, 1m) or message count.
 - **Unread Messages**: Get all unread messages across channels efficiently with priority sorting (DMs > partner channels > internal), @mention filtering, and mark-as-read support.
-- **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content.
+- **Search Messages**: With User OAuth, search messages in public/private channels and MPIMs using filters such as date, author, and content.
 - **Safe Message Posting**: The `conversations_add_message` tool is disabled by default for safety. Enable it via an environment variable, with optional channel restrictions.
 - **DM and Group DM support**: Retrieve direct messages and group direct messages.
 - **Embedded user information**: Embed user information in messages, for better context.
@@ -60,14 +60,13 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
   - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'.
 
 ### 4. conversations_search_messages
-Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required.
+Search messages in public channels, private channels, and multi-person direct messages (MPIMs) using Slack's `assistant.search.context` Real-time Search API. All filters are optional; if none are provided, `search_query` is required.
 
-> **Note**: This tool is not available when using bot tokens (`xoxb-*`). Bot tokens cannot use the `search.messages` API.
+> **Note**: This tool is registered only for User OAuth tokens (`xoxp-*` or rotating `xoxe.xoxp-*`). Bot calls require an event `action_token`, which a standalone stdio server does not have, and browser-session tokens are not supported by this endpoint.
 - **Parameters:**
-  - `search_query` (string, optional): Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored.
-  - `filter_in_channel` (string, optional): Filter messages in a specific channel by its ID or name. Example: `C1234567890` or `#general`. If not provided, all channels will be searched.
-  - `filter_in_im_or_mpim` (string, optional): Filter messages in a direct message (DM) or multi-person direct message (MPIM) conversation by its ID or name. Example: `D1234567890` or `@username_dm`. If not provided, all DMs and MPIMs will be searched.
-  - `filter_users_with` (string, optional): Filter messages with a specific user by their ID or display name in threads and DMs. Example: `U1234567890` or `@username`. If not provided, all threads and DMs will be searched.
+  - `search_query` (string, optional): Free-text query with optional Slack modifiers such as `in:#general` or `from:@alice`. Structured filters are combined with this query.
+  - `filter_in_channel` (string, optional): Filter a public or private channel by stable ID or cached name. Example: `C1234567890`, `G1234567890`, or `#general`.
+  - `filter_in_im_or_mpim` (string, optional): Filter a cached MPIM by stable ID or name. One-to-one DM search is unavailable because `search:read.im` is not part of the documented search configuration.
   - `filter_users_from` (string, optional): Filter messages from a specific user by their ID or display name. Example: `U1234567890` or `@username`. If not provided, all users will be searched.
   - `filter_date_before` (string, optional): Filter messages sent before a specific date in format `YYYY-MM-DD`. Example: `2023-10-01`, `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
   - `filter_date_after` (string, optional): Filter messages sent after a specific date in format `YYYY-MM-DD`. Example: `2023-10-01`, `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
@@ -75,7 +74,9 @@ Search messages in a public channel, private channel, or direct message (DM, or 
   - `filter_date_during` (string, optional): Filter messages sent during a specific period in format `YYYY-MM-DD`. Example: `July`, `Yesterday` or `Today`. If not provided, all dates will be searched.
   - `filter_threads_only` (boolean, default: false): If true, the response will include only messages from threads. Default is boolean false.
   - `cursor` (string, default: ""): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
-  - `limit` (number, default: 20): The maximum number of items to return. Must be an integer between 1 and 100.
+  - `limit` (integer, default: 20): The maximum number of items to return. Must be between 1 and 100.
+
+Raw `with:` modifiers and `filter_users_with` are rejected because Slack's Real-time Search response does not provide enough participant data for the server to verify that scope locally.
 
 ### 5. channels_list:
 Get list of channels

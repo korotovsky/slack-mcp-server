@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +31,12 @@ func (m *mockSlackClient) GetUsersInfo(users ...string) (*[]slack.User, error) {
 	return m.usersInfoResult, m.usersInfoErr
 }
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func newTestApiProvider(client SlackAPI, snapshot *UsersCache) *ApiProvider {
 	ap := &ApiProvider{
 		client: client,
@@ -34,10 +46,209 @@ func newTestApiProvider(client SlackAPI, snapshot *UsersCache) *ApiProvider {
 	return ap
 }
 
-func TestUnitAssistantSearchContextRequestIncludesDeletedUsers(t *testing.T) {
-	body, err := json.Marshal(AssistantSearchContextRequest{IncludeDeletedUsers: true})
+func TestUnitAssistantSearchContextRequestSerializesSearchFields(t *testing.T) {
+	body, err := json.Marshal(AssistantSearchContextRequest{
+		Query:               "launch plan in:general from:<@U123ABC> after:2026-01-01",
+		Cursor:              "next-page",
+		IncludeDeletedUsers: true,
+	})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"query":"","include_deleted_users":true}`, string(body))
+	assert.JSONEq(t, `{
+		"query":"launch plan in:general from:<@U123ABC> after:2026-01-01",
+		"cursor":"next-page",
+		"include_deleted_users":true
+	}`, string(body))
+}
+
+func TestUnitAssistantSearchContextReturnsSlackRateLimitedError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+
+	authProvider, err := auth.NewValueAuth("xoxp-test", "")
+	require.NoError(t, err)
+	client := &MCPSlackClient{
+		httpClient:   server.Client(),
+		authProvider: authProvider,
+		teamEndpoint: server.URL + "/",
+	}
+
+	_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+	require.Error(t, err)
+
+	var rateLimited *slack.RateLimitedError
+	require.ErrorAs(t, err, &rateLimited)
+	assert.Equal(t, 7*time.Second, rateLimited.RetryAfter)
+}
+
+func TestUnitAssistantSearchContextDoesNotFollowRedirects(t *testing.T) {
+	var redirectedRequests atomic.Int32
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"results":{"messages":[]}}`))
+	}))
+	t.Cleanup(redirectTarget.Close)
+
+	redirectSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL+"/capture", http.StatusFound)
+	}))
+	t.Cleanup(redirectSource.Close)
+
+	authProvider, err := auth.NewValueAuth("xoxp-test-token", "")
+	require.NoError(t, err)
+	client := &MCPSlackClient{
+		httpClient:   redirectSource.Client(),
+		authProvider: authProvider,
+		teamEndpoint: redirectSource.URL + "/",
+	}
+
+	_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "302 Found")
+	assert.Zero(t, redirectedRequests.Load(), "assistant search must not follow redirects")
+}
+
+func TestUnitAssistantSearchContextSendsExpectedHTTPRequest(t *testing.T) {
+	type capturedRequest struct {
+		method      string
+		path        string
+		authorize   string
+		contentType string
+		body        []byte
+	}
+	captured := make(chan capturedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- capturedRequest{
+			method:      r.Method,
+			path:        r.URL.Path,
+			authorize:   r.Header.Get("Authorization"),
+			contentType: r.Header.Get("Content-Type"),
+			body:        body,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"results":{"messages":[]}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	authProvider, err := auth.NewValueAuth("xoxp-test-token", "")
+	require.NoError(t, err)
+	client := &MCPSlackClient{httpClient: server.Client(), authProvider: authProvider, teamEndpoint: server.URL + "/"}
+	request := AssistantSearchContextRequest{
+		Query:                  "launch plan in:general from:<@U12345678>",
+		ChannelTypes:           []string{"public_channel", "private_channel"},
+		ContentTypes:           []string{"messages"},
+		ContextChannelID:       "C12345678",
+		Cursor:                 "next-page",
+		Limit:                  20,
+		IncludeDeletedUsers:    true,
+		IncludeContextMessages: true,
+		DisableSemanticSearch:  true,
+	}
+
+	_, err = client.AssistantSearchContext(context.Background(), request)
+	require.NoError(t, err)
+	got := <-captured
+	assert.Equal(t, http.MethodPost, got.method)
+	assert.Equal(t, "/api/assistant.search.context", got.path)
+	assert.Equal(t, "Bearer xoxp-test-token", got.authorize)
+	assert.Equal(t, "application/json", got.contentType)
+	wantBody, err := json.Marshal(request)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(wantBody), string(got.body))
+}
+
+func TestUnitAssistantSearchContextKeepsMalformedRateLimitsTyped(t *testing.T) {
+	for _, retryAfter := range []string{"", "nonsense", "-7", "0", "301", "9223372036", "9223372036854775807"} {
+		t.Run("Retry-After="+retryAfter, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			t.Cleanup(server.Close)
+			authProvider, err := auth.NewValueAuth("xoxp-test", "")
+			require.NoError(t, err)
+			client := &MCPSlackClient{httpClient: server.Client(), authProvider: authProvider, teamEndpoint: server.URL + "/"}
+
+			_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+			require.Error(t, err)
+			var rateLimited *slack.RateLimitedError
+			require.ErrorAs(t, err, &rateLimited)
+			assert.Equal(t, time.Second, rateLimited.RetryAfter)
+		})
+	}
+}
+
+func TestUnitAssistantSearchContextSanitizesNonSuccessBody(t *testing.T) {
+	t.Run("extracts only a valid Slack error code", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope","private_detail":"` + strings.Repeat("secret", 1000) + `"}`))
+		}))
+		t.Cleanup(server.Close)
+		authProvider, err := auth.NewValueAuth("xoxp-test", "")
+		require.NoError(t, err)
+		client := &MCPSlackClient{httpClient: server.Client(), authProvider: authProvider, teamEndpoint: server.URL + "/"}
+
+		_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing_scope")
+		assert.NotContains(t, err.Error(), "private_detail")
+		assert.NotContains(t, err.Error(), "secret")
+		assert.LessOrEqual(t, len(err.Error()), 256)
+	})
+
+	t.Run("does not echo non-JSON upstream content", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("upstream\nfailed\x00 " + strings.Repeat("x", 4000) + " secret-tail"))
+		}))
+		t.Cleanup(server.Close)
+		authProvider, err := auth.NewValueAuth("xoxp-test", "")
+		require.NoError(t, err)
+		client := &MCPSlackClient{httpClient: server.Client(), authProvider: authProvider, teamEndpoint: server.URL + "/"}
+
+		_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "upstream")
+		assert.NotContains(t, err.Error(), "secret-tail")
+		assert.LessOrEqual(t, len(err.Error()), 256)
+	})
+
+	t.Run("does not echo an upstream-controlled HTTP reason phrase", func(t *testing.T) {
+		secretStatus := "502 " + strings.Repeat("private-status-", 100)
+		httpClient := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Status:     secretStatus,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":false}`)),
+			}, nil
+		})}
+		authProvider, err := auth.NewValueAuth("xoxp-test", "")
+		require.NoError(t, err)
+		client := &MCPSlackClient{httpClient: httpClient, authProvider: authProvider, teamEndpoint: "https://slack.invalid/"}
+
+		_, err = client.AssistantSearchContext(context.Background(), AssistantSearchContextRequest{Query: "test"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "502 Bad Gateway")
+		assert.NotContains(t, err.Error(), "private-status")
+		assert.LessOrEqual(t, len(err.Error()), 256)
+	})
+}
+
+func TestUnitDemoXOXPReportsUserOAuthWithoutLiveClient(t *testing.T) {
+	t.Setenv("SLACK_MCP_XOXP_TOKEN", "demo")
+	t.Setenv("SLACK_MCP_XOXB_TOKEN", "")
+	t.Setenv("SLACK_MCP_XOXC_TOKEN", "")
+	t.Setenv("SLACK_MCP_XOXD_TOKEN", "")
+
+	provider := New("stdio", zap.NewNop())
+	assert.True(t, provider.IsOAuth())
+	assert.False(t, provider.IsBotToken())
 }
 
 // TestUnitPatchUser verifies the targeted single-user cache patch behavior.

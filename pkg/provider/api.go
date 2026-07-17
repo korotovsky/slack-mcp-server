@@ -34,11 +34,11 @@ const defaultMinRefreshInterval = 30 * time.Second
 
 var AllChanTypes = []string{"mpim", "im", "public_channel", "private_channel"}
 
-// StartupChanTypes excludes direct messages. Some Slack Enterprise workspaces
+// UserOAuthStartupChanTypes excludes direct messages. Some Slack Enterprise workspaces
 // do not offer im:read to user-token apps, although other conversation scopes
 // are available. Bootstrap the cache only with conversation types the local
 // app can enumerate; direct-message operations remain scope-gated at use time.
-var StartupChanTypes = []string{"mpim", "public_channel", "private_channel"}
+var UserOAuthStartupChanTypes = []string{"mpim", "public_channel", "private_channel"}
 var PrivateChanType = "private_channel"
 var PubChanType = "public_channel"
 
@@ -284,9 +284,11 @@ type MCPSlackClient struct {
 }
 
 type ApiProvider struct {
-	transport string
-	client    SlackAPI
-	logger    *zap.Logger
+	transport  string
+	client     SlackAPI
+	logger     *zap.Logger
+	isOAuth    bool
+	isBotToken bool
 
 	rateLimiter        *rate.Limiter
 	cacheTTL           time.Duration
@@ -554,6 +556,8 @@ type AssistantSearchContextRequest struct {
 	DisableSemanticSearch  bool     `json:"disable_semantic_search,omitempty"`
 }
 
+const maxAssistantSearchRetryAfter = 5 * time.Minute
+
 // AssistantSearchContext calls Slack's current AI search API directly. The
 // slack-go version pinned by v1.3.0 only implements legacy search.messages,
 // which requires the unavailable aggregate search:read scope.
@@ -569,7 +573,13 @@ func (c *MCPSlackClient) AssistantSearchContext(ctx context.Context, params Assi
 	req.Header.Set("Authorization", "Bearer "+c.authProvider.SlackToken())
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	// Slack's search endpoint is credentialed and is not expected to redirect.
+	// Do not allow Authorization or auth cookies to cross a redirect boundary.
+	httpClient := *c.httpClient
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("assistant search request: %w", err)
 	}
@@ -578,8 +588,27 @@ func (c *MCPSlackClient) AssistantSearchContext(ctx context.Context, params Assi
 	if err != nil {
 		return nil, fmt.Errorf("read assistant search response: %w", err)
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := time.Second
+		if seconds, parseErr := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Retry-After")), 10, 64); parseErr == nil && seconds > 0 {
+			candidate := time.Duration(seconds) * time.Second
+			if candidate > 0 && int64(candidate/time.Second) == seconds && candidate <= maxAssistantSearchRetryAfter {
+				retryAfter = candidate
+			}
+		}
+		return nil, &slack.RateLimitedError{RetryAfter: retryAfter}
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("assistant search HTTP %d", resp.StatusCode)
+		status := safeHTTPStatus(resp.StatusCode)
+		var envelope struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(responseBody, &envelope) == nil {
+			if code := safeSlackErrorCode(envelope.Error); code != "" {
+				return nil, fmt.Errorf("assistant search HTTP %s: %s", status, code)
+			}
+		}
+		return nil, fmt.Errorf("assistant search HTTP %s", status)
 	}
 	var envelope struct {
 		OK    bool   `json:"ok"`
@@ -589,9 +618,30 @@ func (c *MCPSlackClient) AssistantSearchContext(ctx context.Context, params Assi
 		return nil, fmt.Errorf("decode assistant search response: %w", err)
 	}
 	if !envelope.OK {
-		return nil, fmt.Errorf("assistant search failed: %s", envelope.Error)
+		code := safeSlackErrorCode(envelope.Error)
+		if code == "" {
+			code = "unknown_error"
+		}
+		return nil, fmt.Errorf("assistant search failed: %s", code)
 	}
 	return json.RawMessage(responseBody), nil
+}
+
+var slackAPIErrorCodePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+func safeHTTPStatus(statusCode int) string {
+	if statusText := http.StatusText(statusCode); statusText != "" {
+		return fmt.Sprintf("%d %s", statusCode, statusText)
+	}
+	return strconv.Itoa(statusCode)
+}
+
+func safeSlackErrorCode(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 128 || !slackAPIErrorCodePattern.MatchString(value) {
+		return ""
+	}
+	return value
 }
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
@@ -760,6 +810,7 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 		client *MCPSlackClient
 		err    error
 	)
+	isBotToken := strings.HasPrefix(authProvider.SlackToken(), "xoxb-") || strings.HasPrefix(authProvider.SlackToken(), "xoxe.xoxb-")
 
 	teamID, err := validateAuthAndGetTeamID(authProvider, logger)
 	if err != nil {
@@ -773,7 +824,7 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 
 	channelsCache := os.Getenv("SLACK_MCP_CHANNELS_CACHE")
 	if channelsCache == "" {
-		channelsCache = getCachePathWithTeamID(teamID, "channels_cache_v2.json")
+		channelsCache = getCachePathWithTeamID(teamID, oauthChannelsCacheFilename(isBotToken))
 	}
 
 	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
@@ -786,9 +837,11 @@ func newWithXOXP(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 	}
 
 	ap := &ApiProvider{
-		transport: transport,
-		client:    client,
-		logger:    logger,
+		transport:  transport,
+		client:     client,
+		logger:     logger,
+		isOAuth:    true,
+		isBotToken: isBotToken,
 
 		rateLimiter:        limiter.Tier2.Limiter(),
 		cacheTTL:           getCacheTTL(),
@@ -813,6 +866,13 @@ func newWithXOXB(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 	// Bot tokens do not support demo mode, but otherwise share the same
 	// initialization logic as user OAuth tokens.
 	return newWithXOXP(transport, authProvider, logger)
+}
+
+func oauthChannelsCacheFilename(isBotToken bool) string {
+	if isBotToken {
+		return "channels_cache_v2.json"
+	}
+	return "channels_cache_v2_user_oauth.json"
 }
 
 func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logger) *ApiProvider {
@@ -1147,6 +1207,13 @@ func (ap *ApiProvider) refreshChannelsInternal(ctx context.Context, force bool) 
 				ap.logger.Warn("Channels cache is empty or null, will refetch",
 					zap.String("cache_file", ap.channelsCachePath))
 			} else {
+				cachedChannels = filterChannelsByTypes(cachedChannels, ap.startupChannelTypes())
+				if len(cachedChannels) == 0 {
+					ap.logger.Warn("Channels cache has no supported startup channel types, will refetch",
+						zap.String("cache_file", ap.channelsCachePath))
+					ap.channelsMu.Unlock()
+					return ap.fetchAndStoreChannels(ctx)
+				}
 				// Re-map channels with current users cache to ensure DM names are populated
 				usersMap := ap.ProvideUsersMap().Users
 				newSnapshot := &ChannelsCache{
@@ -1229,7 +1296,7 @@ func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 	ap.fetchChannelsMu.Lock()
 	defer ap.fetchChannelsMu.Unlock()
 
-	channels := ap.GetChannels(ctx, StartupChanTypes)
+	channels := ap.GetChannels(ctx, ap.startupChannelTypes())
 
 	if len(channels) == 0 {
 		if ap.channelsReady.Load() {
@@ -1358,6 +1425,30 @@ func (ap *ApiProvider) getChannelsMultiType(ctx context.Context, channelTypes []
 	return chans
 }
 
+func filterChannelsByTypes(channels []Channel, channelTypes []string) []Channel {
+	allowed := make(map[string]struct{}, len(channelTypes))
+	for _, channelType := range channelTypes {
+		allowed[channelType] = struct{}{}
+	}
+
+	filtered := make([]Channel, 0, len(channels))
+	for _, channel := range channels {
+		channelType := "public_channel"
+		switch {
+		case channel.IsIM:
+			channelType = "im"
+		case channel.IsMpIM:
+			channelType = "mpim"
+		case channel.IsPrivate:
+			channelType = "private_channel"
+		}
+		if _, ok := allowed[channelType]; ok {
+			filtered = append(filtered, channel)
+		}
+	}
+	return filtered
+}
+
 func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) []Channel {
 	if len(channelTypes) == 0 {
 		channelTypes = AllChanTypes
@@ -1367,7 +1458,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	// conversations.list API supports multiple types per request, and the edge
 	// API (Enterprise Grid + non-OAuth) returns all types regardless. This
 	// avoids making 4 separate API round-trips (one per type).
-	chans := ap.getChannelsMultiType(ctx, channelTypes)
+	chans := filterChannelsByTypes(ap.getChannelsMultiType(ctx, channelTypes), channelTypes)
 
 	// Build new snapshot with all fetched channels
 	newSnapshot := &ChannelsCache{
@@ -1380,26 +1471,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	}
 	ap.channelsSnapshot.Store(newSnapshot)
 
-	// Filter by requested channel types
-	var res []Channel
-	for _, t := range channelTypes {
-		for _, channel := range newSnapshot.Channels {
-			if t == "public_channel" && !channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
-				res = append(res, channel)
-			}
-			if t == "private_channel" && channel.IsPrivate && !channel.IsIM && !channel.IsMpIM {
-				res = append(res, channel)
-			}
-			if t == "im" && channel.IsIM {
-				res = append(res, channel)
-			}
-			if t == "mpim" && channel.IsMpIM {
-				res = append(res, channel)
-			}
-		}
-	}
-
-	return res
+	return chans
 }
 
 func (ap *ApiProvider) ProvideUsersMap() *UsersCache {
@@ -1440,16 +1512,34 @@ func (ap *ApiProvider) Slack() SlackAPI {
 
 func (ap *ApiProvider) IsBotToken() bool {
 	client, ok := ap.client.(*MCPSlackClient)
-	return ok && client != nil && client.IsBotToken()
+	if ok && client != nil {
+		return client.IsBotToken()
+	}
+	return ap.isBotToken
 }
 
 func (ap *ApiProvider) IsOAuth() bool {
 	client, ok := ap.client.(*MCPSlackClient)
-	return ok && client != nil && client.IsOAuth()
+	if ok && client != nil {
+		return client.IsOAuth()
+	}
+	return ap.isOAuth
+}
+
+func (ap *ApiProvider) startupChannelTypes() []string {
+	if ap.IsOAuth() && !ap.IsBotToken() {
+		return UserOAuthStartupChanTypes
+	}
+	return AllChanTypes
 }
 
 // slackUserIDPattern matches Slack user IDs (e.g., U07VCEPP4N5, W0123456789).
-var slackUserIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]{2,}$`)
+var slackUserIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]+$`)
+
+// IsValidSlackUserID reports whether value has Slack's stable user-ID form.
+func IsValidSlackUserID(value string) bool {
+	return slackUserIDPattern.MatchString(value)
+}
 
 // SearchUsers searches for users by name, email, or display name.
 // If the query matches a Slack user ID pattern (e.g., U07VCEPP4N5), it looks up the user
@@ -1457,7 +1547,7 @@ var slackUserIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]{2,}$`)
 // For OAuth tokens (xoxp/xoxb), it searches the local users cache using regex matching.
 // For browser tokens (xoxc/xoxd), it uses the edge API's UsersSearch method.
 func (ap *ApiProvider) SearchUsers(ctx context.Context, query string, limit int) ([]slack.User, error) {
-	if slackUserIDPattern.MatchString(query) {
+	if IsValidSlackUserID(query) {
 		users, err := ap.client.GetUsersInfo(query)
 		if err != nil {
 			return nil, err

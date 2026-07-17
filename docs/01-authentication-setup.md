@@ -46,7 +46,9 @@ Instead of using browser-based tokens (`xoxc`/`xoxd`), you can use a User OAuth 
     - `mpim:write` - Start group direct messages with people on a user’s behalf (new since `v1.1.18`)
     - `users:read` - View people in a workspace.
     - `chat:write` - Send messages on a user's behalf. (new since `v1.1.18`)
-    - `search:read` - Search a workspace's content. (new since `v1.1.18`)
+    - `search:read.public` - Search messages in public channels with Real-time Search.
+    - `search:read.private` - Search messages in private channels with Real-time Search.
+    - `search:read.mpim` - Search messages in multi-person direct messages with Real-time Search.
     - `usergroups:read` - View user groups in a workspace.
     - `usergroups:write` - Create and manage user groups.
     - `channels:write` - Join and leave public channels.
@@ -77,7 +79,9 @@ To create the app from a manifest with permissions preconfigured, use the follow
                 "mpim:write",
                 "users:read",
                 "chat:write",
-                "search:read",
+                "search:read.public",
+                "search:read.private",
+                "search:read.mpim",
                 "usergroups:read",
                 "usergroups:write",
                 "channels:write"
@@ -97,12 +101,12 @@ To create the app from a manifest with permissions preconfigured, use the follow
 You can also use a Bot token instead of a User token:
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
-2. Under "OAuth & Permissions", add Bot Token Scopes (same as User scopes above, except replace `search:read` with `search:read.public` and replace `channels:write` with `channels:join` + `channels:manage`)
+2. Under "OAuth & Permissions", add the corresponding Bot Token Scopes and replace `channels:write` with `channels:join` + `channels:manage`.
 3. Install the app to your workspace
 4. Copy the "Bot User OAuth Token" (starts with `xoxb-`)
 5. **Important**: Bot must be invited to channels for access
 
-> **Note**: Bot tokens cannot use `search.messages` API, so `conversations_search_messages` tool will not be available.
+> **Note**: `conversations_search_messages` is not registered for bot tokens. Slack requires an event `action_token` for bot calls to `assistant.search.context`, and a standalone stdio server does not receive one. Browser-session tokens also do not expose this tool.
 
 
 See next: [Installation](02-installation.md)
