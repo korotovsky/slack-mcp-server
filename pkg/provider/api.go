@@ -216,11 +216,19 @@ type SlackAPI interface {
 	GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error)
 	GetUsersInfo(users ...string) (*[]slack.User, error)
 	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
+	DeleteMessageContext(ctx context.Context, channel, msgTimestamp string) (string, string, error)
+	OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 	AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error
 	RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error
 	LeaveConversationContext(ctx context.Context, channelID string) (bool, error)
 	JoinConversationContext(ctx context.Context, channelID string) (*slack.Channel, string, []string, error)
+	RenameConversationContext(ctx context.Context, channelID, channelName string) (*slack.Channel, error)
+	CreateConversationContext(ctx context.Context, params slack.CreateConversationParams) (*slack.Channel, error)
+	InviteUsersToConversationContext(ctx context.Context, channelID string, users ...string) (*slack.Channel, error)
+	KickUserFromConversationContext(ctx context.Context, channelID string, user string) error
+	InviteSharedEmailsToConversationContext(ctx context.Context, channelID string, emails ...string) (string, bool, error)
+	InviteSharedUserIDsToConversationContext(ctx context.Context, channelID string, userIDs ...string) (string, bool, error)
 
 	// Used to get messages
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
@@ -412,6 +420,30 @@ func (c *MCPSlackClient) JoinConversationContext(ctx context.Context, channelID 
 	return c.slackClient.JoinConversationContext(ctx, channelID)
 }
 
+func (c *MCPSlackClient) RenameConversationContext(ctx context.Context, channelID, channelName string) (*slack.Channel, error) {
+	return c.slackClient.RenameConversationContext(ctx, channelID, channelName)
+}
+
+func (c *MCPSlackClient) CreateConversationContext(ctx context.Context, params slack.CreateConversationParams) (*slack.Channel, error) {
+	return c.slackClient.CreateConversationContext(ctx, params)
+}
+
+func (c *MCPSlackClient) InviteUsersToConversationContext(ctx context.Context, channelID string, users ...string) (*slack.Channel, error) {
+	return c.slackClient.InviteUsersToConversationContext(ctx, channelID, users...)
+}
+
+func (c *MCPSlackClient) KickUserFromConversationContext(ctx context.Context, channelID string, user string) error {
+	return c.slackClient.KickUserFromConversationContext(ctx, channelID, user)
+}
+
+func (c *MCPSlackClient) InviteSharedEmailsToConversationContext(ctx context.Context, channelID string, emails ...string) (string, bool, error) {
+	return c.slackClient.InviteSharedEmailsToConversationContext(ctx, channelID, emails...)
+}
+
+func (c *MCPSlackClient) InviteSharedUserIDsToConversationContext(ctx context.Context, channelID string, userIDs ...string) (string, bool, error) {
+	return c.slackClient.InviteSharedUserIDsToConversationContext(ctx, channelID, userIDs...)
+}
+
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
 	// Please see https://github.com/korotovsky/slack-mcp-server/issues/73
 	// It seems that `conversations.list` works with `xoxp` tokens within Enterprise Grid setups
@@ -531,6 +563,14 @@ func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params
 
 func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID string, options ...slack.MsgOption) (string, string, error) {
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
+}
+
+func (c *MCPSlackClient) DeleteMessageContext(ctx context.Context, channel, msgTimestamp string) (string, string, error) {
+	return c.slackClient.DeleteMessageContext(ctx, channel, msgTimestamp)
+}
+
+func (c *MCPSlackClient) OpenConversationContext(ctx context.Context, params *slack.OpenConversationParameters) (*slack.Channel, bool, bool, error) {
+	return c.slackClient.OpenConversationContext(ctx, params)
 }
 
 func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error {

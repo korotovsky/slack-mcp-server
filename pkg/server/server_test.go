@@ -97,6 +97,8 @@ func TestValidToolNames(t *testing.T) {
 			ToolConversationsHistory:        true,
 			ToolConversationsReplies:        true,
 			ToolConversationsAddMessage:     true,
+			ToolConversationsDeleteMessage:  true,
+			ToolConversationsOpen:           true,
 			ToolReactionsAdd:                true,
 			ToolReactionsRemove:             true,
 			ToolAttachmentGetData:           true,
@@ -105,6 +107,11 @@ func TestValidToolNames(t *testing.T) {
 			ToolConversationsMark:           true,
 			ToolConversationsLeave:          true,
 			ToolConversationsJoin:           true,
+			ToolConversationsRename:         true,
+			ToolConversationsCreate:         true,
+			ToolConversationsInvite:         true,
+			ToolConversationsKick:           true,
+			ToolConversationsInviteShared:   true,
 			ToolChannelsList:                true,
 			ToolChannelsMe:                  true,
 			ToolUsergroupsList:              true,
@@ -137,6 +144,11 @@ func TestValidToolNames(t *testing.T) {
 		assert.Equal(t, "conversations_mark", ToolConversationsMark)
 		assert.Equal(t, "conversations_leave", ToolConversationsLeave)
 		assert.Equal(t, "conversations_join", ToolConversationsJoin)
+		assert.Equal(t, "conversations_rename", ToolConversationsRename)
+		assert.Equal(t, "conversations_create", ToolConversationsCreate)
+		assert.Equal(t, "conversations_invite", ToolConversationsInvite)
+		assert.Equal(t, "conversations_kick", ToolConversationsKick)
+		assert.Equal(t, "conversations_invite_shared", ToolConversationsInviteShared)
 		assert.Equal(t, "channels_list", ToolChannelsList)
 		assert.Equal(t, "channels_me", ToolChannelsMe)
 		assert.Equal(t, "usergroups_list", ToolUsergroupsList)
