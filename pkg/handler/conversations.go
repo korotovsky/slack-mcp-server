@@ -237,13 +237,27 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 			options = append(options, slack.MsgOptionDisableMarkdown())
 			options = append(options, slack.MsgOptionText(params.text, false))
 		case "text/markdown":
-			blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
-			if err != nil {
-				ch.logger.Warn("Markdown parsing error", zap.Error(err))
-				options = append(options, slack.MsgOptionDisableMarkdown())
+			// Post as a single native Slack `markdown` block, which delegates
+			// rendering to Slack itself. GitHub-flavored Markdown — tables,
+			// headings, code blocks, lists, links — renders faithfully. The
+			// older slack-go-util converter lowers Markdown into rich_text/
+			// section blocks, which silently drops tables and mangles
+			// headings; keep it only as a fallback for oversized input, since
+			// Slack caps a markdown block's text at 12,000 characters.
+			const markdownBlockLimit = 12000
+			if len([]rune(params.text)) <= markdownBlockLimit {
+				options = append(options, slack.MsgOptionBlocks(slack.NewMarkdownBlock("", params.text)))
+				// Top-level text serves as the notification / legacy-client fallback.
 				options = append(options, slack.MsgOptionText(params.text, false))
 			} else {
-				options = append(options, slack.MsgOptionBlocks(blocks...))
+				blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(params.text)
+				if err != nil {
+					ch.logger.Warn("Markdown parsing error", zap.Error(err))
+					options = append(options, slack.MsgOptionDisableMarkdown())
+					options = append(options, slack.MsgOptionText(params.text, false))
+				} else {
+					options = append(options, slack.MsgOptionBlocks(blocks...))
+				}
 			}
 		default:
 			return nil, errors.New("content_type must be either 'text/plain' or 'text/markdown'")
