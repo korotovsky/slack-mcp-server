@@ -47,6 +47,9 @@ const (
 	ToolSavedList                   = "saved_list"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
+	ToolCanvasesRead                = "canvases_read"
+	ToolCanvasesCreate              = "canvases_create"
+	ToolCanvasesEdit                = "canvases_edit"
 )
 
 var ValidToolNames = []string{
@@ -72,6 +75,9 @@ var ValidToolNames = []string{
 	ToolSavedList,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
+	ToolCanvasesRead,
+	ToolCanvasesCreate,
+	ToolCanvasesEdit,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -588,6 +594,68 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.WithTitleAnnotation("Clear Completed Saved Items"),
 				mcp.WithDestructiveHintAnnotation(true),
 			), savedHandler.SavedClearCompletedHandler)
+		}
+	}
+
+	// Register canvas tools. Reading is gated behind the same opt-in flag as
+	// editing so that a single env var turns the feature on, matching how the
+	// other write-capable tools are enabled.
+	//
+	// Requires the canvases:read and canvases:write scopes on the token.
+	if shouldAddTool(ToolCanvasesRead, enabledTools, "SLACK_MCP_CANVAS_TOOL") {
+		canvasesHandler := handler.NewCanvasesHandler(provider, logger)
+
+		s.AddTool(mcp.NewTool(ToolCanvasesRead,
+			mcp.WithDescription("Read a Slack canvas along with the section IDs needed to target an edit with canvases_edit. Note that Slack returns canvas content as HTML, not markdown; each block carries the id attribute used as section_id. Requires the canvases:read scope."),
+			mcp.WithTitleAnnotation("Read Canvas"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("canvas_id",
+				mcp.Required(),
+				mcp.Description("ID of the canvas in format Fxxxxxxxxxx. A canvas is a file, so this is its file ID."),
+			),
+			mcp.WithBoolean("include_sections",
+				mcp.Description("If true (default), also returns section IDs, which canvases_edit needs to insert before/after or replace a specific section."),
+				mcp.DefaultBool(true),
+			),
+			mcp.WithString("contains_text",
+				mcp.Description("Only return sections whose text contains this string, via canvases.sections.lookup. Omit to return every section parsed from the content."),
+			),
+		), canvasesHandler.CanvasesReadHandler)
+
+		if shouldAddTool(ToolCanvasesCreate, enabledTools, "SLACK_MCP_CANVAS_TOOL") {
+			s.AddTool(mcp.NewTool(ToolCanvasesCreate,
+				mcp.WithDescription("Create a standalone Slack canvas from markdown. Returns the new canvas ID, which canvases_read and canvases_edit take as canvas_id. Requires the canvases:write scope."),
+				mcp.WithTitleAnnotation("Create Canvas"),
+				mcp.WithString("title",
+					mcp.Description("Title of the canvas, shown in the file list and the browser tab."),
+				),
+				mcp.WithString("markdown",
+					mcp.Required(),
+					mcp.Description("Initial canvas content as markdown. Headings become sections that canvases_edit can target."),
+				),
+			), canvasesHandler.CanvasesCreateHandler)
+		}
+
+		if shouldAddTool(ToolCanvasesEdit, enabledTools, "SLACK_MCP_CANVAS_TOOL") {
+			s.AddTool(mcp.NewTool(ToolCanvasesEdit,
+				mcp.WithDescription("Edit an existing Slack canvas by applying a markdown change: append or prepend content, insert relative to a section, replace a section, or delete one. Use canvases_read first to look up section IDs. Requires the canvases:write scope."),
+				mcp.WithTitleAnnotation("Edit Canvas"),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithString("canvas_id",
+					mcp.Required(),
+					mcp.Description("ID of the canvas to edit, in format Fxxxxxxxxxx."),
+				),
+				mcp.WithString("operation",
+					mcp.Required(),
+					mcp.Description("One of: insert_at_end (append), insert_at_start (prepend), insert_after, insert_before, replace, delete. The last four act on section_id."),
+				),
+				mcp.WithString("markdown",
+					mcp.Description("Markdown content to apply. Required for every operation except delete."),
+				),
+				mcp.WithString("section_id",
+					mcp.Description("Section to act on, from canvases_read. Required for insert_after, insert_before, replace and delete."),
+				),
+			), canvasesHandler.CanvasesEditHandler)
 		}
 	}
 

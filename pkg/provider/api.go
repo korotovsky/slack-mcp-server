@@ -231,6 +231,12 @@ type SlackAPI interface {
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
+	// Used to read and edit canvases. A canvas is a file, so its content is
+	// fetched with the file methods above; these cover section lookup and edits.
+	CreateCanvasContext(ctx context.Context, title string, documentContent slack.DocumentContent) (string, error)
+	LookupCanvasSectionsContext(ctx context.Context, params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error)
+	EditCanvasContext(ctx context.Context, params slack.EditCanvasParams) error
+
 	// Used to get channel info (for unread counts with xoxp tokens)
 	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
 
@@ -551,6 +557,18 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 
 func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
 	return c.slackClient.GetConversationInfoContext(ctx, input)
+}
+
+func (c *MCPSlackClient) CreateCanvasContext(ctx context.Context, title string, documentContent slack.DocumentContent) (string, error) {
+	return c.slackClient.CreateCanvasContext(ctx, title, documentContent)
+}
+
+func (c *MCPSlackClient) LookupCanvasSectionsContext(ctx context.Context, params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error) {
+	return c.slackClient.LookupCanvasSectionsContext(ctx, params)
+}
+
+func (c *MCPSlackClient) EditCanvasContext(ctx context.Context, params slack.EditCanvasParams) error {
+	return c.slackClient.EditCanvasContext(ctx, params)
 }
 
 func (c *MCPSlackClient) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {

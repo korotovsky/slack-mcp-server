@@ -116,6 +116,9 @@ func TestValidToolNames(t *testing.T) {
 			ToolSavedList:                   true,
 			ToolSavedUpdate:                 true,
 			ToolSavedClearCompleted:         true,
+			ToolCanvasesRead:                true,
+			ToolCanvasesCreate:              true,
+			ToolCanvasesEdit:                true,
 		}
 
 		assert.Equal(t, len(expectedTools), len(ValidToolNames), "ValidToolNames should have %d tools", len(expectedTools))
@@ -126,6 +129,9 @@ func TestValidToolNames(t *testing.T) {
 	})
 
 	t.Run("constants match their string values", func(t *testing.T) {
+		assert.Equal(t, "canvases_read", ToolCanvasesRead)
+		assert.Equal(t, "canvases_create", ToolCanvasesCreate)
+		assert.Equal(t, "canvases_edit", ToolCanvasesEdit)
 		assert.Equal(t, "conversations_history", ToolConversationsHistory)
 		assert.Equal(t, "conversations_replies", ToolConversationsReplies)
 		assert.Equal(t, "conversations_add_message", ToolConversationsAddMessage)
@@ -251,6 +257,44 @@ func TestShouldAddTool_WriteTool_AddMessage(t *testing.T) {
 
 		result := shouldAddTool(ToolConversationsAddMessage, []string{ToolConversationsHistory}, "SLACK_MCP_ADD_MESSAGE_TOOL")
 		assert.False(t, result, "write tool should NOT be registered when not in explicit enabledTools list")
+	})
+}
+
+func TestShouldAddTool_WriteTool_Canvases(t *testing.T) {
+	t.Run("empty enabledTools and no env var - not registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_CANVAS_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddTool(ToolCanvasesRead, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.False(t, result, "canvases_read should NOT be registered when env var is not set")
+
+		result = shouldAddTool(ToolCanvasesCreate, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.False(t, result, "canvases_create should NOT be registered when env var is not set")
+
+		result = shouldAddTool(ToolCanvasesEdit, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.False(t, result, "canvases_edit should NOT be registered when env var is not set")
+	})
+
+	t.Run("empty enabledTools and env var set - registered", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_CANVAS_TOOL", "true")
+		defer cleanup()
+
+		result := shouldAddTool(ToolCanvasesRead, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.True(t, result, "canvases_read should be registered when env var is set")
+
+		result = shouldAddTool(ToolCanvasesCreate, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.True(t, result, "canvases_create should be registered when env var is set")
+
+		result = shouldAddTool(ToolCanvasesEdit, []string{}, "SLACK_MCP_CANVAS_TOOL")
+		assert.True(t, result, "canvases_edit should be registered when env var is set")
+	})
+
+	t.Run("explicit enabledTools includes tool - registered without env var", func(t *testing.T) {
+		cleanup := setEnv("SLACK_MCP_CANVAS_TOOL", "")
+		defer cleanup()
+
+		result := shouldAddTool(ToolCanvasesRead, []string{ToolCanvasesRead}, "SLACK_MCP_CANVAS_TOOL")
+		assert.True(t, result, "canvases_read should be registered when explicitly enabled")
 	})
 }
 
