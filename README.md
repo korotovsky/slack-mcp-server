@@ -236,6 +236,27 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 
 - **Parameters:** None.
 
+### 19. file_upload
+Upload a file to a public channel, private channel, or direct message (DM, or IM) conversation, optionally into a thread. Covers screenshots and images, logs, CSV/JSON data and code snippets.
+
+> **Note:** Uploading is disabled by default for safety. To enable, set the `SLACK_MCP_FILE_UPLOAD_TOOL` environment variable. Uploading from `file_path` additionally requires `SLACK_MCP_FILE_UPLOAD_PATHS` to list the directories the server may read. See the Environment Variables section below for details.
+
+Provide the content in exactly one of three ways: `file_path`, `content` or `content_base64`.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `thread_ts` (string, optional): Unique identifier of a thread's parent message in format `1234567890.123456`. Optional, if not provided the file is posted to the channel itself. Never use a reply's ts, always the parent's.
+  - `file_path` (string, optional): Absolute path to a local file to upload, e.g. `/home/user/Pictures/screenshot.png`. Only paths inside `SLACK_MCP_FILE_UPLOAD_PATHS` are allowed; when that variable is unset this argument is rejected. The file is streamed from disk, not buffered in memory.
+  - `content` (string, optional): UTF-8 text to upload as a file, e.g. a log excerpt or a code snippet. Requires `filename`.
+  - `content_base64` (string, optional): Base64-encoded binary content, the way to upload a screenshot or an image without writing it to disk first. Requires `filename`.
+  - `filename` (string, optional): File name shown in Slack. Required for `content` and `content_base64`, defaults to the base name of `file_path`. Slack derives the mime type from the extension, so an image must keep its `.png` or `.jpg` suffix, otherwise it renders as a plain attachment with no preview.
+  - `title` (string, optional): Title of the file in Slack. Defaults to `filename`.
+  - `initial_comment` (string, optional): Message posted together with the file, this is the caption users see. Supports Slack mrkdwn.
+  - `alt_txt` (string, optional): Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots.
+  - `snippet_type` (string, optional): Syntax highlighting for text snippets, e.g. `python`, `go`, `yaml`.
+
+Maximum upload size is 100MB. Works in stealth mode (`xoxc`/`xoxd`) as well as with OAuth and bot tokens.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -292,12 +313,14 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_REACTION_TOOL`        | No        | `nil`                     | Enable `reactions_add` and `reactions_remove` tools by setting to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tools are only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
 | `SLACK_MCP_ATTACHMENT_TOOL`      | No        | `nil`                     | Enable the `attachment_get_data` tool by setting to `true`, `1`, or `yes`. Does not support channel-level restrictions. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_FILE_UPLOAD_TOOL`     | No        | `nil`                     | Enable the `file_upload` tool by setting it to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_FILE_UPLOAD_PATHS`    | No        | `nil`                     | Comma-separated list of directories the server may read when `file_upload` is called with `file_path`, e.g. `/home/user/Pictures,/tmp`. Paths are resolved through symlinks and must stay inside one of these roots. When unset, `file_path` is rejected entirely and only `content` / `content_base64` uploads work. Use `/` to allow any absolute path. |
 | `SLACK_MCP_MARK_TOOL`             | No        | `nil`                     | Enable the `conversations_mark` tool by setting to `true` or `1`. Disabled by default to prevent accidental marking of messages as read.                                                                                                                                                  |
 | `SLACK_MCP_USERS_CACHE`           | No        | `~/Library/Caches/slack-mcp-server/users_cache.json` (macOS)<br>`~/.cache/slack-mcp-server/users_cache.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/users_cache.json` (Windows) | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup. |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 | `SLACK_MCP_GOVSLACK`              | No        | `nil`                     | Set to `true` to enable [GovSlack](https://slack.com/solutions/govslack) mode. Routes API calls to `slack-gov.com` endpoints instead of `slack.com` for FedRAMP-compliant government workspaces.                                                                                          |
-| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `file_upload`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `file_upload`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
 
