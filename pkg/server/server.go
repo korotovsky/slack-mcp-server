@@ -31,6 +31,7 @@ const (
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
+	ToolFileUpload                  = "file_upload"
 	ToolConversationsSearchMessages = "conversations_search_messages"
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
@@ -56,6 +57,7 @@ var ValidToolNames = []string{
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
+	ToolFileUpload,
 	ToolConversationsSearchMessages,
 	ToolConversationsUnreads,
 	ToolConversationsMark,
@@ -249,6 +251,45 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs (with filenames) can be found in the AttachmentIDs field of message metadata when FileCount > 0."),
 			),
 		), conversationsHandler.FilesGetHandler)
+	}
+
+	if shouldAddTool(ToolFileUpload, enabledTools, "SLACK_MCP_FILE_UPLOAD_TOOL") {
+		s.AddTool(mcp.NewTool(ToolFileUpload,
+			mcp.WithDescription("Upload a file to a public channel, private channel, or direct message (DM, or IM) conversation, optionally into a thread. Use it to share screenshots and images, logs, CSV/JSON data or code snippets. Provide the content in exactly one of three ways: file_path for a file on disk, content for UTF-8 text, or content_base64 for binary data such as a screenshot."),
+			mcp.WithTitleAnnotation("Upload File"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Unique identifier of a thread's parent message in format 1234567890.123456. Optional, if not provided the file is posted to the channel itself. Never use a reply's ts, always the parent's."),
+			),
+			mcp.WithString("file_path",
+				mcp.Description("Absolute path to a local file to upload, e.g. /home/user/Pictures/screenshot.png. Only paths inside SLACK_MCP_FILE_UPLOAD_PATHS are allowed; when that variable is unset this argument is rejected."),
+			),
+			mcp.WithString("content",
+				mcp.Description("UTF-8 text to upload as a file, e.g. a log excerpt or a code snippet. Requires filename."),
+			),
+			mcp.WithString("content_base64",
+				mcp.Description("Base64-encoded binary content, the way to upload a screenshot or an image without writing it to disk first. Requires filename."),
+			),
+			mcp.WithString("filename",
+				mcp.Description("File name shown in Slack, e.g. 'screenshot.png' or 'build.log'. Required for content and content_base64, defaults to the base name of file_path. Slack derives the mime type from the extension, so an image must keep its .png or .jpg suffix, otherwise it renders as a plain attachment with no preview."),
+			),
+			mcp.WithString("title",
+				mcp.Description("Title of the file in Slack. Defaults to filename."),
+			),
+			mcp.WithString("initial_comment",
+				mcp.Description("Message posted together with the file, this is the caption users see. Supports Slack mrkdwn."),
+			),
+			mcp.WithString("alt_txt",
+				mcp.Description("Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots."),
+			),
+			mcp.WithString("snippet_type",
+				mcp.Description("Syntax highlighting for text snippets, e.g. 'python', 'go', 'yaml'."),
+			),
+		), conversationsHandler.FileUploadHandler)
 	}
 
 	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,
