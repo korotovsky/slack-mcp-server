@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gocarina/gocsv"
 	"github.com/google/uuid"
 	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
 	"github.com/openai/openai-go"
@@ -652,4 +653,38 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUnitMessageCSVIncludesThreadReplyFields(t *testing.T) {
+	messages := []Message{
+		{
+			MsgID:    "1772680334.954409",
+			UserID:   "U0123456789",
+			UserName: "john.doe",
+			Channel:  "C0AJMCRNH0U",
+			Text:     "thread parent",
+			Time:     "2026-03-03T12:00:00Z",
+			// A parent: replies exist, and LatestReply marks the newest one.
+			ReplyCount:  4,
+			LatestReply: "1772680900.111111",
+		},
+		{
+			MsgID:    "1772680500.222222",
+			UserID:   "U0123456789",
+			UserName: "john.doe",
+			Channel:  "C0AJMCRNH0U",
+			Text:     "standalone message",
+			Time:     "2026-03-03T12:05:00Z",
+			// Not a parent: both fields are zero and omitted from JSON.
+		},
+	}
+
+	csvBytes, err := gocsv.MarshalBytes(&messages)
+	require.NoError(t, err)
+	csvStr := string(csvBytes)
+
+	assert.Contains(t, csvStr, "ReplyCount")
+	assert.Contains(t, csvStr, "LatestReply")
+	assert.Contains(t, csvStr, "1772680900.111111")
+	assert.Contains(t, csvStr, "4")
 }
