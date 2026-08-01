@@ -116,6 +116,10 @@ func TestValidToolNames(t *testing.T) {
 			ToolSavedList:                   true,
 			ToolSavedUpdate:                 true,
 			ToolSavedClearCompleted:         true,
+
+			ToolConversationsScheduleMessage:       true,
+			ToolConversationsScheduledMessagesList: true,
+			ToolConversationsDeleteScheduledMsg:    true,
 		}
 
 		assert.Equal(t, len(expectedTools), len(ValidToolNames), "ValidToolNames should have %d tools", len(expectedTools))

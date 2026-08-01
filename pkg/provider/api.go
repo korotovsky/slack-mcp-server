@@ -257,6 +257,11 @@ type SlackAPI interface {
 	CreateUserGroupContext(ctx context.Context, userGroup slack.UserGroup, options ...slack.CreateUserGroupOption) (slack.UserGroup, error)
 	UpdateUserGroupContext(ctx context.Context, userGroupID string, options ...slack.UpdateUserGroupsOption) (slack.UserGroup, error)
 	UpdateUserGroupMembersContext(ctx context.Context, userGroup string, members string, options ...slack.UpdateUserGroupMembersOption) (slack.UserGroup, error)
+
+	// Scheduled message API methods
+	ScheduleMessageContext(ctx context.Context, channelID, postAt string, options ...slack.MsgOption) (string, string, error)
+	GetScheduledMessagesContext(ctx context.Context, params *slack.GetScheduledMessagesParameters) ([]slack.ScheduledMessage, string, error)
+	DeleteScheduledMessageContext(ctx context.Context, params *slack.DeleteScheduledMessageParameters) (bool, error)
 }
 
 type MCPSlackClient struct {
@@ -599,6 +604,18 @@ func (c *MCPSlackClient) UpdateUserGroupContext(ctx context.Context, userGroupID
 
 func (c *MCPSlackClient) UpdateUserGroupMembersContext(ctx context.Context, userGroup string, members string, options ...slack.UpdateUserGroupMembersOption) (slack.UserGroup, error) {
 	return c.slackClient.UpdateUserGroupMembersContext(ctx, userGroup, members, options...)
+}
+
+func (c *MCPSlackClient) ScheduleMessageContext(ctx context.Context, channelID, postAt string, options ...slack.MsgOption) (string, string, error) {
+	return c.slackClient.ScheduleMessageContext(ctx, channelID, postAt, options...)
+}
+
+func (c *MCPSlackClient) GetScheduledMessagesContext(ctx context.Context, params *slack.GetScheduledMessagesParameters) ([]slack.ScheduledMessage, string, error) {
+	return c.slackClient.GetScheduledMessagesContext(ctx, params)
+}
+
+func (c *MCPSlackClient) DeleteScheduledMessageContext(ctx context.Context, params *slack.DeleteScheduledMessageParameters) (bool, error) {
+	return c.slackClient.DeleteScheduledMessageContext(ctx, params)
 }
 
 func (c *MCPSlackClient) IsEnterprise() bool {

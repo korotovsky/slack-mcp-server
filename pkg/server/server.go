@@ -25,28 +25,31 @@ type MCPServer struct {
 }
 
 const (
-	ToolConversationsHistory        = "conversations_history"
-	ToolConversationsReplies        = "conversations_replies"
-	ToolConversationsAddMessage     = "conversations_add_message"
-	ToolReactionsAdd                = "reactions_add"
-	ToolReactionsRemove             = "reactions_remove"
-	ToolAttachmentGetData           = "attachment_get_data"
-	ToolConversationsSearchMessages = "conversations_search_messages"
-	ToolConversationsUnreads        = "conversations_unreads"
-	ToolConversationsMark           = "conversations_mark"
-	ToolConversationsLeave          = "conversations_leave"
-	ToolConversationsJoin           = "conversations_join"
-	ToolChannelsList                = "channels_list"
-	ToolChannelsMe                  = "channels_me"
-	ToolUsergroupsList              = "usergroups_list"
-	ToolUsergroupsMe                = "usergroups_me"
-	ToolUsergroupsCreate            = "usergroups_create"
-	ToolUsergroupsUpdate            = "usergroups_update"
-	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
-	ToolUsersSearch                 = "users_search"
-	ToolSavedList                   = "saved_list"
-	ToolSavedUpdate                 = "saved_update"
-	ToolSavedClearCompleted         = "saved_clear_completed"
+	ToolConversationsHistory               = "conversations_history"
+	ToolConversationsReplies               = "conversations_replies"
+	ToolConversationsAddMessage            = "conversations_add_message"
+	ToolReactionsAdd                       = "reactions_add"
+	ToolReactionsRemove                    = "reactions_remove"
+	ToolAttachmentGetData                  = "attachment_get_data"
+	ToolConversationsSearchMessages        = "conversations_search_messages"
+	ToolConversationsUnreads               = "conversations_unreads"
+	ToolConversationsMark                  = "conversations_mark"
+	ToolConversationsLeave                 = "conversations_leave"
+	ToolConversationsJoin                  = "conversations_join"
+	ToolChannelsList                       = "channels_list"
+	ToolChannelsMe                         = "channels_me"
+	ToolUsergroupsList                     = "usergroups_list"
+	ToolUsergroupsMe                       = "usergroups_me"
+	ToolUsergroupsCreate                   = "usergroups_create"
+	ToolUsergroupsUpdate                   = "usergroups_update"
+	ToolUsergroupsUsersUpdate              = "usergroups_users_update"
+	ToolUsersSearch                        = "users_search"
+	ToolSavedList                          = "saved_list"
+	ToolSavedUpdate                        = "saved_update"
+	ToolSavedClearCompleted                = "saved_clear_completed"
+	ToolConversationsScheduleMessage       = "conversations_schedule_message"
+	ToolConversationsScheduledMessagesList = "conversations_scheduled_messages_list"
+	ToolConversationsDeleteScheduledMsg    = "conversations_delete_scheduled_message"
 )
 
 var ValidToolNames = []string{
@@ -72,6 +75,9 @@ var ValidToolNames = []string{
 	ToolSavedList,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
+	ToolConversationsScheduleMessage,
+	ToolConversationsScheduledMessagesList,
+	ToolConversationsDeleteScheduledMsg,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -589,6 +595,65 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.WithDestructiveHintAnnotation(true),
 			), savedHandler.SavedClearCompletedHandler)
 		}
+	}
+
+	// Scheduled message tools (gated behind SLACK_MCP_SCHEDULE_TOOL for send, always-on for read/delete)
+	if shouldAddTool(ToolConversationsScheduleMessage, enabledTools, "SLACK_MCP_SCHEDULE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsScheduleMessage,
+			mcp.WithDescription("Schedule a message for future delivery to a public channel, private channel, or direct message (DM). The message will be sent at the specified unix epoch time. Requires SLACK_MCP_SCHEDULE_TOOL to be enabled."),
+			mcp.WithTitleAnnotation("Schedule Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("text",
+				mcp.Required(),
+				mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+			),
+			mcp.WithNumber("post_at",
+				mcp.Required(),
+				mcp.Description("Unix epoch timestamp (seconds) when the message should be delivered. Must be in the future. Example: 1735689600 for 2025-01-01 00:00:00 UTC."),
+			),
+			mcp.WithString("content_type",
+				mcp.DefaultString("text/markdown"),
+				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Unique identifier of a thread's parent message if posting as a reply. Optional."),
+			),
+		), conversationsHandler.ConversationsScheduleMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsScheduledMessagesList, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsScheduledMessagesList,
+			mcp.WithDescription("List pending scheduled messages. Returns CSV with id, channel, post_at (UTC), and text preview. Optionally filter by channel."),
+			mcp.WithTitleAnnotation("List Scheduled Messages"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Description("Optional channel ID to filter scheduled messages. If not provided, returns all scheduled messages."),
+			),
+			mcp.WithNumber("limit",
+				mcp.DefaultNumber(100),
+				mcp.Description("Maximum number of scheduled messages to return. Default is 100."),
+			),
+		), conversationsHandler.ConversationsScheduledMessagesListHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteScheduledMsg, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteScheduledMsg,
+			mcp.WithDescription("Cancel a pending scheduled message before it is delivered. Get the scheduled_message_id from conversations_scheduled_messages_list."),
+			mcp.WithTitleAnnotation("Delete Scheduled Message"),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel the scheduled message was sent to, in format Cxxxxxxxxxx."),
+			),
+			mcp.WithString("scheduled_message_id",
+				mcp.Required(),
+				mcp.Description("ID of the scheduled message to cancel. Get this from conversations_scheduled_messages_list."),
+			),
+		), conversationsHandler.ConversationsDeleteScheduledMessageHandler)
 	}
 
 	logger.Info("Authenticating with Slack API...",
