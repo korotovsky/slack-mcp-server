@@ -1009,7 +1009,11 @@ func (ap *ApiProvider) checkpointUsers(list []slack.User) {
 		return
 	}
 
-	data, err := json.MarshalIndent(list, "", "  ")
+	// Compact, not indented: a checkpoint re-marshals the whole accumulated
+	// roster each time, so on a large workspace indentation is a meaningful
+	// amount of CPU and bytes for a file only ever read back by json.Unmarshal.
+	// The final write in fetchAndStoreUsers keeps its existing formatting.
+	data, err := json.Marshal(list)
 	if err != nil {
 		ap.logger.Error("Failed to marshal users for checkpoint", zap.Error(err))
 		return
@@ -1035,9 +1039,12 @@ func (ap *ApiProvider) checkpointUsers(list []slack.User) {
 //     discarding it (GetUsersContext returns partial results alongside the error,
 //     but its caller drops them)
 //
+// The second return value reports whether the roster is incomplete. Callers must
+// not persist a partial roster over a cache that is already complete.
+//
 // Tunable via SLACK_MCP_USERS_CHECKPOINT_PAGES (0 disables checkpointing) and
 // SLACK_MCP_USERS_MAX_RETRIES.
-func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.GetUsersOption) ([]slack.User, error) {
+func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.GetUsersOption) ([]slack.User, bool, error) {
 	checkpointPages := envPositiveInt("SLACK_MCP_USERS_CHECKPOINT_PAGES", defaultUsersCheckpointPages)
 	maxRetries := envPositiveInt("SLACK_MCP_USERS_MAX_RETRIES", defaultUsersMaxRetries)
 
@@ -1056,7 +1063,7 @@ func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.Ge
 				break
 			}
 			if ctx.Err() != nil {
-				return all, ctx.Err()
+				return all, true, ctx.Err()
 			}
 
 			// p is intentionally not advanced on failure, so the retry re-issues
@@ -1070,7 +1077,7 @@ func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.Ge
 					zap.Error(err))
 				select {
 				case <-ctx.Done():
-					return all, ctx.Err()
+					return all, true, ctx.Err()
 				case <-time.After(wait):
 				}
 				continue
@@ -1082,9 +1089,9 @@ func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.Ge
 					zap.Int("pages", page),
 					zap.Error(err))
 				ap.checkpointUsers(all)
-				return all, nil
+				return all, true, nil
 			}
-			return nil, err
+			return nil, true, err
 		}
 
 		p = next
@@ -1104,7 +1111,7 @@ func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.Ge
 		}
 	}
 
-	return all, nil
+	return all, false, nil
 }
 
 // fetchAndStoreUsers fetches all users from the Slack API and updates the snapshot and cache file.
@@ -1118,10 +1125,20 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 		optionLimit = slack.GetUsersOptionLimit(1000)
 	)
 
-	users, err := ap.fetchUsersResilient(ctx, optionLimit)
+	users, partial, err := ap.fetchUsersResilient(ctx, optionLimit)
 	if err != nil {
 		ap.logger.Error("Failed to fetch users", zap.Error(err))
 		return err
+	}
+
+	// A partial roster must never replace a complete one. On a background refresh
+	// the existing cache and snapshot are already good, so an incomplete walk is
+	// discarded here rather than written over them. On a cold start there is
+	// nothing to lose, so the partial roster is kept.
+	if partial && ap.usersReady.Load() {
+		ap.logger.Warn("users.list incomplete, keeping existing complete cache",
+			zap.Int("fetched", len(users)))
+		return nil
 	}
 
 	if len(users) == 0 {

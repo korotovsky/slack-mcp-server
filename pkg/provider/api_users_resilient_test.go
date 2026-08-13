@@ -11,12 +11,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
-// fakeUsersAPI satisfies SlackAPI but only implements the pagination entry point;
-// every other method is unused by fetchUsersResilient and left nil via embedding.
+// fakeUsersAPI satisfies SlackAPI but only implements what the users cache walk
+// touches; every other method is unused here and left nil via embedding.
 type fakeUsersAPI struct {
 	SlackAPI
 	c *slack.Client
@@ -24,6 +25,12 @@ type fakeUsersAPI struct {
 
 func (f *fakeUsersAPI) GetUsersPaginated(options ...slack.GetUsersOption) slack.UserPagination {
 	return f.c.GetUsersPaginated(options...)
+}
+
+// ClientUserBoot is reached via GetSlackConnect on the full fetchAndStoreUsers
+// path. An empty response means no Slack Connect users to merge.
+func (f *fakeUsersAPI) ClientUserBoot(ctx context.Context) (*edge.ClientUserBootResponse, error) {
+	return &edge.ClientUserBootResponse{}, nil
 }
 
 // usersServer mimics Slack's users.list. It serves totalPages pages of
@@ -101,9 +108,12 @@ func TestFetchUsersResilient_RetriesTransient500(t *testing.T) {
 	ap, _, ts := newTestProvider(t, srv)
 	defer ts.Close()
 
-	users, err := ap.fetchUsersResilient(context.Background(), slack.GetUsersOptionLimit(10))
+	users, partial, err := ap.fetchUsersResilient(context.Background(), slack.GetUsersOptionLimit(10))
 	if err != nil {
 		t.Fatalf("expected transient 500 to be retried, got error: %v", err)
+	}
+	if partial {
+		t.Fatal("a fully-walked roster must not be reported as partial")
 	}
 	if got, want := len(users), 50; got != want {
 		t.Fatalf("expected %d users across all pages, got %d", want, got)
@@ -148,9 +158,12 @@ func TestFetchUsersResilient_KeepsPartialWhenRetriesExhausted(t *testing.T) {
 	ap, cachePath, ts := newTestProvider(t, srv)
 	defer ts.Close()
 
-	users, err := ap.fetchUsersResilient(context.Background(), slack.GetUsersOptionLimit(10))
+	users, partial, err := ap.fetchUsersResilient(context.Background(), slack.GetUsersOptionLimit(10))
 	if err != nil {
 		t.Fatalf("expected partial success, got error: %v", err)
+	}
+	if !partial {
+		t.Fatal("an aborted walk must be reported as partial")
 	}
 	if got, want := len(users), 30; got != want {
 		t.Fatalf("expected %d users from the 3 pages that succeeded, got %d", want, got)
@@ -190,6 +203,50 @@ func TestCheckpointUsers_DoesNotClobberReadyCache(t *testing.T) {
 	}
 	if string(data) != `[{"id":"UCOMPLETE"}]` {
 		t.Fatalf("existing cache was clobbered by a partial checkpoint: %s", data)
+	}
+}
+
+// Regression: the guard on checkpointUsers alone is not sufficient. The final
+// write in fetchAndStoreUsers is unconditional, so a background refresh that
+// walks only part of the roster would still overwrite a complete cache through
+// that path. Exercises the whole function, not just the checkpoint helper.
+func TestFetchAndStoreUsers_PartialDoesNotClobberCompleteCache(t *testing.T) {
+	t.Setenv("SLACK_MCP_USERS_CHECKPOINT_PAGES", "1")
+	t.Setenv("SLACK_MCP_USERS_MAX_RETRIES", "1")
+
+	// Page 2 fails forever, so the walk can never complete.
+	srv := &usersServer{totalPages: 6, usersPerPage: 10, fail500OnPage: 2, fail500Times: 1 << 30}
+	ap, cachePath, ts := newTestProvider(t, srv)
+	defer ts.Close()
+
+	complete := `[{"id":"UCOMPLETE","name":"complete"}]`
+	if err := os.WriteFile(cachePath, []byte(complete), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A complete cache and snapshot already exist: this is a background refresh.
+	ap.usersReady.Store(true)
+	ap.usersSnapshot.Store(&UsersCache{
+		Users:    map[string]slack.User{"UCOMPLETE": {ID: "UCOMPLETE", Name: "complete"}},
+		UsersInv: map[string]string{"complete": "UCOMPLETE"},
+	})
+
+	if err := ap.fetchAndStoreUsers(context.Background()); err != nil {
+		t.Fatalf("a partial background refresh should be a no-op, got error: %v", err)
+	}
+
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != complete {
+		t.Fatalf("complete cache was downgraded to a partial roster:\n%s", data)
+	}
+
+	// The in-memory snapshot must not be downgraded either.
+	snap := ap.usersSnapshot.Load()
+	if _, ok := snap.Users["UCOMPLETE"]; !ok {
+		t.Fatal("snapshot lost the complete roster during a partial refresh")
 	}
 }
 
