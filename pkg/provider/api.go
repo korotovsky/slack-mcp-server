@@ -214,6 +214,9 @@ type SlackAPI interface {
 	AuthTest() (*slack.AuthTestResponse, error)
 	AuthTestContext(ctx context.Context) (*slack.AuthTestResponse, error)
 	GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error)
+	// Page-by-page users.list, so a transient 5xx mid-walk can be retried and
+	// partial progress checkpointed instead of discarding the whole enumeration.
+	GetUsersPaginated(options ...slack.GetUsersOption) slack.UserPagination
 	GetUsersInfo(users ...string) (*[]slack.User, error)
 	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
@@ -385,6 +388,10 @@ func (c *MCPSlackClient) AuthTestContext(ctx context.Context) (*slack.AuthTestRe
 
 func (c *MCPSlackClient) GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error) {
 	return c.slackClient.GetUsersContext(ctx, options...)
+}
+
+func (c *MCPSlackClient) GetUsersPaginated(options ...slack.GetUsersOption) slack.UserPagination {
+	return c.slackClient.GetUsersPaginated(options...)
 }
 
 func (c *MCPSlackClient) GetUsersInfo(users ...string) (*[]slack.User, error) {
@@ -951,6 +958,155 @@ func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
 	}()
 }
 
+const (
+	defaultUsersCheckpointPages = 10
+	defaultUsersMaxRetries      = 6
+	maxUsersRetryBackoff        = 60 * time.Second
+)
+
+// retryableErr is implemented by slack.StatusCodeError (true for 5xx and 429)
+// and slack.RateLimitedError. Both already ship this method; slack-go's own
+// GetUsersContext only ever acts on RateLimitedError, which is why a single 5xx
+// aborts the entire walk there.
+type retryableErr interface{ Retryable() bool }
+
+func envPositiveInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// usersRetryDelay reports how long to wait before retrying a failed users.list
+// page, and whether the error is worth retrying at all.
+func usersRetryDelay(err error, attempt int) (time.Duration, bool) {
+	var rle *slack.RateLimitedError
+	if errors.As(err, &rle) {
+		return rle.RetryAfter, true
+	}
+
+	var r retryableErr
+	if errors.As(err, &r) && r.Retryable() {
+		d := time.Duration(1<<uint(attempt)) * time.Second
+		if d > maxUsersRetryBackoff {
+			d = maxUsersRetryBackoff
+		}
+		return d, true
+	}
+
+	return 0, false
+}
+
+// checkpointUsers persists a partial roster mid-walk.
+//
+// Guarded on usersReady: when a usable cache already exists this is a background
+// refresh, and writing a partial roster over a complete one would be a downgrade.
+// Checkpoints are therefore only taken on a cold start, where partial beats nothing.
+func (ap *ApiProvider) checkpointUsers(list []slack.User) {
+	if ap.usersReady.Load() {
+		return
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		ap.logger.Error("Failed to marshal users for checkpoint", zap.Error(err))
+		return
+	}
+	if err := atomicWriteFile(ap.usersCachePath, data, 0600); err != nil {
+		ap.logger.Error("Failed to write users checkpoint",
+			zap.String("cache_file", ap.usersCachePath),
+			zap.Error(err))
+		return
+	}
+	ap.logger.Info("Checkpointed users cache",
+		zap.Int("count", len(list)),
+		zap.String("cache_file", ap.usersCachePath))
+}
+
+// fetchUsersResilient walks users.list page by page rather than handing the whole
+// walk to slack-go's GetUsersContext. Three differences, all of which only matter
+// once a workspace is big enough that the walk takes minutes:
+//
+//   - retries transient failures (5xx, 429) with backoff instead of aborting
+//   - checkpoints the cache every N pages, so a failure keeps prior progress
+//   - returns whatever was collected if the walk ultimately fails, rather than
+//     discarding it (GetUsersContext returns partial results alongside the error,
+//     but its caller drops them)
+//
+// Tunable via SLACK_MCP_USERS_CHECKPOINT_PAGES (0 disables checkpointing) and
+// SLACK_MCP_USERS_MAX_RETRIES.
+func (ap *ApiProvider) fetchUsersResilient(ctx context.Context, opts ...slack.GetUsersOption) ([]slack.User, error) {
+	checkpointPages := envPositiveInt("SLACK_MCP_USERS_CHECKPOINT_PAGES", defaultUsersCheckpointPages)
+	maxRetries := envPositiveInt("SLACK_MCP_USERS_MAX_RETRIES", defaultUsersMaxRetries)
+
+	var (
+		all     []slack.User
+		seen    = make(map[string]struct{})
+		page    int
+		retries int
+	)
+
+	p := ap.client.GetUsersPaginated(opts...)
+	for {
+		next, err := p.Next(ctx)
+		if err != nil {
+			if p.Done(err) {
+				break
+			}
+			if ctx.Err() != nil {
+				return all, ctx.Err()
+			}
+
+			// p is intentionally not advanced on failure, so the retry re-issues
+			// the same cursor rather than skipping a page.
+			if wait, ok := usersRetryDelay(err, retries); ok && retries < maxRetries {
+				retries++
+				ap.logger.Warn("users.list page failed, retrying",
+					zap.Int("page", page),
+					zap.Int("attempt", retries),
+					zap.Duration("backoff", wait),
+					zap.Error(err))
+				select {
+				case <-ctx.Done():
+					return all, ctx.Err()
+				case <-time.After(wait):
+				}
+				continue
+			}
+
+			if len(all) > 0 {
+				ap.logger.Warn("users.list aborted, keeping partial roster",
+					zap.Int("users", len(all)),
+					zap.Int("pages", page),
+					zap.Error(err))
+				ap.checkpointUsers(all)
+				return all, nil
+			}
+			return nil, err
+		}
+
+		p = next
+		retries = 0
+		page++
+
+		for _, u := range p.Users {
+			if _, dup := seen[u.ID]; dup {
+				continue
+			}
+			seen[u.ID] = struct{}{}
+			all = append(all, u)
+		}
+
+		if checkpointPages > 0 && page%checkpointPages == 0 {
+			ap.checkpointUsers(all)
+		}
+	}
+
+	return all, nil
+}
+
 // fetchAndStoreUsers fetches all users from the Slack API and updates the snapshot and cache file.
 // Serialized by fetchUsersMu to prevent concurrent fetches from racing on snapshot/file writes.
 func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
@@ -962,9 +1118,7 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 		optionLimit = slack.GetUsersOptionLimit(1000)
 	)
 
-	users, err := ap.client.GetUsersContext(ctx,
-		optionLimit,
-	)
+	users, err := ap.fetchUsersResilient(ctx, optionLimit)
 	if err != nil {
 		ap.logger.Error("Failed to fetch users", zap.Error(err))
 		return err
