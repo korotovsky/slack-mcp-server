@@ -41,7 +41,7 @@ func assertMentions(t *testing.T, subject string, desc string, tokens ...string)
 	}
 }
 
-func TestConversationsAddMessageToolSchema(t *testing.T) {
+func TestUnitConversationsAddMessageToolSchema(t *testing.T) {
 	tool := newConversationsAddMessageTool()
 
 	assert.Equal(t, ToolConversationsAddMessage, tool.Name)
@@ -71,7 +71,7 @@ func TestConversationsAddMessageToolSchema(t *testing.T) {
 // The converter is a CommonMark parser, so Slack mrkdwn silently misrenders and
 // Slack link syntax disappears entirely. Each token below pins one rule that
 // callers demonstrably get wrong; losing any of them regresses the contract.
-func TestConversationsAddMessageDescribesMarkdownDialect(t *testing.T) {
+func TestUnitConversationsAddMessageDescribesMarkdownDialect(t *testing.T) {
 	tool := newConversationsAddMessageTool()
 
 	assertMentions(t, "tool", tool.Description, "text/markdown", "Slack mrkdwn", "silently")
@@ -97,8 +97,8 @@ func TestConversationsAddMessageDescribesMarkdownDialect(t *testing.T) {
 	assertMentions(t, "blocks", description(t, tool, "blocks"),
 		"JSON-encoded string", "Block Kit", "content_type", "fallback", "notifications", "accessibility", "At least one")
 
-	assertMentions(t, "thread_ts", description(t, tool, "thread_ts"),
-		"parent message", "1234567890.123456", "Optional")
-	assert.NotContains(t, description(t, tool, "thread_ts"), "message in the thread_ts",
+	threadTsDesc := description(t, tool, "thread_ts")
+	assertMentions(t, "thread_ts", threadTsDesc, "parent message", "1234567890.123456", "Optional")
+	assert.NotContains(t, threadTsDesc, "message in the thread_ts",
 		"the inherited sentence was garbled mid-clause")
 }
