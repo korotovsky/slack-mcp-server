@@ -41,6 +41,9 @@ func assertMentions(t *testing.T, subject string, desc string, tokens ...string)
 	}
 }
 
+// The TestUnit prefix is load-bearing rather than stylistic: `make test` runs
+// `go test -run=".*Unit.*"` (see Makefile), so a test named without it never
+// executes in CI.
 func TestUnitConversationsAddMessageToolSchema(t *testing.T) {
 	tool := newConversationsAddMessageTool()
 
@@ -68,9 +71,9 @@ func TestUnitConversationsAddMessageToolSchema(t *testing.T) {
 	assert.Contains(t, string(encoded), `"enum":["text/markdown","text/plain"]`)
 }
 
-// The converter is a CommonMark parser, so Slack mrkdwn silently misrenders and
-// Slack link syntax disappears entirely. Each token below pins one rule that
-// callers demonstrably get wrong; losing any of them regresses the contract.
+// Each token below pins one rule that callers demonstrably get wrong, so losing
+// any of them regresses the contract silently. newConversationsAddMessageTool
+// documents why each rule exists.
 func TestUnitConversationsAddMessageDescribesMarkdownDialect(t *testing.T) {
 	tool := newConversationsAddMessageTool()
 

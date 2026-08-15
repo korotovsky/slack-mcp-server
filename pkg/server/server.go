@@ -621,11 +621,12 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 // newConversationsAddMessageTool builds the add-message tool schema.
 //
 // The descriptions are the only place a caller learns which Markdown dialect
-// this tool speaks, and getting it wrong fails silently: text/markdown is
-// converted by a CommonMark parser, so Slack mrkdwn is either misrendered
-// (*bold* becomes italic, "• " lines collapse into one paragraph) or dropped
-// outright (<url|label> parses as a CommonMark autolink the converter does not
-// emit). None of this returns an error, so the caller sees a success response.
+// this tool speaks, and getting it wrong fails silently: text/markdown goes
+// through slack-go-util (pinned in go.mod), which runs goldmark without the GFM
+// extensions, so Slack mrkdwn is either misrendered (*bold* becomes italic,
+// "• " lines collapse into one paragraph) or dropped outright (<url|label>
+// parses as a CommonMark autolink the converter does not emit). None of this
+// returns an error, so the caller sees a success response.
 //
 // Mentions are container-dependent: paragraphs become mrkdwn section blocks
 // that resolve <@U123>, while list items and quotes become rich_text and
