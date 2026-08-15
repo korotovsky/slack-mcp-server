@@ -177,28 +177,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	}
 
 	if shouldAddTool(ToolConversationsAddMessage, enabledTools, "SLACK_MCP_ADD_MESSAGE_TOOL") {
-		s.AddTool(mcp.NewTool(ToolConversationsAddMessage,
-			mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts."),
-			mcp.WithTitleAnnotation("Send Message"),
-			mcp.WithDestructiveHintAnnotation(true),
-			mcp.WithString("channel_id",
-				mcp.Required(),
-				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
-			),
-			mcp.WithString("thread_ts",
-				mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread."),
-			),
-			mcp.WithString("text",
-				mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
-			),
-			mcp.WithString("content_type",
-				mcp.DefaultString("text/markdown"),
-				mcp.Description("Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'. Ignored when blocks is provided."),
-			),
-			mcp.WithString("blocks",
-				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
-			),
-		), conversationsHandler.ConversationsAddMessageHandler)
+		s.AddTool(newConversationsAddMessageTool(), conversationsHandler.ConversationsAddMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
@@ -637,6 +616,45 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		server: s,
 		logger: logger,
 	}
+}
+
+// newConversationsAddMessageTool builds the add-message tool schema.
+//
+// The descriptions are the only place a caller learns which Markdown dialect
+// this tool speaks, and getting it wrong fails silently: text/markdown goes
+// through slack-go-util (pinned in go.mod), which runs goldmark without the GFM
+// extensions, so Slack mrkdwn is either misrendered (*bold* becomes italic,
+// "• " lines collapse into one paragraph) or dropped outright (<url|label>
+// parses as a CommonMark autolink the converter does not emit). None of this
+// returns an error, so the caller sees a success response.
+//
+// Mentions are container-dependent: paragraphs become mrkdwn section blocks
+// that resolve <@U123>, while list items and quotes become rich_text and
+// headings become plain_text, neither of which resolves it.
+func newConversationsAddMessageTool() mcp.Tool {
+	return mcp.NewTool(ToolConversationsAddMessage,
+		mcp.WithDescription("Add a message to a public channel, private channel, or direct message (DM, or IM) conversation by channel_id and thread_ts. Provide `text`, `blocks`, or both. IMPORTANT: with `content_type=text/markdown` (the default) the server converts `text` to Block Kit — write Markdown, NOT Slack mrkdwn, or content may be silently changed or deleted."),
+		mcp.WithTitleAnnotation("Send Message"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("channel_id",
+			mcp.Required(),
+			mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+		),
+		mcp.WithString("thread_ts",
+			mcp.Description("Timestamp of the parent message when posting a thread reply, in format 1234567890.123456. Optional; omit to post to the channel or DM instead."),
+		),
+		mcp.WithString("text",
+			mcp.Description("Message text. For `content_type=text/markdown` (default), use Markdown, NOT Slack mrkdwn. Slack links such as `<url|label>` and `<url>` are silently deleted; use `[label](url)`. Mentions such as `<@U123>` are honored only in plain paragraphs — inside list items, headings, or block quotes they render as literal text. Single newlines within a paragraph are removed with no separator; start every bullet item with `- ` (never `• `), or use a blank line to start a new paragraph. Use `**bold**`; `*text*` becomes italic. Other reliable forms are plain paragraphs, `#` headings, inline code, fenced code blocks, and `> ` block quotes. Do not use tables, task lists such as `- [ ] todo`, or `~~strikethrough~~`. For unformatted text, use `content_type=text/plain`."),
+		),
+		mcp.WithString("content_type",
+			mcp.DefaultString("text/markdown"),
+			mcp.Enum("text/markdown", "text/plain"),
+			mcp.Description("Controls `text` when `blocks` is omitted. `text/markdown` (default): convert the Markdown forms documented in `text` to Block Kit; do not use Slack mrkdwn. `text/plain`: skip Markdown conversion and disable Slack mrkdwn; use for logs, code, or literal formatting characters. Line breaks are passed through in `text/plain`. When `blocks` is provided, `content_type` does not affect rendering."),
+		),
+		mcp.WithString("blocks",
+			mcp.Description("JSON-encoded string containing a Slack Block Kit blocks array. When provided, `blocks` controls rendering and `content_type` has no effect; `text` is not converted. Optional `text` is used as Slack's top-level fallback for notifications and accessibility. At least one of `text` or `blocks` is required."),
+		),
+	)
 }
 
 func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
