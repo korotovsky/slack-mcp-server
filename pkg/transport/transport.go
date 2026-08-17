@@ -2,12 +2,15 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -65,6 +68,29 @@ func NewUserAgentTransport(roundTripper http.RoundTripper, userAgent string, coo
 func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clonedReq := req.Clone(req.Context())
 	clonedReq.Header.Set("User-Agent", t.userAgent)
+
+	if clonedReq.Body != nil && clonedReq.Header.Get("Authorization") == "" {
+		mediaType, _, err := mime.ParseMediaType(clonedReq.Header.Get("Content-Type"))
+		if err == nil && mediaType == "application/x-www-form-urlencoded" {
+			body, err := io.ReadAll(clonedReq.Body)
+			if err != nil {
+				return nil, fmt.Errorf("read request body: %w", err)
+			}
+			clonedReq.Body = io.NopCloser(bytes.NewReader(body))
+
+			form, err := url.ParseQuery(string(body))
+			if err == nil {
+				token := form.Get("token")
+				if strings.HasPrefix(token, "xoxp-") || strings.HasPrefix(token, "xoxb-") {
+					clonedReq.Header.Set("Authorization", "Bearer "+token)
+					form.Del("token")
+					body = []byte(form.Encode())
+					clonedReq.Body = io.NopCloser(bytes.NewReader(body))
+					clonedReq.ContentLength = int64(len(body))
+				}
+			}
+		}
+	}
 
 	for _, cookie := range t.cookies {
 		clonedReq.AddCookie(cookie)
