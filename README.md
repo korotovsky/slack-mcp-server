@@ -218,8 +218,27 @@ List saved items from Slack's "Save for Later" panel. Returns items the user has
   - `include_messages` (boolean, default `true`): If true, fetches the actual saved message content. If false, returns metadata only.
   - `max_messages_per_item` (number, default `5`): Max messages to fetch per saved item (for thread replies).
 
-### 17. saved_update
-Update a saved item: mark as completed, set a due date/reminder, or both. Use `item_id` and `ts` values from `saved_list` output. This replaces the deprecated `stars.add`/`stars.remove` APIs.
+### 17. saved_add
+Save a message to Slack's "Save for Later" panel (the equivalent of clicking the bookmark icon on a message), optionally with a due date/reminder. Use the `channel_id` and message `ts` from `conversations_history`, `conversations_replies` or `conversations_search_messages` output. This replaces the deprecated `stars.add` API.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel/DM where the message lives, in format `Cxxxxxxxxxx` (or `Dxxxxxxxxxx` for DMs), or its name starting with `#...` or `@...` (e.g., `#general`, `@username_dm`).
+  - `ts` (string, required): Timestamp of the message to save, in format `1234567890.123456`.
+  - `date_due` (number, optional): Unix timestamp for a due date/reminder on the saved item. Omit or set to `0` for no due date.
+
+### 18. saved_delete
+Remove a message from the "Save for Later" panel (unsave). Use `item_id` and `ts` values from `saved_list` output. This replaces the deprecated `stars.remove` API.
+
+> **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
+
+- **Parameters:**
+  - `channel_id` (string, required): Channel/DM ID where the saved message lives (the `item_id` from `saved_list` output), or its name starting with `#...` or `@...`.
+  - `ts` (string, required): Message timestamp of the saved item (from `saved_list` output), in format `1234567890.123456`.
+
+### 19. saved_update
+Update a saved item: mark as completed, set a due date/reminder, or both. Use `item_id` and `ts` values from `saved_list` output.
 
 > **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
 
@@ -229,7 +248,7 @@ Update a saved item: mark as completed, set a due date/reminder, or both. Use `i
   - `mark` (string, optional): Set to `"completed"` to mark the item as done.
   - `date_due` (number, optional): Unix timestamp for due date/reminder. Set to `0` to clear.
 
-### 18. saved_clear_completed
+### 20. saved_clear_completed
 Clear all completed saved items from the "Save for Later" panel. This is a bulk operation that removes all items with `state="completed"`.
 
 > **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.

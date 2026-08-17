@@ -45,6 +45,8 @@ const (
 	ToolUsergroupsUsersUpdate       = "usergroups_users_update"
 	ToolUsersSearch                 = "users_search"
 	ToolSavedList                   = "saved_list"
+	ToolSavedAdd                    = "saved_add"
+	ToolSavedDelete                 = "saved_delete"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
 )
@@ -70,6 +72,8 @@ var ValidToolNames = []string{
 	ToolUsergroupsUsersUpdate,
 	ToolUsersSearch,
 	ToolSavedList,
+	ToolSavedAdd,
+	ToolSavedDelete,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
 }
@@ -560,9 +564,46 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			),
 		), savedHandler.SavedListHandler)
 
+		if shouldAddTool(ToolSavedAdd, enabledTools, "") {
+			s.AddTool(mcp.NewTool(ToolSavedAdd,
+				mcp.WithDescription("Save a message to Slack's 'Save for Later' panel (aka bookmark/star a message), optionally with a due date/reminder. Use channel_id and message ts, e.g. from conversations_history, conversations_replies or conversations_search_messages output. Replaces the deprecated stars.add API. Requires browser session tokens (xoxc/xoxd)."),
+				mcp.WithTitleAnnotation("Save Message for Later"),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("channel_id",
+					mcp.Required(),
+					mcp.Description("ID of the channel/DM where the message lives, in format Cxxxxxxxxxx (or Dxxxxxxxxxx for DMs), or its name starting with #... or @... aka #general or @username_dm."),
+				),
+				mcp.WithString("ts",
+					mcp.Required(),
+					mcp.Description("Timestamp of the message to save, in format 1234567890.123456."),
+				),
+				mcp.WithNumber("date_due",
+					mcp.Description("Optional unix timestamp for a due date/reminder on the saved item. Omit or set to 0 for no due date."),
+				),
+			), savedHandler.SavedAddHandler)
+		}
+
+		if shouldAddTool(ToolSavedDelete, enabledTools, "") {
+			s.AddTool(mcp.NewTool(ToolSavedDelete,
+				mcp.WithDescription("Remove a message from Slack's 'Save for Later' panel (unsave). Use item_id and ts values from saved_list output. Replaces the deprecated stars.remove API. Requires browser session tokens (xoxc/xoxd)."),
+				mcp.WithTitleAnnotation("Remove Saved Message"),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithString("channel_id",
+					mcp.Required(),
+					mcp.Description("Channel/DM ID where the saved message lives (the item_id from saved_list output), or its name starting with #... or @..."),
+				),
+				mcp.WithString("ts",
+					mcp.Required(),
+					mcp.Description("Message timestamp of the saved item (from saved_list output), in format 1234567890.123456."),
+				),
+			), savedHandler.SavedDeleteHandler)
+		}
+
 		if shouldAddTool(ToolSavedUpdate, enabledTools, "") {
 			s.AddTool(mcp.NewTool(ToolSavedUpdate,
-				mcp.WithDescription("Update a saved item: mark as completed, set a due date, or both. Use item_id and ts values from saved_list output. Replaces the deprecated stars.add/stars.remove APIs."),
+				mcp.WithDescription("Update a saved item: mark as completed, set a due date, or both. Use item_id and ts values from saved_list output. To save or unsave a message use saved_add / saved_delete instead."),
 				mcp.WithTitleAnnotation("Update Saved Item"),
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithString("item_id",

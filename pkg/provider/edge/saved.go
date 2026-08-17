@@ -8,6 +8,13 @@ import (
 // saved.* API — internal Slack APIs for "Save for Later" panel.
 // These replaced the deprecated stars.* API (March 2023).
 // Only accessible with browser session tokens (xoxc/xoxd).
+//
+// Known endpoints:
+//   - saved.list           — list saved items (filter: saved/completed/archived)
+//   - saved.add            — save an item (item_type, item_id, ts)
+//   - saved.delete         — remove an item from the saved list (item_type, item_id, ts)
+//   - saved.update         — mark completed / set due date (item_type, item_id, ts, mark, date_due)
+//   - saved.clearCompleted — bulk-remove all completed items
 
 type savedListForm struct {
 	BaseRequest
@@ -70,6 +77,79 @@ func (cl *Client) SavedList(ctx context.Context, filter string, limit int, curso
 		return SavedListResponse{}, err
 	}
 	return r, nil
+}
+
+type savedAddForm struct {
+	BaseRequest
+	ItemType string `json:"item_type"`
+	ItemID   string `json:"item_id"`
+	Ts       string `json:"ts,omitempty"`
+	WebClientFields
+}
+
+// SavedAdd adds an item to the user's "Save for Later" list (saved.add).
+// For messages, itemType is "message", itemID is the channel/DM ID and ts is
+// the message timestamp. Replaces the deprecated stars.add API.
+func (cl *Client) SavedAdd(ctx context.Context, itemType, itemID, ts string) error {
+	ctx, task := trace.NewTask(ctx, "SavedAdd")
+	defer task.End()
+
+	form := savedAddForm{
+		BaseRequest:     BaseRequest{Token: cl.token},
+		ItemType:        itemType,
+		ItemID:          itemID,
+		Ts:              ts,
+		WebClientFields: webclientReason("saved-api/addSavedMessage"),
+	}
+
+	resp, err := cl.PostForm(ctx, "saved.add", values(form, true))
+	if err != nil {
+		return err
+	}
+	r := baseResponse{}
+	if err := cl.ParseResponse(&r, resp); err != nil {
+		return err
+	}
+	if err := r.validate("saved.add"); err != nil {
+		return err
+	}
+	return nil
+}
+
+type savedDeleteForm struct {
+	BaseRequest
+	ItemType string `json:"item_type"`
+	ItemID   string `json:"item_id"`
+	Ts       string `json:"ts,omitempty"`
+	WebClientFields
+}
+
+// SavedDelete removes an item from the user's "Save for Later" list
+// (saved.delete). Replaces the deprecated stars.remove API.
+func (cl *Client) SavedDelete(ctx context.Context, itemType, itemID, ts string) error {
+	ctx, task := trace.NewTask(ctx, "SavedDelete")
+	defer task.End()
+
+	form := savedDeleteForm{
+		BaseRequest:     BaseRequest{Token: cl.token},
+		ItemType:        itemType,
+		ItemID:          itemID,
+		Ts:              ts,
+		WebClientFields: webclientReason("saved-api/deleteSavedMessage"),
+	}
+
+	resp, err := cl.PostForm(ctx, "saved.delete", values(form, true))
+	if err != nil {
+		return err
+	}
+	r := baseResponse{}
+	if err := cl.ParseResponse(&r, resp); err != nil {
+		return err
+	}
+	if err := r.validate("saved.delete"); err != nil {
+		return err
+	}
+	return nil
 }
 
 type savedUpdateForm struct {
