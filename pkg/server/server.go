@@ -47,6 +47,7 @@ const (
 	ToolSavedList                   = "saved_list"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
+	ToolConversationsThreads        = "conversations_threads"
 )
 
 var ValidToolNames = []string{
@@ -72,6 +73,7 @@ var ValidToolNames = []string{
 	ToolSavedList,
 	ToolSavedUpdate,
 	ToolSavedClearCompleted,
+	ToolConversationsThreads,
 }
 
 func ValidateEnabledTools(tools []string) error {
@@ -532,6 +534,39 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Comma-separated user IDs that will become the COMPLETE member list (e.g., 'U0123456789,U9876543210'). All current members not in this list will be removed."),
 			),
 		), usergroupsHandler.UsergroupsUsersUpdateHandler)
+	}
+
+	// Register the "Threads" view tool — subscribed threads with per-thread unread state.
+	// Requires browser session tokens (xoxc/xoxd); not available for bot or OAuth tokens.
+	if !provider.IsBotToken() && !provider.IsOAuth() && shouldAddTool(ToolConversationsThreads, enabledTools, "") {
+		threadsHandler := handler.NewThreadsHandler(provider, logger, conversationsHandler)
+		s.AddTool(mcp.NewTool(ToolConversationsThreads,
+			mcp.WithDescription("List the threads you are subscribed to (Slack's 'Threads' view), newest activity first, with each thread's unread reply count and the unread (or latest) replies. By default only threads with unread replies from the last 30 days are returned. Returns CSV; the last row's Cursor column is non-empty when more threads are available — pass it as 'cursor' to continue. To mark a listed thread as read use conversations_mark with its ChannelID and ThreadTs. Requires browser session tokens (xoxc/xoxd)."),
+			mcp.WithTitleAnnotation("List Threads"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("filter",
+				mcp.Description("'unread' (default): only threads with unread replies. 'all': every subscribed thread in the time window."),
+				mcp.DefaultString("unread"),
+			),
+			mcp.WithString("channel_id",
+				mcp.Description("Optional: only threads in this channel or DM, in format Cxxxxxxxxxx / Dxxxxxxxxxx or its name starting with #... or @..."),
+			),
+			mcp.WithString("since",
+				mcp.Description("How far back to look, by a thread's latest activity: a duration like 1d, 7d, 2w, 1m (default 30d), or 'all' for no time bound. One call scans at most 500 threads; continue with the cursor for more."),
+				mcp.DefaultString("30d"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum number of threads to return (default 20, max 200)."),
+				mcp.DefaultNumber(20),
+			),
+			mcp.WithNumber("include_replies",
+				mcp.Description("How many replies to include per thread in the Replies column: the unread ones when the thread has unread replies, otherwise the latest ones. Default 3, max 20, 0 to omit reply text."),
+				mcp.DefaultNumber(3),
+			),
+			mcp.WithString("cursor",
+				mcp.Description("Cursor for pagination: the value of the last row's Cursor column from the previous conversations_threads result."),
+			),
+		), threadsHandler.ConversationsThreadsHandler)
 	}
 
 	// Register saved items tools — "Save for Later" panel management.
