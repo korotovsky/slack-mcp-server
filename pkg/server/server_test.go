@@ -114,6 +114,8 @@ func TestValidToolNames(t *testing.T) {
 			ToolUsergroupsUsersUpdate:       true,
 			ToolUsersSearch:                 true,
 			ToolSavedList:                   true,
+			ToolSavedAdd:                    true,
+			ToolSavedDelete:                 true,
 			ToolSavedUpdate:                 true,
 			ToolSavedClearCompleted:         true,
 		}
@@ -146,6 +148,8 @@ func TestValidToolNames(t *testing.T) {
 		assert.Equal(t, "usergroups_users_update", ToolUsergroupsUsersUpdate)
 		assert.Equal(t, "users_search", ToolUsersSearch)
 		assert.Equal(t, "saved_list", ToolSavedList)
+		assert.Equal(t, "saved_add", ToolSavedAdd)
+		assert.Equal(t, "saved_delete", ToolSavedDelete)
 		assert.Equal(t, "saved_update", ToolSavedUpdate)
 		assert.Equal(t, "saved_clear_completed", ToolSavedClearCompleted)
 	})

@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gocarina/gocsv"
@@ -22,6 +24,14 @@ type SavedItemRow struct {
 	DateDue     string `csv:"DateDue"`
 	State       string `csv:"State"`
 }
+
+// savedItemTypeMessage is the item_type used for saved messages. Slack's
+// saved.* API also supports other item types (e.g. files), but the saved_*
+// tools only manage messages.
+const savedItemTypeMessage = "message"
+
+// slackTsRe matches a Slack message timestamp, e.g. "1234567890.123456".
+var slackTsRe = regexp.MustCompile(`^\d+\.\d+$`)
 
 type SavedHandler struct {
 	apiProvider *provider.ApiProvider
@@ -174,6 +184,92 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 		return nil, fmt.Errorf("failed to marshal saved items: %v", err)
 	}
 	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+// parseSavedItemParams reads and validates the channel_id and ts parameters
+// shared by saved_add and saved_delete, resolving #channel / @user names to IDs.
+// For convenience, item_id (the name used by saved_list output and saved_update)
+// is accepted as an alias of channel_id.
+func (h *SavedHandler) parseSavedItemParams(ctx context.Context, request mcp.CallToolRequest) (channelID string, ts string, err error) {
+	channel := strings.TrimSpace(request.GetString("channel_id", ""))
+	if channel == "" {
+		channel = strings.TrimSpace(request.GetString("item_id", ""))
+	}
+	ts = strings.TrimSpace(request.GetString("ts", ""))
+
+	if channel == "" || ts == "" {
+		return "", "", fmt.Errorf("channel_id and ts are required parameters")
+	}
+	if !slackTsRe.MatchString(ts) {
+		return "", "", fmt.Errorf("ts must be a Slack message timestamp in format 1234567890.123456, got %q", ts)
+	}
+
+	channelID, err = h.convHandler.resolveChannelID(ctx, channel)
+	if err != nil {
+		h.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return "", "", err
+	}
+
+	return channelID, ts, nil
+}
+
+func (h *SavedHandler) SavedAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	h.logger.Debug("SavedAddHandler called", zap.Any("params", request.Params))
+
+	dateDue := int64(request.GetInt("date_due", 0))
+	if dateDue < 0 {
+		return nil, fmt.Errorf("date_due must be a positive unix timestamp, got %d", dateDue)
+	}
+
+	channelID, ts, err := h.parseSavedItemParams(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.apiProvider.Slack().SavedAdd(ctx, savedItemTypeMessage, channelID, ts); err != nil {
+		h.logger.Error("SavedAdd failed",
+			zap.String("item_id", channelID),
+			zap.String("ts", ts),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to save message: %v", err)
+	}
+
+	result := fmt.Sprintf("Successfully saved message to 'Save for Later' (item_id=%s, ts=%s)", channelID, ts)
+
+	// saved.add only saves the item; a due date / reminder is applied with a
+	// follow-up saved.update, exactly like the Slack client does.
+	if dateDue > 0 {
+		if err := h.apiProvider.Slack().SavedUpdate(ctx, savedItemTypeMessage, channelID, ts, "", dateDue); err != nil {
+			h.logger.Error("SavedUpdate (date_due) after SavedAdd failed",
+				zap.String("item_id", channelID),
+				zap.String("ts", ts),
+				zap.Int64("date_due", dateDue),
+				zap.Error(err))
+			return nil, fmt.Errorf("message was saved (item_id=%s, ts=%s) but setting the due date failed: %v", channelID, ts, err)
+		}
+		result += fmt.Sprintf(", due date set to %s", formatUnixTs(dateDue))
+	}
+
+	return mcp.NewToolResultText(result), nil
+}
+
+func (h *SavedHandler) SavedDeleteHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	h.logger.Debug("SavedDeleteHandler called", zap.Any("params", request.Params))
+
+	channelID, ts, err := h.parseSavedItemParams(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.apiProvider.Slack().SavedDelete(ctx, savedItemTypeMessage, channelID, ts); err != nil {
+		h.logger.Error("SavedDelete failed",
+			zap.String("item_id", channelID),
+			zap.String("ts", ts),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to remove saved item: %v", err)
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully removed message from 'Save for Later' (item_id=%s, ts=%s)", channelID, ts)), nil
 }
 
 func (h *SavedHandler) SavedUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

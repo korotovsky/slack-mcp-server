@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestUnitSavedItemCSVFormat(t *testing.T) {
@@ -162,4 +165,138 @@ func TestUnitSavedListResponseParsing(t *testing.T) {
 
 	second := resp.SavedItems[1]
 	assert.Equal(t, int64(0), second.DateDue)
+}
+
+func newSavedAddRequest(args map[string]any) mcp.CallToolRequest {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "saved_add"
+	req.Params.Arguments = args
+	return req
+}
+
+func TestUnitSlackTsRegexp(t *testing.T) {
+	valid := []string{"1234567890.123456", "1772034406.593509", "1.0"}
+	for _, ts := range valid {
+		assert.True(t, slackTsRe.MatchString(ts), "expected %q to be a valid ts", ts)
+	}
+	invalid := []string{"", "1234567890", "p1234567890123456", "1234567890.123456 ", "abc.def", "1234567890.", ".123456", "1234567890,123456"}
+	for _, ts := range invalid {
+		assert.False(t, slackTsRe.MatchString(ts), "expected %q to be an invalid ts", ts)
+	}
+}
+
+// TestUnitSavedAddHandlerValidation covers the parameter validation that runs
+// before any Slack API call is made. The handler is constructed without an API
+// provider, so reaching the API would panic — a passing test proves the input
+// was rejected up front.
+func TestUnitSavedAddHandlerValidation(t *testing.T) {
+	h := &SavedHandler{logger: zap.NewNop()}
+
+	tests := []struct {
+		name    string
+		args    map[string]any
+		wantErr string
+	}{
+		{
+			name:    "missing channel_id",
+			args:    map[string]any{"ts": "1772034406.593509"},
+			wantErr: "channel_id and ts are required",
+		},
+		{
+			name:    "missing ts",
+			args:    map[string]any{"channel_id": "C092WJP9Z38"},
+			wantErr: "channel_id and ts are required",
+		},
+		{
+			name:    "blank channel_id and ts",
+			args:    map[string]any{"channel_id": "  ", "ts": ""},
+			wantErr: "channel_id and ts are required",
+		},
+		{
+			name:    "malformed ts",
+			args:    map[string]any{"channel_id": "C092WJP9Z38", "ts": "p1772034406593509"},
+			wantErr: "ts must be a Slack message timestamp",
+		},
+		{
+			name:    "negative date_due",
+			args:    map[string]any{"channel_id": "C092WJP9Z38", "ts": "1772034406.593509", "date_due": -5},
+			wantErr: "date_due must be a positive unix timestamp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := h.SavedAddHandler(context.Background(), newSavedAddRequest(tt.args))
+			require.Error(t, err)
+			assert.Nil(t, res)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestUnitSavedItemParamsItemIDAlias verifies item_id is accepted as an alias
+// of channel_id. With a plain channel ID no name resolution happens, so the
+// call never touches the (nil) provider and returns the parsed values.
+func TestUnitSavedItemParamsItemIDAlias(t *testing.T) {
+	h := &SavedHandler{logger: zap.NewNop(), convHandler: &ConversationsHandler{logger: zap.NewNop()}}
+
+	t.Run("channel_id is used when present", func(t *testing.T) {
+		req := newSavedAddRequest(map[string]any{"channel_id": "C092WJP9Z38", "ts": "1772034406.593509"})
+		channelID, ts, err := h.parseSavedItemParams(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, "C092WJP9Z38", channelID)
+		assert.Equal(t, "1772034406.593509", ts)
+	})
+
+	t.Run("item_id is accepted as alias of channel_id", func(t *testing.T) {
+		req := newSavedAddRequest(map[string]any{"item_id": "D0AGSQXLJHG", "ts": " 1771941381.234049 "})
+		channelID, ts, err := h.parseSavedItemParams(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, "D0AGSQXLJHG", channelID)
+		assert.Equal(t, "1771941381.234049", ts, "ts should be trimmed")
+	})
+
+	t.Run("channel_id wins over item_id", func(t *testing.T) {
+		req := newSavedAddRequest(map[string]any{"channel_id": "C092WJP9Z38", "item_id": "D0AGSQXLJHG", "ts": "1772034406.593509"})
+		channelID, _, err := h.parseSavedItemParams(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, "C092WJP9Z38", channelID)
+	})
+}
+
+func TestUnitSavedDeleteHandlerValidation(t *testing.T) {
+	h := &SavedHandler{logger: zap.NewNop()}
+
+	tests := []struct {
+		name    string
+		args    map[string]any
+		wantErr string
+	}{
+		{
+			name:    "missing channel_id",
+			args:    map[string]any{"ts": "1772034406.593509"},
+			wantErr: "channel_id and ts are required",
+		},
+		{
+			name:    "missing ts",
+			args:    map[string]any{"channel_id": "C092WJP9Z38"},
+			wantErr: "channel_id and ts are required",
+		},
+		{
+			name:    "malformed ts",
+			args:    map[string]any{"channel_id": "C092WJP9Z38", "ts": "1772034406"},
+			wantErr: "ts must be a Slack message timestamp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newSavedAddRequest(tt.args)
+			req.Params.Name = "saved_delete"
+			res, err := h.SavedDeleteHandler(context.Background(), req)
+			require.Error(t, err)
+			assert.Nil(t, res)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
