@@ -100,8 +100,8 @@ deps: ## Download dependencies
 	$(GO) mod download
 
 .PHONY: test
-test: ## Run the tests
-	$(GO) test -count=1 -v -run=".*Unit.*" ./...
+test: ## Run all tests except the integration ones
+	$(GO) test -count=1 -v -skip=".*Integration.*" ./...
 
 .PHONY: test-integration
 test-integration: ## Run integration tests
