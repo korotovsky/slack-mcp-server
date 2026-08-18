@@ -127,9 +127,15 @@ type unreadsParams struct {
 	mutedUnavailable      bool            // true when muted channels could not be fetched (e.g. xoxp token)
 }
 
+// messageTsRe matches a Slack message timestamp, e.g. "1234567890.123456".
+// Slack requires exactly six fractional digits (anything else is rejected with
+// invalid_timestamp), so that is enforced here for a clearer error.
+var messageTsRe = regexp.MustCompile(`^\d+\.\d{6}$`)
+
 type markParams struct {
-	channel string
-	ts      string
+	channel  string
+	ts       string
+	threadTs string
 }
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
@@ -1339,14 +1345,22 @@ func (ch *ConversationsHandler) getChannelDisplayName(info *slack.Channel, chann
 	}
 }
 
-// ConversationsMarkHandler marks a channel as read up to a specific timestamp
+// ConversationsMarkHandler marks a channel/DM (or, with thread_ts, a thread) as read up to a specific timestamp
 func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("params", request.Params))
 
-	params, err := ch.parseParamsToolMark(request)
+	params, err := ch.parseParamsToolMark(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse mark params", zap.Error(err))
 		return nil, err
+	}
+
+	if params.threadTs != "" {
+		// Thread read state is only exposed to browser session tokens (xoxc/xoxd).
+		if ch.apiProvider.IsOAuth() {
+			return nil, errors.New("marking a thread as read requires browser session tokens (xoxc/xoxd); it is not available with OAuth (xoxp) or bot (xoxb) tokens")
+		}
+		return ch.markThreadAsRead(ctx, ch.apiProvider.Slack(), params)
 	}
 
 	channel := params.channel
@@ -1383,6 +1397,119 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 		zap.String("ts", ts))
 
 	return mcp.NewToolResultText(fmt.Sprintf("Marked %s as read up to %s", channel, ts)), nil
+}
+
+// threadMarkAPI is the subset of provider.SlackAPI used by markThreadAsRead;
+// keeping it narrow lets unit tests drive the function with a fake.
+type threadMarkAPI interface {
+	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) ([]slack.Message, bool, string, error)
+	SubscriptionsThreadMark(ctx context.Context, channel, threadTs, ts string) error
+}
+
+// markThreadAsRead marks a thread as read up to params.ts, or up to its latest
+// reply when ts is empty, via subscriptions.thread.mark. The thread's parent
+// message is always fetched first so that (a) thread_ts is verified to be a
+// thread parent, (b) an explicit ts is checked against the thread's bounds,
+// and (c) the current read cursor (last_read) is known, so the result can say
+// whether anything actually changed — Slack's cursor only moves forward, so a
+// mark up to an already-read position is a no-op.
+func (ch *ConversationsHandler) markThreadAsRead(ctx context.Context, api threadMarkAPI, params *markParams) (*mcp.CallToolResult, error) {
+	channel := params.channel
+	threadTs := params.threadTs
+
+	replies, _, _, err := api.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+		ChannelID: channel,
+		Timestamp: threadTs,
+		Limit:     1,
+	})
+	if err != nil {
+		ch.logger.Error("Failed to get thread parent message", zap.Error(err))
+		return nil, fmt.Errorf("failed to get thread %s in %s: %v", threadTs, channel, err)
+	}
+	var parent *slack.Message
+	for i := range replies {
+		if replies[i].Timestamp != "" && messageTsRe.MatchString(replies[i].Timestamp) && compareSlackTs(replies[i].Timestamp, threadTs) == 0 {
+			parent = &replies[i]
+			break
+		}
+	}
+	if parent == nil {
+		return nil, fmt.Errorf("%s is not the parent message of a thread in %s (if it is a reply, pass the thread's parent timestamp as thread_ts)", threadTs, channel)
+	}
+	// Use Slack's canonical form of the timestamp from here on (the caller may
+	// have passed e.g. a shorter fractional part).
+	threadTs = parent.Timestamp
+
+	// conversations.replies also accepts a reply's ts (and then returns that
+	// reply, whose thread_ts points at the real parent) and a plain message's
+	// ts (returned without thread_ts). Only a thread parent is acceptable.
+	switch {
+	case parent.ThreadTimestamp == "":
+		return nil, fmt.Errorf("%s in %s is not a thread (the message has no replies), so there is no thread read state to mark; to mark the channel/DM as read call conversations_mark without thread_ts", threadTs, channel)
+	case parent.ThreadTimestamp != threadTs:
+		return nil, fmt.Errorf("%s is a reply in thread %s, not a thread parent; pass thread_ts=%s (and optionally ts=%s to mark up to that reply)", threadTs, parent.ThreadTimestamp, parent.ThreadTimestamp, threadTs)
+	}
+
+	hasReplies := parent.LatestReply != ""
+	latest := parent.LatestReply
+	if !hasReplies {
+		// A thread parent whose replies are gone: the parent itself is all there is to mark.
+		latest = threadTs
+	}
+
+	ts := params.ts
+	switch {
+	case ts == "":
+		ts = latest
+	case compareSlackTs(ts, latest) > 0 && hasReplies:
+		return nil, fmt.Errorf("ts (%s) is newer than the thread's latest reply (%s); omit ts to mark the whole thread as read", ts, latest)
+	case compareSlackTs(ts, latest) > 0:
+		return nil, fmt.Errorf("thread %s in %s has no replies; omit ts or pass ts=%s", threadTs, channel, threadTs)
+	case compareSlackTs(ts, latest) == 0:
+		ts = latest // canonical form
+	}
+
+	if err := api.SubscriptionsThreadMark(ctx, channel, threadTs, ts); err != nil {
+		ch.logger.Error("Failed to mark thread as read",
+			zap.String("channel", channel),
+			zap.String("thread_ts", threadTs),
+			zap.String("ts", ts),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to mark thread as read: %v", err)
+	}
+
+	// last_read (when Slack reports it) is the read cursor before this call.
+	// The cursor only moves forward, so if it was already at or beyond ts
+	// nothing changed.
+	lastReadKnown := parent.LastRead != "" && messageTsRe.MatchString(parent.LastRead)
+	if lastReadKnown && compareSlackTs(parent.LastRead, ts) >= 0 {
+		ch.logger.Info("Thread already read, mark was a no-op",
+			zap.String("channel", channel),
+			zap.String("thread_ts", threadTs),
+			zap.String("ts", ts),
+			zap.String("last_read", parent.LastRead))
+		return mcp.NewToolResultText(fmt.Sprintf("Thread %s in %s was already read up to %s (last_read=%s); nothing changed", threadTs, channel, ts, parent.LastRead)), nil
+	}
+
+	ch.logger.Info("Marked thread as read",
+		zap.String("channel", channel),
+		zap.String("thread_ts", threadTs),
+		zap.String("ts", ts),
+		zap.Bool("last_read_known", lastReadKnown))
+
+	var msg string
+	switch {
+	case !hasReplies:
+		msg = fmt.Sprintf("Marked thread %s in %s as read (it has no replies)", threadTs, channel)
+	case ts == latest:
+		msg = fmt.Sprintf("Marked thread %s in %s as read up to its latest reply %s", threadTs, channel, ts)
+	default:
+		msg = fmt.Sprintf("Marked thread %s in %s as read up to %s (latest reply is %s)", threadTs, channel, ts, latest)
+	}
+	if !lastReadKnown {
+		msg += " (Slack did not report the previous read position, so it may already have been read)"
+	}
+	return mcp.NewToolResultText(msg), nil
 }
 
 func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1949,7 +2076,36 @@ func (ch *ConversationsHandler) parseParamsToolUnreads(request mcp.CallToolReque
 	}
 }
 
-func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest) (*markParams, error) {
+// optionalStringArg reads an optional string argument from the raw request
+// arguments. It returns present=false when the argument is absent or JSON
+// null. Unlike request.GetString, a value of the wrong JSON type is an error
+// instead of being silently treated as absent — for conversations_mark the
+// mere presence of thread_ts decides whether a thread or the whole channel is
+// marked, so a mangled value must never fall back to the wider operation.
+func optionalStringArg(request mcp.CallToolRequest, name string) (value string, present bool, err error) {
+	raw, ok := request.GetArguments()[name]
+	if !ok || raw == nil {
+		return "", false, nil
+	}
+	str, ok := raw.(string)
+	if !ok {
+		kind := "value"
+		switch raw.(type) {
+		case float64: // encoding/json decodes every JSON number as float64
+			kind = "number"
+		case bool:
+			kind = "boolean"
+		case map[string]any:
+			kind = "object"
+		case []any:
+			kind = "array"
+		}
+		return "", true, fmt.Errorf("%s must be a string in format 1234567890.123456, got a JSON %s", name, kind)
+	}
+	return strings.TrimSpace(str), true, nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolMark(ctx context.Context, request mcp.CallToolRequest) (*markParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_MARK_TOOL")
 	if toolConfig == "" {
 		ch.logger.Error("Mark tool disabled by default")
@@ -1967,30 +2123,85 @@ func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest)
 		)
 	}
 
-	channel := request.GetString("channel_id", "")
+	channel := strings.TrimSpace(request.GetString("channel_id", ""))
 	if channel == "" {
 		ch.logger.Error("channel_id missing in mark params")
 		return nil, errors.New("channel_id is required")
 	}
 
-	// Resolve channel name to ID if needed
-	if strings.HasPrefix(channel, "#") || strings.HasPrefix(channel, "@") {
-		channelsMaps := ch.apiProvider.ProvideChannelsMaps()
-		chn, ok := channelsMaps.ChannelsInv[channel]
-		if !ok {
-			ch.logger.Error("Channel not found", zap.String("channel", channel))
-			return nil, fmt.Errorf("channel %q not found", channel)
-		}
-		channel = channelsMaps.Channels[chn].ID
+	// Validate the cheap arguments first; name resolution below may hit the API.
+	threadTs, threadPresent, err := optionalStringArg(request, "thread_ts")
+	if err != nil {
+		return nil, err
+	}
+	if threadPresent && threadTs == "" {
+		// Never let an empty thread_ts silently widen the operation to the whole channel.
+		return nil, errors.New("thread_ts is empty: omit it to mark the whole channel/DM as read, or pass the thread's parent message timestamp (format 1234567890.123456) to mark a thread")
+	}
+	if threadTs != "" && !messageTsRe.MatchString(threadTs) {
+		return nil, fmt.Errorf("thread_ts must be a Slack message timestamp in format 1234567890.123456, got %q", threadTs)
 	}
 
-	ts := request.GetString("ts", "")
+	ts, _, err := optionalStringArg(request, "ts")
+	if err != nil {
+		return nil, err
+	}
+	if ts != "" && !messageTsRe.MatchString(ts) {
+		return nil, fmt.Errorf("ts must be a Slack message timestamp in format 1234567890.123456, got %q", ts)
+	}
+	if threadTs != "" && ts != "" && compareSlackTs(ts, threadTs) < 0 {
+		return nil, fmt.Errorf("ts (%s) is older than thread_ts (%s); ts must be thread_ts itself or the timestamp of a reply within the thread", ts, threadTs)
+	}
+
+	// Resolve #channel / @user names to IDs (refreshes the cache once on a miss).
+	channelID, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
+		return nil, err
+	}
 
 	return &markParams{
-		channel: channel,
-		ts:      ts,
+		channel:  channelID,
+		ts:       ts,
+		threadTs: threadTs,
 	}, nil
 }
+
+// compareSlackTs compares two Slack timestamps ("1234567890.123456") without
+// going through floating point (16 significant digits would lose precision).
+// It returns -1, 0 or 1. Inputs are expected to match messageTsRe.
+func compareSlackTs(a, b string) int {
+	aSec, aFrac, _ := strings.Cut(a, ".")
+	bSec, bFrac, _ := strings.Cut(b, ".")
+	aSec, bSec = strings.TrimLeft(aSec, "0"), strings.TrimLeft(bSec, "0")
+	if len(aSec) != len(bSec) {
+		if len(aSec) < len(bSec) {
+			return -1
+		}
+		return 1
+	}
+	if aSec != bSec {
+		if aSec < bSec {
+			return -1
+		}
+		return 1
+	}
+	// Right-pad the fractional parts so "1.5" and "1.500000" compare equal.
+	for len(aFrac) < len(bFrac) {
+		aFrac += "0"
+	}
+	for len(bFrac) < len(aFrac) {
+		bFrac += "0"
+	}
+	switch {
+	case aFrac < bFrac:
+		return -1
+	case aFrac > bFrac:
+		return 1
+	}
+	return 0
+}
+
 func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req mcp.CallToolRequest) (*searchParams, error) {
 	rawQuery := strings.TrimSpace(req.GetString("search_query", ""))
 	freeText, filters := splitQuery(rawQuery)
