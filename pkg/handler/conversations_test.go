@@ -13,12 +13,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/korotovsky/slack-mcp-server/pkg/test/util"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestIntegrationConversations(t *testing.T) {
@@ -652,4 +654,66 @@ func TestUnitIsSlackUserIDPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnitParseParamsToolMarkThread covers the thread_ts / ts parsing and
+// validation of conversations_mark. Channel IDs (not names) are used so the
+// parser never touches the (nil) API provider.
+func TestUnitParseParamsToolMarkThread(t *testing.T) {
+	t.Setenv("SLACK_MCP_MARK_TOOL", "true")
+	ch := &ConversationsHandler{logger: zap.NewNop()}
+
+	newReq := func(args map[string]any) mcp.CallToolRequest {
+		req := mcp.CallToolRequest{}
+		req.Params.Name = "conversations_mark"
+		req.Params.Arguments = args
+		return req
+	}
+
+	t.Run("channel-only request has empty threadTs", func(t *testing.T) {
+		p, err := ch.parseParamsToolMark(newReq(map[string]any{"channel_id": "C0123456789"}))
+		require.NoError(t, err)
+		assert.Equal(t, "C0123456789", p.channel)
+		assert.Empty(t, p.ts)
+		assert.Empty(t, p.threadTs)
+	})
+
+	t.Run("thread_ts and ts are parsed and trimmed", func(t *testing.T) {
+		p, err := ch.parseParamsToolMark(newReq(map[string]any{
+			"channel_id": "C0123456789",
+			"thread_ts":  " 1700000000.000100 ",
+			"ts":         "1700000500.000200",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "1700000000.000100", p.threadTs)
+		assert.Equal(t, "1700000500.000200", p.ts)
+	})
+
+	t.Run("malformed thread_ts is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolMark(newReq(map[string]any{"channel_id": "C0123456789", "thread_ts": "p1700000000000100"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread_ts must be a Slack message timestamp")
+	})
+
+	t.Run("malformed ts is rejected", func(t *testing.T) {
+		_, err := ch.parseParamsToolMark(newReq(map[string]any{"channel_id": "C0123456789", "ts": "1700000000"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ts must be a Slack message timestamp")
+	})
+
+	t.Run("channel_id is still required", func(t *testing.T) {
+		_, err := ch.parseParamsToolMark(newReq(map[string]any{"thread_ts": "1700000000.000100"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "channel_id is required")
+	})
+}
+
+func TestUnitParseParamsToolMarkDisabled(t *testing.T) {
+	t.Setenv("SLACK_MCP_MARK_TOOL", "")
+	ch := &ConversationsHandler{logger: zap.NewNop()}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"channel_id": "C0123456789", "thread_ts": "1700000000.000100"}
+	_, err := ch.parseParamsToolMark(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SLACK_MCP_MARK_TOOL")
 }

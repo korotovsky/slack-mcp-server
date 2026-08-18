@@ -199,13 +199,16 @@ Get unread messages across all channels efficiently. Uses a single API call to i
   - `mentions_only` (boolean, default: false): If true, only returns channels where you have @mentions. Note: This filter only works with browser tokens; OAuth tokens will return all unread channels.
 
 ### 15. conversations_mark
-Mark a channel or DM as read.
+Mark a channel, DM or thread as read. Without `thread_ts` the channel/DM read cursor is moved (`conversations.mark`); with `thread_ts` the thread's own read cursor is moved (`subscriptions.thread.mark`), which is what clears a thread's unread state in the "Threads" view.
 
 > **Note:** Marking messages as read is disabled by default for safety. To enable, set the `SLACK_MCP_MARK_TOOL` environment variable to `true` or `1`. See the Environment Variables section below for details.
 
+> **Note:** Marking **threads** as read requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens; marking channels/DMs works with all token types.
+
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` (e.g., `#general`, `@username`).
-  - `ts` (string, optional): Timestamp of the message to mark as read up to. If not provided, marks all messages as read.
+  - `thread_ts` (string, optional): Timestamp of a thread's parent message in format `1234567890.123456`. If provided, the thread (not the channel) is marked as read.
+  - `ts` (string, optional): Timestamp of the message to mark as read up to (a channel message, or a reply within the thread when `thread_ts` is provided). If not provided, marks the whole channel/DM — or, with `thread_ts`, the whole thread up to its latest reply — as read.
 
 ### 16. saved_list
 List saved items from Slack's "Save for Later" panel. Returns items the user has saved, with optional message content. This replaces the deprecated `stars.list` API ([changelog](https://api.slack.com/changelog/2023-07-its-later-already-for-stars-and-reminders)).

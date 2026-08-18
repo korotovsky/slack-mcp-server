@@ -127,9 +127,13 @@ type unreadsParams struct {
 	mutedUnavailable      bool            // true when muted channels could not be fetched (e.g. xoxp token)
 }
 
+// messageTsRe matches a Slack message timestamp, e.g. "1234567890.123456".
+var messageTsRe = regexp.MustCompile(`^\d+\.\d+$`)
+
 type markParams struct {
-	channel string
-	ts      string
+	channel  string
+	ts       string
+	threadTs string
 }
 type ConversationsHandler struct {
 	apiProvider *provider.ApiProvider
@@ -1349,6 +1353,10 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 		return nil, err
 	}
 
+	if params.threadTs != "" {
+		return ch.markThreadAsRead(ctx, params)
+	}
+
 	channel := params.channel
 	ts := params.ts
 
@@ -1383,6 +1391,63 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 		zap.String("ts", ts))
 
 	return mcp.NewToolResultText(fmt.Sprintf("Marked %s as read up to %s", channel, ts)), nil
+}
+
+// markThreadAsRead marks a thread as read up to params.ts (or up to its latest
+// reply when ts is empty) via the subscriptions.thread.mark edge API. Thread read
+// state is only exposed to browser session tokens (xoxc/xoxd).
+func (ch *ConversationsHandler) markThreadAsRead(ctx context.Context, params *markParams) (*mcp.CallToolResult, error) {
+	if ch.apiProvider.IsOAuth() {
+		return nil, errors.New("marking a thread as read requires browser session tokens (xoxc/xoxd); it is not available with OAuth (xoxp) or bot (xoxb) tokens")
+	}
+
+	channel := params.channel
+	threadTs := params.threadTs
+	ts := params.ts
+
+	if ts == "" {
+		// Fetch the parent message to find the latest reply timestamp.
+		replies, _, _, err := ch.apiProvider.Slack().GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+			ChannelID: channel,
+			Timestamp: threadTs,
+			Limit:     1,
+		})
+		if err != nil {
+			ch.logger.Error("Failed to get thread parent message", zap.Error(err))
+			return nil, fmt.Errorf("failed to get thread %s in %s: %v", threadTs, channel, err)
+		}
+		var parent *slack.Message
+		for i := range replies {
+			if replies[i].Timestamp == threadTs {
+				parent = &replies[i]
+				break
+			}
+		}
+		if parent == nil {
+			return nil, fmt.Errorf("thread %s not found in %s (thread_ts must be the timestamp of a thread's parent message)", threadTs, channel)
+		}
+		ts = parent.LatestReply
+		if ts == "" {
+			// No replies yet: mark the parent itself as read.
+			ts = threadTs
+		}
+	}
+
+	if err := ch.apiProvider.Slack().SubscriptionsThreadMark(ctx, channel, threadTs, ts); err != nil {
+		ch.logger.Error("Failed to mark thread as read",
+			zap.String("channel", channel),
+			zap.String("thread_ts", threadTs),
+			zap.String("ts", ts),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to mark thread as read: %v", err)
+	}
+
+	ch.logger.Info("Marked thread as read",
+		zap.String("channel", channel),
+		zap.String("thread_ts", threadTs),
+		zap.String("ts", ts))
+
+	return mcp.NewToolResultText(fmt.Sprintf("Marked thread %s in %s as read up to %s", threadTs, channel, ts)), nil
 }
 
 func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1984,11 +2049,19 @@ func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest)
 		channel = channelsMaps.Channels[chn].ID
 	}
 
-	ts := request.GetString("ts", "")
+	ts := strings.TrimSpace(request.GetString("ts", ""))
+	threadTs := strings.TrimSpace(request.GetString("thread_ts", ""))
+	if threadTs != "" && !messageTsRe.MatchString(threadTs) {
+		return nil, fmt.Errorf("thread_ts must be a Slack message timestamp in format 1234567890.123456, got %q", threadTs)
+	}
+	if ts != "" && !messageTsRe.MatchString(ts) {
+		return nil, fmt.Errorf("ts must be a Slack message timestamp in format 1234567890.123456, got %q", ts)
+	}
 
 	return &markParams{
-		channel: channel,
-		ts:      ts,
+		channel:  channel,
+		ts:       ts,
+		threadTs: threadTs,
 	}, nil
 }
 func (ch *ConversationsHandler) parseParamsToolSearch(ctx context.Context, req mcp.CallToolRequest) (*searchParams, error) {
