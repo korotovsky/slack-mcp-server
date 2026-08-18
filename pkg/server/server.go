@@ -352,7 +352,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	// Register mark tool - marks a channel as read
 	if shouldAddTool(ToolConversationsMark, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsMark,
-			mcp.WithDescription("Mark a channel, DM or thread as read. Without thread_ts it marks the channel/DM as read up to ts (or all messages if ts is omitted). With thread_ts it marks that thread as read up to ts (or up to its latest reply if ts is omitted). A thread's read cursor only moves forward: marking up to a ts that is already read changes nothing and the result says so. Marking threads requires browser session tokens (xoxc/xoxd)."),
+			mcp.WithDescription("Mark a channel, DM or thread as read. Without thread_ts it marks the channel/DM as read up to ts (or all messages if ts is omitted). With thread_ts it marks that thread as read up to ts (or up to its latest reply if ts is omitted). A thread's read cursor only moves forward: marking up to a ts that is already read changes nothing and the result says so (when Slack reports the previous read position). thread_ts must be a thread parent (not a reply, not a message without replies). Marking threads requires browser session tokens (xoxc/xoxd)."),
 			mcp.WithTitleAnnotation("Mark as Read"),
 			mcp.WithDestructiveHintAnnotation(false),
 			mcp.WithString("channel_id",

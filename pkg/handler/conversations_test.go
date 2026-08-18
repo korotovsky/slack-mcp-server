@@ -734,13 +734,25 @@ func TestUnitParseParamsToolMarkThread(t *testing.T) {
 	})
 
 	t.Run("malformed ts is rejected", func(t *testing.T) {
-		_, err := ch.parseParamsToolMark(ctx, newReq(map[string]any{"channel_id": "C0123456789", "ts": "1700000000"}))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "ts must be a Slack message timestamp")
+		for _, v := range []string{"1700000000", "1700000000.0002", "1700000000.00020000", "1700000000.", ".000200"} {
+			_, err := ch.parseParamsToolMark(ctx, newReq(map[string]any{"channel_id": "C0123456789", "ts": v}))
+			require.Error(t, err, "value %q must be rejected", v)
+			assert.Contains(t, err.Error(), "ts must be a Slack message timestamp")
+		}
 	})
 
 	t.Run("ts older than thread_ts is rejected", func(t *testing.T) {
 		_, err := ch.parseParamsToolMark(ctx, newReq(map[string]any{"channel_id": "C0123456789", "thread_ts": "1700000000.000100", "ts": "1699999999.999999"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "older than thread_ts")
+	})
+
+	t.Run("argument type/format errors are raised before channel name resolution", func(t *testing.T) {
+		// With a nil API provider, resolving "#name" would panic; a clean error proves the ordering.
+		_, err := ch.parseParamsToolMark(ctx, newReq(map[string]any{"channel_id": "#nope", "thread_ts": 1700000000.0001}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread_ts must be a string")
+		_, err = ch.parseParamsToolMark(ctx, newReq(map[string]any{"channel_id": "#nope", "thread_ts": "1700000000.000100", "ts": "1699999999.999999"}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "older than thread_ts")
 	})
@@ -869,12 +881,55 @@ func TestUnitMarkThreadAsRead(t *testing.T) {
 		assert.Contains(t, toolResultText(t, res), "nothing changed")
 	})
 
-	t.Run("no replies yet: marks the parent itself", func(t *testing.T) {
+	t.Run("thread parent without replies: marks the parent itself", func(t *testing.T) {
 		api := &fakeThreadMarkAPI{replies: []slack.Message{threadParent(parentTs, "", "")}}
 		res, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: parentTs})
 		require.NoError(t, err)
 		assert.Equal(t, []string{chID + "|" + parentTs + "|" + parentTs}, api.markCalls)
-		assert.Contains(t, toolResultText(t, res), "as read up to its latest reply "+parentTs)
+		assert.Contains(t, toolResultText(t, res), "as read (it has no replies)")
+	})
+
+	t.Run("thread parent without replies: explicit ts must equal thread_ts", func(t *testing.T) {
+		api := &fakeThreadMarkAPI{replies: []slack.Message{threadParent(parentTs, "", "")}}
+		_, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: parentTs, ts: midTs})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "has no replies; omit ts or pass ts="+parentTs)
+		assert.Empty(t, api.markCalls)
+
+		res, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: parentTs, ts: parentTs})
+		require.NoError(t, err)
+		assert.Contains(t, toolResultText(t, res), "as read (it has no replies)")
+	})
+
+	t.Run("plain message that is not a thread: error, no mark", func(t *testing.T) {
+		plain := slack.Message{}
+		plain.Timestamp = parentTs // no thread_ts, no replies: an ordinary channel message
+		api := &fakeThreadMarkAPI{replies: []slack.Message{plain}}
+		_, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: parentTs})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is not a thread")
+		assert.Empty(t, api.markCalls)
+	})
+
+	t.Run("last_read not reported: marked, but result says the previous position is unknown", func(t *testing.T) {
+		for _, lr := range []string{"", "abc"} {
+			api := &fakeThreadMarkAPI{replies: []slack.Message{threadParent(parentTs, latestTs, lr)}}
+			res, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: parentTs})
+			require.NoError(t, err)
+			assert.Len(t, api.markCalls, 1)
+			txt := toolResultText(t, res)
+			assert.Contains(t, txt, "Marked thread")
+			assert.Contains(t, txt, "did not report the previous read position")
+			assert.NotContains(t, txt, "nothing changed")
+		}
+	})
+
+	t.Run("numerically-equal thread_ts/ts are matched and sent in Slack's canonical form", func(t *testing.T) {
+		api := &fakeThreadMarkAPI{replies: []slack.Message{threadParent(parentTs, latestTs, parentTs)}}
+		res, err := ch.markThreadAsRead(ctx, api, &markParams{channel: chID, threadTs: "0" + parentTs, ts: "0" + latestTs})
+		require.NoError(t, err)
+		assert.Equal(t, []string{chID + "|" + parentTs + "|" + latestTs}, api.markCalls)
+		assert.Contains(t, toolResultText(t, res), "up to its latest reply "+latestTs)
 	})
 
 	t.Run("thread_ts is a reply: error names the real parent, no mark", func(t *testing.T) {
