@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/gocarina/gocsv"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/slack-go/slack"
@@ -99,7 +100,38 @@ func TestUnitCollectThreads(t *testing.T) {
 		assert.Len(t, scan.threads, 3, "threads with activity older than the bound are not returned")
 		assert.Equal(t, 3, scan.scanned)
 		assert.Empty(t, scan.nextCursor)
+		assert.True(t, scan.hitTimeBound)
 		assert.Equal(t, 1, scan.pages, "the bound was hit on page 1, page 2 must not be fetched")
+	})
+
+	t.Run("since bound compares numerically, not lexicographically", func(t *testing.T) {
+		// A 9-digit "oldest" (windows reaching before 2001) must not stop the scan.
+		p := &fakePager{pages: pages}
+		scan, err := collectThreads(ctx, p.fetch, &threadsParams{filter: threadsFilterAll, limit: 20, oldest: "998082000.000000"})
+		require.NoError(t, err)
+		assert.Len(t, scan.threads, 6)
+		assert.False(t, scan.hitTimeBound)
+	})
+
+	t.Run("limit reached on the last thread of the last page: no cursor", func(t *testing.T) {
+		p := &fakePager{pages: pages}
+		scan, err := collectThreads(ctx, p.fetch, &threadsParams{filter: threadsFilterAll, limit: 6})
+		require.NoError(t, err)
+		assert.Len(t, scan.threads, 6)
+		assert.Empty(t, scan.nextCursor, "the view is exhausted; no continuation cursor")
+	})
+
+	t.Run("malformed entries without timestamps are skipped, not counted, and do not break the cursor", func(t *testing.T) {
+		broken := edge.ThreadsViewResponse{HasMore: true, Threads: []edge.ThreadView{
+			mkThread("C1", "", "", 1),
+			mkThread("C1", "1700000100.000001", "1700000900.000000", 1),
+		}}
+		p := &fakePager{pages: map[string]edge.ThreadsViewResponse{"": broken, "1700000900.000000": {HasMore: false}}}
+		scan, err := collectThreads(ctx, p.fetch, &threadsParams{filter: threadsFilterUnread, limit: 20, oldest: "1600000000.000000"})
+		require.NoError(t, err)
+		assert.Len(t, scan.threads, 1)
+		assert.Equal(t, 1, scan.scanned)
+		assert.Equal(t, []string{"", "1700000900.000000"}, p.cursors)
 	})
 
 	t.Run("cursor param is used for the first fetch", func(t *testing.T) {
@@ -209,6 +241,14 @@ func TestUnitThreadsHelpers(t *testing.T) {
 	assert.False(t, isSlackTimestamp("abc.def"))
 	assert.False(t, isSlackTimestamp("1700000600."))
 	assert.False(t, isSlackTimestamp(".000000"))
+	assert.False(t, isSlackTimestamp("1700000600.0002"), "Slack requires exactly six fractional digits")
+	assert.False(t, isSlackTimestamp("1700000600.00020000"))
+
+	assert.True(t, slackTsBefore("998082000.000000", "1700000900.000000"), "9-digit seconds are older, not lexicographically greater")
+	assert.False(t, slackTsBefore("1700000900.000000", "998082000.000000"))
+	assert.True(t, slackTsBefore("1700000900.000000", "1700000900.000001"))
+	assert.False(t, slackTsBefore("1700000900.000000", "1700000900.000000"))
+	assert.False(t, slackTsBefore("1700000900.000000", "1700000900.0"), "equal values with different fraction widths")
 
 	assert.Equal(t, "", slackTsToISO(""))
 	assert.Equal(t, "", slackTsToISO("garbage"))
@@ -223,4 +263,108 @@ func TestUnitThreadsHelpers(t *testing.T) {
 	assert.Equal(t, "2.000000", threadLatestActivity(withReply))
 	noReply := mkThread("C1", "1.000000", "", 0)
 	assert.Equal(t, "1.000000", threadLatestActivity(noReply))
+}
+
+func TestUnitBuildThreadRows(t *testing.T) {
+	ctx := context.Background()
+	msg := func(ts, user, text string) slack.Message {
+		m := slack.Message{}
+		m.Timestamp = ts
+		m.User = user
+		m.Text = text
+		return m
+	}
+	// A renderer that mimics the production pipeline closely enough: RFC3339-ish time, resolved names, text passthrough.
+	render := func(ctx context.Context, msgs []slack.Message, channelID string) []Message {
+		out := make([]Message, 0, len(msgs))
+		for _, m := range msgs {
+			out = append(out, Message{MsgID: m.Timestamp, UserID: m.User, RealName: "Name " + m.User, Text: m.Text, Time: "T" + m.Timestamp, Channel: channelID})
+		}
+		return out
+	}
+	channelName := func(id string) string {
+		if id == "C1" {
+			return "#general"
+		}
+		return id
+	}
+
+	unreadThread := edge.ThreadView{}
+	unreadThread.RootMsg = msg("1700000100.000001", "UROOT", "root, with \"quotes\"\nand a newline")
+	unreadThread.RootMsg.Channel = "C1"
+	unreadThread.RootMsg.ThreadTimestamp = "1700000100.000001"
+	unreadThread.RootMsg.ReplyCount = 5
+	unreadThread.RootMsg.LatestReply = "1700000500.000000"
+	unreadThread.RootMsg.LastRead = "1700000200.000000"
+	unreadThread.LatestReplies = []slack.Message{msg("1700000150.000000", "UA", "read reply")}
+	unreadThread.UnreadReplies = []slack.Message{
+		msg("1700000300.000000", "UB", "unread 1"),
+		msg("1700000400.000000", "UC", "unread 2, with, commas"),
+		msg("1700000500.000000", "UD", "unread 3"),
+	}
+
+	readThread := edge.ThreadView{}
+	readThread.RootMsg = msg("1600000100.000001", "UROOT2", "read root")
+	readThread.RootMsg.Channel = "" // missing channel: falls back to the requested one
+	readThread.RootMsg.ReplyCount = 1
+	readThread.RootMsg.LatestReply = "1600000200.000000"
+	readThread.LatestReplies = []slack.Message{msg("1600000200.000000", "UE", "latest only")}
+
+	params := &threadsParams{includeReplies: 2, channelID: "C9"}
+	rows := buildThreadRows(ctx, []edge.ThreadView{unreadThread, readThread}, params, "1600000200.000000", channelName, render)
+	require.Len(t, rows, 2)
+
+	r0 := rows[0]
+	assert.Equal(t, "#general", r0.Channel)
+	assert.Equal(t, "C1", r0.ChannelID)
+	assert.Equal(t, "1700000100.000001", r0.ThreadTs)
+	assert.Equal(t, "Name UROOT", r0.RootUser)
+	assert.Equal(t, "T1700000100.000001", r0.RootTime)
+	assert.Contains(t, r0.RootText, "quotes")
+	assert.Equal(t, 5, r0.ReplyCount)
+	assert.Equal(t, 3, r0.UnreadReplies)
+	assert.NotEmpty(t, r0.LatestReplyTime)
+	assert.NotEmpty(t, r0.LastRead)
+	// unread replies preferred over latest, and only the last include_replies of them
+	assert.Equal(t, "T1700000400.000000 Name UC: unread 2, with, commas || T1700000500.000000 Name UD: unread 3", r0.Replies)
+	assert.Empty(t, r0.Cursor, "only the last row carries the cursor")
+
+	r1 := rows[1]
+	assert.Equal(t, "C9", r1.ChannelID, "missing root_msg.channel falls back to the requested channel_id")
+	assert.Equal(t, "C9", r1.Channel)
+	assert.Equal(t, 0, r1.UnreadReplies)
+	assert.Equal(t, "T1600000200.000000 Name UE: latest only", r1.Replies, "read thread shows latest replies")
+	assert.Equal(t, "1600000200.000000", r1.Cursor)
+
+	t.Run("include_replies=0 omits reply text; renderer dropping the root keeps ts-derived time", func(t *testing.T) {
+		none := func(ctx context.Context, msgs []slack.Message, channelID string) []Message { return nil }
+		rows := buildThreadRows(ctx, []edge.ThreadView{unreadThread}, &threadsParams{includeReplies: 0}, "", channelName, none)
+		require.Len(t, rows, 1)
+		assert.Empty(t, rows[0].Replies)
+		assert.Empty(t, rows[0].RootUser)
+		assert.NotEmpty(t, rows[0].RootTime, "falls back to the root ts when the renderer returns nothing")
+		assert.Empty(t, rows[0].Cursor)
+	})
+
+	t.Run("CSV round-trips quotes, commas and newlines", func(t *testing.T) {
+		out, err := gocsv.MarshalString(&rows)
+		require.NoError(t, err)
+		back := []ThreadRow{}
+		require.NoError(t, gocsv.UnmarshalString(out, &back))
+		require.Len(t, back, 2)
+		assert.Equal(t, rows[0].RootText, back[0].RootText)
+		assert.Equal(t, rows[0].Replies, back[0].Replies)
+		assert.Equal(t, rows[1].Cursor, back[1].Cursor)
+	})
+}
+
+func TestUnitNoThreadsMessage(t *testing.T) {
+	p := &threadsParams{filter: threadsFilterUnread, since: "30d"}
+	assert.Equal(t, "No threads with unread replies found (scanned 12 threads; the time window since=30d ended the scan — use a larger since, or since=all)",
+		noThreadsMessage(&threadsScan{scanned: 12, hitTimeBound: true}, p))
+	assert.Equal(t, "No threads with unread replies found (scanned 500 threads; stopped after 500 threads, continue with cursor=1700000000.000000)",
+		noThreadsMessage(&threadsScan{scanned: 500, hitPageCap: true, nextCursor: "1700000000.000000"}, p))
+	assert.Equal(t, "No threads found (scanned 3 threads; end of the Threads view reached)",
+		noThreadsMessage(&threadsScan{scanned: 3}, &threadsParams{filter: threadsFilterAll, since: "all"}))
+	assert.Contains(t, noThreadsMessage(&threadsScan{scanned: 1, nextCursor: "1.000000"}, p), "continue with cursor=1.000000")
 }

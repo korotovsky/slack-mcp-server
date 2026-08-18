@@ -237,17 +237,17 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 - **Parameters:** None.
 
 ### 19. conversations_threads
-List the threads you are subscribed to — Slack's "Threads" view — newest activity first, with each thread's unread reply count and the unread (or latest) replies. By default only threads with unread replies from the last 30 days are returned. Combine with `conversations_mark` (`channel_id` + `thread_ts`) to mark a listed thread as read.
+List the threads you are subscribed to — Slack's "Threads" view — newest activity first, with each thread's unread reply count and the unread (or latest) replies. By default only threads with unread replies from the last 30 days are returned.
 
 > **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens. Slack serves this view 10 threads per page, so one call scans at most 500 threads; the last row's `Cursor` column is non-empty when more are available.
 
 - **Parameters:**
   - `filter` (string, default `"unread"`): `"unread"` returns only threads with unread replies; `"all"` returns every subscribed thread in the time window.
   - `channel_id` (string, optional): Only threads in this channel or DM, in format `Cxxxxxxxxxx` / `Dxxxxxxxxxx` or its name starting with `#...` or `@...`.
-  - `since` (string, default `"30d"`): How far back to look, by a thread's latest activity: a duration like `1d`, `7d`, `2w`, `1m`, or `"all"` for no time bound.
+  - `since` (string, default `"30d"`): How far back to look, by a thread's latest activity: a duration like `1d`, `7d`, `2w`, `1m` (`d` = days, `w` = weeks, `m` = months), or `"all"` for no time bound.
   - `limit` (number, default `20`, max `200`): Maximum number of threads to return.
   - `include_replies` (number, default `3`, max `20`): How many replies to include per thread in the `Replies` column — the unread ones when the thread has unread replies, otherwise the latest ones; `0` omits reply text.
-  - `cursor` (string, optional): The value of the last row's `Cursor` column from the previous call, to continue where that call stopped.
+  - `cursor` (string, optional): The value of the last row's `Cursor` column from the previous call, to continue where that call stopped (repeat the same `filter`, `channel_id` and `since`).
 
 - **Returns:** CSV with columns `Channel`, `ChannelID`, `ThreadTs`, `RootUser`, `RootTime`, `RootText`, `ReplyCount`, `UnreadReplies`, `LatestReplyTime`, `LastRead`, `Replies`, `Cursor`.
 

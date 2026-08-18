@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gocarina/gocsv"
@@ -63,6 +64,7 @@ func NewThreadsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger, co
 type threadsParams struct {
 	filter         string
 	channelID      string
+	since          string // as given/defaulted, for messages ("all" = unbounded)
 	oldest         string // Slack ts; threads whose latest activity is older stop the scan ("" = unbounded)
 	limit          int
 	includeReplies int
@@ -74,11 +76,12 @@ type threadsPageFetcher func(ctx context.Context, cursor string) (edge.ThreadsVi
 
 // threadsScan is the outcome of collectThreads.
 type threadsScan struct {
-	threads    []edge.ThreadView
-	nextCursor string // "" when the scan is exhausted (no more pages, or the time bound was reached)
-	scanned    int    // threads looked at, matched or not
-	pages      int
-	hitPageCap bool
+	threads      []edge.ThreadView
+	nextCursor   string // "" when the scan is exhausted (no more pages, or the time bound was reached)
+	scanned      int    // threads looked at within the time window, matched or not
+	pages        int
+	hitPageCap   bool // stopped after threadsMaxPages; nextCursor continues the scan
+	hitTimeBound bool // stopped because the next thread's latest activity is older than params.oldest
 }
 
 func (h *ThreadsHandler) ConversationsThreadsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -109,23 +112,46 @@ func (h *ThreadsHandler) ConversationsThreadsHandler(ctx context.Context, reques
 	}
 
 	if len(scan.threads) == 0 {
-		msg := fmt.Sprintf("No matching threads (scanned %d threads", scan.scanned)
-		if scan.nextCursor != "" {
-			msg += fmt.Sprintf("; more may follow, continue with cursor=%s", scan.nextCursor)
-		}
-		return mcp.NewToolResultText(msg + ")"), nil
+		return mcp.NewToolResultText(noThreadsMessage(scan, params)), nil
 	}
 
-	rows := h.renderThreadRows(ctx, scan.threads, params.includeReplies)
-	if len(rows) > 0 {
-		rows[len(rows)-1].Cursor = scan.nextCursor
+	channelsMaps := h.apiProvider.ProvideChannelsMaps()
+	channelName := func(id string) string {
+		if cached, ok := channelsMaps.Channels[id]; ok {
+			return cached.Name
+		}
+		return id
 	}
+	render := func(ctx context.Context, msgs []slack.Message, channelID string) []Message {
+		return h.convHandler.convertMessagesFromHistory(ctx, msgs, channelID, true)
+	}
+	rows := buildThreadRows(ctx, scan.threads, params, scan.nextCursor, channelName, render)
 
 	csvBytes, err := gocsv.MarshalBytes(&rows)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal threads: %v", err)
 	}
 	return mcp.NewToolResultText(string(csvBytes)), nil
+}
+
+// noThreadsMessage explains an empty result: what was scanned and why the scan stopped.
+func noThreadsMessage(scan *threadsScan, params *threadsParams) string {
+	what := "threads with unread replies"
+	if params.filter == threadsFilterAll {
+		what = "threads"
+	}
+	msg := fmt.Sprintf("No %s found (scanned %d threads", what, scan.scanned)
+	switch {
+	case scan.hitTimeBound:
+		msg += fmt.Sprintf("; the time window since=%s ended the scan — use a larger since, or since=all", params.since)
+	case scan.hitPageCap:
+		msg += fmt.Sprintf("; stopped after %d threads, continue with cursor=%s", scan.scanned, scan.nextCursor)
+	case scan.nextCursor != "":
+		msg += fmt.Sprintf("; more may follow, continue with cursor=%s", scan.nextCursor)
+	default:
+		msg += "; end of the Threads view reached"
+	}
+	return msg + ")"
 }
 
 func (h *ThreadsHandler) parseThreadsParams(ctx context.Context, request mcp.CallToolRequest) (*threadsParams, error) {
@@ -161,7 +187,7 @@ func (h *ThreadsHandler) parseThreadsParams(ctx context.Context, request mcp.Cal
 	if since != threadsSinceUnbounded {
 		var err error
 		if _, oldest, _, err = limitByExpression(since, threadsDefaultSince); err != nil {
-			return nil, fmt.Errorf("since must be a duration like 1d, 7d, 2w, 1m or %q: %v", threadsSinceUnbounded, err)
+			return nil, fmt.Errorf("since must be a duration like 1d, 7d, 2w, 1m (d=days, w=weeks, m=months) or %q: %v", threadsSinceUnbounded, err)
 		}
 	}
 
@@ -183,6 +209,7 @@ func (h *ThreadsHandler) parseThreadsParams(ctx context.Context, request mcp.Cal
 	return &threadsParams{
 		filter:         filter,
 		channelID:      channelID,
+		since:          since,
 		oldest:         oldest,
 		limit:          limit,
 		includeReplies: includeReplies,
@@ -209,12 +236,17 @@ func collectThreads(ctx context.Context, fetch threadsPageFetcher, params *threa
 			return scan, nil
 		}
 
-		for _, t := range resp.Threads {
+		for i, t := range resp.Threads {
 			latest := threadLatestActivity(t)
+			if latest == "" {
+				// Malformed entry (no timestamps at all): nothing to order or filter on.
+				continue
+			}
 
 			// Threads are ordered by latest activity descending; once we are
 			// past the time bound nothing further can match.
-			if params.oldest != "" && latest < params.oldest {
+			if params.oldest != "" && slackTsBefore(latest, params.oldest) {
+				scan.hitTimeBound = true
 				scan.nextCursor = ""
 				return scan, nil
 			}
@@ -225,9 +257,14 @@ func collectThreads(ctx context.Context, fetch threadsPageFetcher, params *threa
 			}
 			scan.threads = append(scan.threads, t)
 			if len(scan.threads) >= params.limit {
-				// Continue from this thread's activity timestamp: getView returns
-				// threads strictly older than current_ts.
-				scan.nextCursor = latest
+				if i == len(resp.Threads)-1 && !resp.HasMore {
+					// Nothing left in the view.
+					scan.nextCursor = ""
+				} else {
+					// Continue from this thread's activity timestamp: getView
+					// returns threads strictly older than current_ts.
+					scan.nextCursor = latest
+				}
 				return scan, nil
 			}
 		}
@@ -236,13 +273,13 @@ func collectThreads(ctx context.Context, fetch threadsPageFetcher, params *threa
 			scan.nextCursor = ""
 			return scan, nil
 		}
-		next := threadLatestActivity(resp.Threads[len(resp.Threads)-1])
+		next := ""
 		for _, t := range resp.Threads {
-			if l := threadLatestActivity(t); l < next {
+			if l := threadLatestActivity(t); l != "" && (next == "" || slackTsBefore(l, next)) {
 				next = l
 			}
 		}
-		if next == cursor {
+		if next == "" || next == cursor {
 			// Defensive: no progress possible.
 			scan.nextCursor = ""
 			return scan, nil
@@ -255,6 +292,29 @@ func collectThreads(ctx context.Context, fetch threadsPageFetcher, params *threa
 	return scan, nil
 }
 
+// slackTsBefore reports whether Slack timestamp a is strictly older than b,
+// comparing numerically (seconds, then fraction) rather than as strings, so
+// timestamps of different widths compare correctly.
+func slackTsBefore(a, b string) bool {
+	aSec, aFrac, _ := strings.Cut(a, ".")
+	bSec, bFrac, _ := strings.Cut(b, ".")
+	as, aErr := strconv.ParseInt(aSec, 10, 64)
+	bs, bErr := strconv.ParseInt(bSec, 10, 64)
+	if aErr != nil || bErr != nil {
+		return a < b // not Slack timestamps; fall back to string order
+	}
+	if as != bs {
+		return as < bs
+	}
+	for len(aFrac) < len(bFrac) {
+		aFrac += "0"
+	}
+	for len(bFrac) < len(aFrac) {
+		bFrac += "0"
+	}
+	return aFrac < bFrac
+}
+
 // threadLatestActivity is the timestamp the Threads view orders by.
 func threadLatestActivity(t edge.ThreadView) string {
 	if t.RootMsg.LatestReply != "" {
@@ -263,46 +323,49 @@ func threadLatestActivity(t edge.ThreadView) string {
 	return t.RootMsg.Timestamp
 }
 
-// renderThreadRows converts threads into CSV rows, resolving user names and
-// message text through the same pipeline as the other conversation tools.
-func (h *ThreadsHandler) renderThreadRows(ctx context.Context, threads []edge.ThreadView, includeReplies int) []ThreadRow {
-	channelsMaps := h.apiProvider.ProvideChannelsMaps()
+// threadMessageRenderer converts raw Slack messages of one channel into Message
+// rows (user names resolved, text processed) — in production this is
+// ConversationsHandler.convertMessagesFromHistory.
+type threadMessageRenderer func(ctx context.Context, msgs []slack.Message, channelID string) []Message
+
+// buildThreadRows converts threads into CSV rows. channelName maps a channel ID
+// to its display name; the last row carries nextCursor.
+func buildThreadRows(ctx context.Context, threads []edge.ThreadView, params *threadsParams, nextCursor string, channelName func(string) string, render threadMessageRenderer) []ThreadRow {
 	rows := make([]ThreadRow, 0, len(threads))
 
 	for _, t := range threads {
 		channelID := t.RootMsg.Channel
-		channelName := channelID
-		if cached, ok := channelsMaps.Channels[channelID]; ok {
-			channelName = cached.Name
+		if channelID == "" {
+			// Slack normally sets root_msg.channel; fall back to the requested channel.
+			channelID = params.channelID
 		}
 
 		row := ThreadRow{
-			Channel:         channelName,
+			Channel:         channelName(channelID),
 			ChannelID:       channelID,
 			ThreadTs:        t.RootMsg.Timestamp,
 			ReplyCount:      t.RootMsg.ReplyCount,
 			UnreadReplies:   len(t.UnreadReplies),
 			LatestReplyTime: slackTsToISO(t.RootMsg.LatestReply),
 			LastRead:        slackTsToISO(t.RootMsg.LastRead),
+			RootTime:        slackTsToISO(t.RootMsg.Timestamp),
 		}
 
-		if root := h.convHandler.convertMessagesFromHistory(ctx, []slack.Message{t.RootMsg}, channelID, true); len(root) > 0 {
+		if root := render(ctx, []slack.Message{t.RootMsg}, channelID); len(root) > 0 {
 			row.RootUser = messageAuthor(root[0])
 			row.RootTime = root[0].Time
 			row.RootText = root[0].Text
-		} else {
-			row.RootTime = slackTsToISO(t.RootMsg.Timestamp)
 		}
 
-		if includeReplies > 0 {
+		if params.includeReplies > 0 {
 			replies := t.UnreadReplies
 			if len(replies) == 0 {
 				replies = t.LatestReplies
 			}
-			if len(replies) > includeReplies {
-				replies = replies[len(replies)-includeReplies:]
+			if len(replies) > params.includeReplies {
+				replies = replies[len(replies)-params.includeReplies:]
 			}
-			rendered := h.convHandler.convertMessagesFromHistory(ctx, replies, channelID, true)
+			rendered := render(ctx, replies, channelID)
 			parts := make([]string, 0, len(rendered))
 			for _, m := range rendered {
 				parts = append(parts, fmt.Sprintf("%s %s: %s", m.Time, messageAuthor(m), m.Text))
@@ -311,6 +374,9 @@ func (h *ThreadsHandler) renderThreadRows(ctx context.Context, threads []edge.Th
 		}
 
 		rows = append(rows, row)
+	}
+	if len(rows) > 0 {
+		rows[len(rows)-1].Cursor = nextCursor
 	}
 	return rows
 }
@@ -340,10 +406,11 @@ func slackTsToISO(ts string) string {
 	return iso
 }
 
-// isSlackTimestamp reports whether s looks like a Slack timestamp ("1234567890.123456").
+// isSlackTimestamp reports whether s is a Slack timestamp ("1234567890.123456":
+// digits, a dot, exactly six fractional digits — anything else Slack rejects).
 func isSlackTimestamp(s string) bool {
 	sec, frac, ok := strings.Cut(s, ".")
-	if !ok || sec == "" || frac == "" {
+	if !ok || sec == "" || len(frac) != 6 {
 		return false
 	}
 	for _, r := range sec + frac {
