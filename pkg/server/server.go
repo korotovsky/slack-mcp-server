@@ -352,7 +352,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	// Register mark tool - marks a channel as read
 	if shouldAddTool(ToolConversationsMark, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsMark,
-			mcp.WithDescription("Mark a channel, DM or thread as read. Without thread_ts it marks the channel/DM as read up to ts (or all messages if ts is omitted). With thread_ts it marks that thread as read up to ts (or up to its latest reply if ts is omitted); marking threads requires browser session tokens (xoxc/xoxd)."),
+			mcp.WithDescription("Mark a channel, DM or thread as read. Without thread_ts it marks the channel/DM as read up to ts (or all messages if ts is omitted). With thread_ts it marks that thread as read up to ts (or up to its latest reply if ts is omitted). A thread's read cursor only moves forward: marking up to a ts that is already read changes nothing and the result says so. Marking threads requires browser session tokens (xoxc/xoxd)."),
 			mcp.WithTitleAnnotation("Mark as Read"),
 			mcp.WithDestructiveHintAnnotation(false),
 			mcp.WithString("channel_id",
@@ -360,10 +360,10 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... (e.g., #general, @username)."),
 			),
 			mcp.WithString("thread_ts",
-				mcp.Description("Timestamp of a thread's parent message in format 1234567890.123456. If provided, the thread (not the channel) is marked as read."),
+				mcp.Description("Timestamp of a thread's parent message in format 1234567890.123456. If provided, the thread (not the channel) is marked as read. Omit it entirely to mark the channel/DM; an empty value is rejected."),
 			),
 			mcp.WithString("ts",
-				mcp.Description("Timestamp of the message to mark as read up to (channel message, or reply within the thread when thread_ts is provided). If not provided, marks the whole channel/DM or thread as read."),
+				mcp.Description("Timestamp of the message to mark as read up to (a channel message, or a reply within the thread when thread_ts is provided — must lie between thread_ts and the thread's latest reply). If not provided, marks the whole channel/DM or thread as read."),
 			),
 		), conversationsHandler.ConversationsMarkHandler)
 	}

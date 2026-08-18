@@ -207,8 +207,10 @@ Mark a channel, DM or thread as read. Without `thread_ts` the channel/DM read cu
 
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` (e.g., `#general`, `@username`).
-  - `thread_ts` (string, optional): Timestamp of a thread's parent message in format `1234567890.123456`. If provided, the thread (not the channel) is marked as read.
-  - `ts` (string, optional): Timestamp of the message to mark as read up to (a channel message, or a reply within the thread when `thread_ts` is provided). If not provided, marks the whole channel/DM — or, with `thread_ts`, the whole thread up to its latest reply — as read.
+  - `thread_ts` (string, optional): Timestamp of a thread's parent message in format `1234567890.123456`. If provided, the thread (not the channel) is marked as read. Omit it entirely to mark the channel/DM; an empty or non-string value is rejected rather than silently falling back to marking the whole channel.
+  - `ts` (string, optional): Timestamp of the message to mark as read up to (a channel message, or a reply within the thread when `thread_ts` is provided — it must lie between `thread_ts` and the thread's latest reply). If not provided, marks the whole channel/DM — or, with `thread_ts`, the whole thread up to its latest reply — as read.
+
+- **Thread semantics:** a thread's read cursor only moves forward, so marking up to a `ts` that is already read changes nothing; the tool reports this explicitly (`... was already read up to <ts>; nothing changed`) instead of claiming a mark. `thread_ts` must be the parent message of a thread — passing a reply's timestamp returns an error.
 
 ### 16. saved_list
 List saved items from Slack's "Save for Later" panel. Returns items the user has saved, with optional message content. This replaces the deprecated `stars.list` API ([changelog](https://api.slack.com/changelog/2023-07-its-later-already-for-stars-and-reminders)).
