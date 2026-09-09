@@ -61,7 +61,7 @@ func NewRootCommand() *cobra.Command {
 	f.BoolVar(&cfg.NoCache, "no-cache", false, "Skip user/channel cache; only channel/user IDs resolve (no #name/@name lookup)")
 	f.BoolVar(&cfg.Raw, "raw", false, "Print tool output verbatim (no JSON pretty-print)")
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Verbose logging to stderr")
-	f.DurationVar(&cfg.Timeout, "timeout", 30*time.Second, "request timeout")
+	f.DurationVar(&cfg.Timeout, "timeout", 2*time.Minute, "request timeout (2m so one unlisted history 429 can wait Retry-After)")
 
 	root.AddCommand(newAuthCommand(&cfg))
 	cmds.AddCommands(root, &cfg)

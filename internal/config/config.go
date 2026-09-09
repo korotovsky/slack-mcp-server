@@ -27,7 +27,7 @@ type Config struct {
 }
 
 func FromEnv() Config {
-	return Config{Timeout: 30 * time.Second}
+	return Config{Timeout: 2 * time.Minute}
 }
 
 // ApplyEnv fills any unset credential field from the environment.

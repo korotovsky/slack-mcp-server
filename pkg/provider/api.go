@@ -517,12 +517,50 @@ func (c *MCPSlackClient) GetConversationsForUserContext(ctx context.Context, par
 	return c.slackClient.GetConversationsForUserContext(ctx, params)
 }
 
+func (c *MCPSlackClient) teamID() string {
+	if c.authResponse != nil && c.authResponse.TeamID != "" {
+		return c.authResponse.TeamID
+	}
+	return "unknown"
+}
+
+func slackRetryAfter(err error) time.Duration {
+	var rle *slack.RateLimitedError
+	if errors.As(err, &rle) {
+		return rle.RetryAfter
+	}
+	return 0
+}
+
 func (c *MCPSlackClient) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
-	return c.slackClient.GetConversationHistoryContext(ctx, params)
+	if params == nil {
+		params = &slack.GetConversationHistoryParameters{}
+	}
+	q := limiter.NewUnlistedQuota(c.teamID(), "conversations.history")
+	return limiter.DoUnlisted(ctx, q, slackRetryAfter, func() (*slack.GetConversationHistoryResponse, error) {
+		p := *params
+		p.Limit = q.CapPage(p.Limit)
+		return c.slackClient.GetConversationHistoryContext(ctx, &p)
+	})
 }
 
 func (c *MCPSlackClient) GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error) {
-	return c.slackClient.GetConversationRepliesContext(ctx, params)
+	if params == nil {
+		params = &slack.GetConversationRepliesParameters{}
+	}
+	q := limiter.NewUnlistedQuota(c.teamID(), "conversations.replies")
+	type replies struct {
+		msgs       []slack.Message
+		hasMore    bool
+		nextCursor string
+	}
+	res, err := limiter.DoUnlisted(ctx, q, slackRetryAfter, func() (replies, error) {
+		p := *params
+		p.Limit = q.CapPage(p.Limit)
+		m, more, cursor, err := c.slackClient.GetConversationRepliesContext(ctx, &p)
+		return replies{m, more, cursor}, err
+	})
+	return res.msgs, res.hasMore, res.nextCursor, err
 }
 
 func (c *MCPSlackClient) SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error) {

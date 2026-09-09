@@ -119,7 +119,14 @@ added becomes the default.
 Combining explicit tokens with `--profile` is rejected as ambiguous.
 
 Global flags: `--govslack` (route to slack-gov.com), `--no-cache`, `--raw`
-(print tool output verbatim), `--verbose`, `--timeout` (default 30s).
+(print tool output verbatim), `--verbose`, `--timeout` (default 2m).
+
+Unlisted (non-Marketplace) Slack apps are capped at **1 req/min and 15
+messages/page** on `conversations.history` / `conversations.replies`. The CLI
+caps the page, waits `Retry-After`, and shares that 1/min slot across processes
+via a file in the cache dir. Set `SLACK_MCP_UNLISTED_HISTORY=1` to force that
+tier without waiting for a 429; `=0` disables it. Paginate with `--cursor` for
+the rest of the thread. Default `--timeout` is 2m so one wait fits.
 
 ## Cache
 
