@@ -15,7 +15,7 @@ require (
 	github.com/rusq/tagops v0.1.1
 	github.com/slack-go/slack v0.19.0
 	github.com/stretchr/testify v1.11.1
-	github.com/takara2314/slack-go-util v0.4.0
+	github.com/takara2314/slack-go-util v0.4.3
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/net v0.50.0
