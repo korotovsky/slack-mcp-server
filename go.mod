@@ -15,7 +15,8 @@ require (
 	github.com/rusq/tagops v0.1.1
 	github.com/slack-go/slack v0.19.0
 	github.com/stretchr/testify v1.11.1
-	github.com/takara2314/slack-go-util v0.4.0
+	github.com/takara2314/slack-go-util v0.4.3
+	github.com/yuin/goldmark v1.7.16
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/net v0.50.0
@@ -87,7 +88,6 @@ require (
 	github.com/ysmood/got v0.42.3 // indirect
 	github.com/ysmood/gson v0.7.3 // indirect
 	github.com/ysmood/leakless v0.9.0 // indirect
-	github.com/yuin/goldmark v1.7.16 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/crypto v0.48.0 // indirect

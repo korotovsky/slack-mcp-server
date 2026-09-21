@@ -189,7 +189,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread."),
 			),
 			mcp.WithString("text",
-				mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+				mcp.Description("Message text in the format given by content_type. With text/markdown (default) write standard Markdown, not Slack mrkdwn: **bold**, *italic*, [label](url), `code`, fenced code blocks, # headings, > quotes, and - or 1. list items (nesting supported); paragraphs are posted as rich text (not collapsed behind 'Show more') and keep <@Uxxx>, <#Cxxx> and <!here> mentions, <url|label> links, :emoji: and ~strike~. Line breaks: a single newline is kept as a line break inside a paragraph (plain '• ' lines are fine), a blank line starts a new paragraph; two-trailing-space and backslash hard breaks are kept as line breaks too. Example: '# Hello, world!' for text/markdown or 'Hello, world!' for text/plain. For an exact layout pass blocks instead."),
 			),
 			mcp.WithString("content_type",
 				mcp.DefaultString("text/markdown"),

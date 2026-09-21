@@ -56,7 +56,7 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
   - `thread_ts` (string, optional): Unique identifier of either a thread’s parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
-  - `payload` (string, required): Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
+  - `text` (string, required unless `blocks` is given): Message text in the format given by `content_type`. With `text/markdown` (default) write standard Markdown, not Slack mrkdwn: `**bold**`, `*italic*`, `[label](url)`, inline and fenced code, `#` headings, `>` quotes, `-`/`1.` lists; paragraphs are posted as rich text (not collapsed behind "Show more") and keep `<@Uxxx>`, `<#Cxxx>` and `<!here>` mentions, `<url|label>` links, `:emoji:` and `~strike~`. A single newline is kept as a line break inside a paragraph and a blank line starts a new paragraph; two-trailing-space and backslash hard breaks are kept as line breaks too. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
   - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'.
 
 ### 4. conversations_search_messages
