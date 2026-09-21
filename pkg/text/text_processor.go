@@ -175,9 +175,9 @@ func richTextElementToText(elem slack.RichTextElement) string {
 		}
 		return strings.Join(parts, " ")
 	case *slack.RichTextQuote:
-		return richTextSectionToText((*slack.RichTextSection)(e))
+		return richTextSectionElementsToText(e.Elements)
 	case *slack.RichTextPreformatted:
-		return richTextSectionToText(&e.RichTextSection)
+		return richTextSectionElementsToText(e.Elements)
 	}
 	return ""
 }
@@ -195,9 +195,13 @@ func formatEmailUser(u slack.EmailFileUserInfo) string {
 }
 
 func richTextSectionToText(section *slack.RichTextSection) string {
+	return richTextSectionElementsToText(section.Elements)
+}
+
+func richTextSectionElementsToText(elements []slack.RichTextSectionElement) string {
 	var parts []string
 
-	for _, elem := range section.Elements {
+	for _, elem := range elements {
 		switch e := elem.(type) {
 		case *slack.RichTextSectionTextElement:
 			if e.Text != "" {
