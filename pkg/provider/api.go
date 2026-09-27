@@ -228,6 +228,7 @@ type SlackAPI interface {
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
 
 	// Used to get files
+	GetFilesContext(ctx context.Context, params slack.GetFilesParameters) ([]slack.File, *slack.Paging, error)
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 
@@ -543,6 +544,10 @@ func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string,
 
 func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
 	return c.slackClient.GetFileInfoContext(ctx, fileID, count, page)
+}
+
+func (c *MCPSlackClient) GetFilesContext(ctx context.Context, params slack.GetFilesParameters) ([]slack.File, *slack.Paging, error) {
+	return c.slackClient.GetFilesContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
