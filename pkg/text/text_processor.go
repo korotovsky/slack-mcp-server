@@ -106,6 +106,40 @@ func BlocksToText(blocks slack.Blocks) string {
 	return strings.Join(parts, " ")
 }
 
+// MessageText returns the readable text of a message. When msgText is empty
+// it falls back to the text of all blocks. Otherwise it appends text from
+// non-rich_text blocks that msgText doesn't already contain: bots and
+// integrations often send a short notification fallback in msgText and put
+// the actual content in section/header/context blocks. rich_text blocks are
+// skipped because they mirror msgText for messages typed by users.
+func MessageText(msgText string, blocks slack.Blocks) string {
+	if msgText == "" {
+		return BlocksToText(blocks)
+	}
+
+	var extra []string
+	for _, block := range blocks.BlockSet {
+		if _, ok := block.(*slack.RichTextBlock); ok {
+			continue
+		}
+		blockText := BlocksToText(slack.Blocks{BlockSet: []slack.Block{block}})
+		if blockText != "" && !strings.Contains(msgText, blockText) {
+			extra = append(extra, blockText)
+		}
+	}
+
+	if len(extra) == 0 {
+		return msgText
+	}
+
+	sep := ". "
+	if strings.HasSuffix(msgText, ".") {
+		sep = " "
+	}
+
+	return msgText + sep + strings.Join(extra, " ")
+}
+
 // FilesToText extracts text metadata from email file attachments.
 // Separators are chosen so the metadata survives the text-processing pipeline.
 func FilesToText(files []slack.File) string {

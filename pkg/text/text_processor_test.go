@@ -263,6 +263,93 @@ func TestBlocksToText(t *testing.T) {
 	}
 }
 
+func TestMessageText(t *testing.T) {
+	section := func(s string) *slack.SectionBlock {
+		return &slack.SectionBlock{
+			Type: slack.MBTSection,
+			Text: &slack.TextBlockObject{Type: "mrkdwn", Text: s},
+		}
+	}
+	richText := func(s string) *slack.RichTextBlock {
+		return &slack.RichTextBlock{
+			Type: slack.MBTRichText,
+			Elements: []slack.RichTextElement{
+				&slack.RichTextSection{
+					Type: slack.RTESection,
+					Elements: []slack.RichTextSectionElement{
+						&slack.RichTextSectionTextElement{Type: slack.RTSEText, Text: s},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		msgText string
+		blocks  slack.Blocks
+		want    string
+	}{
+		{
+			name:    "text only",
+			msgText: "hello",
+			blocks:  slack.Blocks{},
+			want:    "hello",
+		},
+		{
+			name:    "empty text falls back to all blocks",
+			msgText: "",
+			blocks:  slack.Blocks{BlockSet: []slack.Block{richText("from rich text")}},
+			want:    "from rich text",
+		},
+		{
+			name:    "rich_text mirroring text is not duplicated",
+			msgText: "hello *world*",
+			blocks:  slack.Blocks{BlockSet: []slack.Block{richText("hello world")}},
+			want:    "hello *world*",
+		},
+		{
+			name:    "fallback text plus section blocks keeps both",
+			msgText: "A new webform submission has been received.",
+			blocks: slack.Blocks{BlockSet: []slack.Block{
+				section("A new webform submission has been received."),
+				&slack.SectionBlock{
+					Type: slack.MBTSection,
+					Fields: []*slack.TextBlockObject{
+						{Type: "mrkdwn", Text: "*name:* Jane"},
+						{Type: "mrkdwn", Text: "*message:* Hi there"},
+					},
+				},
+			}},
+			want: "A new webform submission has been received. *name:* Jane *message:* Hi there",
+		},
+		{
+			name:    "block text already contained in text is not appended",
+			msgText: "Deploy finished: api v2",
+			blocks:  slack.Blocks{BlockSet: []slack.Block{section("Deploy finished: api v2")}},
+			want:    "Deploy finished: api v2",
+		},
+		{
+			name:    "rich_text is skipped but section is appended",
+			msgText: "summary",
+			blocks: slack.Blocks{BlockSet: []slack.Block{
+				richText("summary"),
+				section("detail"),
+			}},
+			want: "summary. detail",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MessageText(tt.msgText, tt.blocks)
+			if got != tt.want {
+				t.Errorf("MessageText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAttachmentToTextWithBlocks(t *testing.T) {
 	att := slack.Attachment{
 		Blocks: slack.Blocks{
