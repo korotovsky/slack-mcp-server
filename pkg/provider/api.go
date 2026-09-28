@@ -804,6 +804,42 @@ func newWithXOXC(transport string, authProvider auth.ValueAuth, logger *zap.Logg
 	return ap
 }
 
+// ErrInvalidSessionCredentials reports a browser session rejected by Slack.
+// Network failures and rate limits do not wrap this error.
+var ErrInvalidSessionCredentials = errors.New("invalid Slack session credentials")
+
+// NewWithSessionCredentials builds a provider from a browser session supplied by
+// the caller. It does not read process credentials or write cache files. Empty
+// cache paths mean the user and channel snapshots remain in memory only.
+func NewWithSessionCredentials(transport, clientToken, sessionCookie string, logger *zap.Logger) (*ApiProvider, error) {
+	authProvider, err := auth.NewValueAuth(clientToken, sessionCookie)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidSessionCredentials, err)
+	}
+	client, err := NewMCPSlackClient(authProvider, logger)
+	if err != nil {
+		var slackErr slack.SlackErrorResponse
+		if errors.As(err, &slackErr) {
+			switch slackErr.Err {
+			case "invalid_auth", "not_authed", "token_revoked", "account_inactive":
+				return nil, fmt.Errorf("%w: %s", ErrInvalidSessionCredentials, slackErr.Err)
+			}
+		}
+		return nil, err
+	}
+	ap := &ApiProvider{
+		transport: transport,
+		client:    client,
+		logger:    logger,
+		rateLimiter:        limiter.Tier2.Limiter(),
+		cacheTTL:           getCacheTTL(),
+		minRefreshInterval: getMinRefreshInterval(),
+	}
+	ap.usersSnapshot.Store(&UsersCache{Users: make(map[string]slack.User), UsersInv: make(map[string]string)})
+	ap.channelsSnapshot.Store(&ChannelsCache{Channels: make(map[string]Channel), ChannelsInv: make(map[string]string)})
+	return ap, nil
+}
+
 func (ap *ApiProvider) RefreshUsers(ctx context.Context) error {
 	return ap.refreshUsersInternal(ctx, false)
 }
@@ -1018,6 +1054,10 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 		ap.usersSnapshot.Store(finalSnapshot)
 	}
 
+	if ap.usersCachePath == "" {
+		ap.usersReady.Store(true)
+		return nil
+	}
 	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal users for cache", zap.Error(err))
 	} else {
@@ -1174,6 +1214,10 @@ func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 		return errors.New("API returned zero channels and no existing cache is available")
 	}
 
+	if ap.channelsCachePath == "" {
+		ap.channelsReady.Store(true)
+		return nil
+	}
 	if data, err := json.MarshalIndent(channels, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
