@@ -435,17 +435,21 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
+	maxBytes, err := AttachmentMaxBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
 	if err != nil {
 		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
 		return nil, err
 	}
 
-	if fileInfo.Size > maxFileSizeBytes {
-		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxFileSizeBytes)
+	if int64(fileInfo.Size) > maxBytes {
+		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxBytes)
 	}
 
-	var buf bytes.Buffer
 	downloadURL := fileInfo.URLPrivateDownload
 	if downloadURL == "" {
 		downloadURL = fileInfo.URLPrivate
@@ -454,7 +458,30 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, errors.New("file has no downloadable URL")
 	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	ctx, cancel := context.WithTimeout(ctx, attachmentDownloadTimeout)
+	defer cancel()
+
+	if dir := os.Getenv("SLACK_MCP_ATTACHMENT_DIR"); dir != "" {
+		path, size, err := downloadAttachmentToDir(ctx, ch.apiProvider.Slack(), dir, fileInfo, downloadURL, maxBytes)
+		if err != nil {
+			ch.logger.Error("Attachment download to directory failed", zap.Error(err))
+			return nil, err
+		}
+		result, err := json.Marshal(struct {
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+			Mimetype string `json:"mimetype"`
+			Size     int64  `json:"size"`
+			Path     string `json:"path"`
+		}{fileInfo.ID, fileInfo.Name, fileInfo.Mimetype, size, path})
+		if err != nil {
+			return nil, err
+		}
+		return mcp.NewToolResultText(string(result)), nil
+	}
+
+	var buf bytes.Buffer
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &limitedWriter{w: &buf, limit: maxBytes})
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err

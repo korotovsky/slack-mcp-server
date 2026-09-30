@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -262,6 +263,10 @@ type SlackAPI interface {
 type MCPSlackClient struct {
 	slackClient *slack.Client
 	edgeClient  *edge.Client
+	// downloadClient is slackClient without the HTTP client's overall request
+	// timeout, which would cut off any file download longer than 30s. Callers
+	// bound downloads through their context instead.
+	downloadClient *slack.Client
 
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
@@ -329,6 +334,10 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slack.OptionHTTPClient(httpClient),
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
+	downloadClient := slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(&http.Client{Transport: httpClient.Transport}),
+		slack.OptionAPIURL(authResp.URL+"api/"),
+	)
 
 	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
 		edge.OptionHTTPClient(httpClient),
@@ -348,14 +357,15 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	isBotToken := strings.HasPrefix(token, "xoxb-") || strings.HasPrefix(token, "xoxe.xoxb-")
 
 	return &MCPSlackClient{
-		slackClient:  slackClient,
-		edgeClient:   edgeClient,
-		authResponse: authResponse,
-		authProvider: authProvider,
-		isEnterprise: isEnterprise,
-		isOAuth:      isOAuth,
-		isBotToken:   isBotToken,
-		teamEndpoint: authResp.URL,
+		slackClient:    slackClient,
+		edgeClient:     edgeClient,
+		downloadClient: downloadClient,
+		authResponse:   authResponse,
+		authProvider:   authProvider,
+		isEnterprise:   isEnterprise,
+		isOAuth:        isOAuth,
+		isBotToken:     isBotToken,
+		teamEndpoint:   authResp.URL,
 	}, nil
 }
 
@@ -546,7 +556,7 @@ func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, 
 }
 
 func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
-	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
+	return c.downloadClient.GetFileContext(ctx, downloadURL, writer)
 }
 
 func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
