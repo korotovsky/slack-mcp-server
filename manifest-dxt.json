@@ -34,6 +34,7 @@
         "SLACK_MCP_XOXB_TOKEN": "${user_config.xoxb_token}",
         "SLACK_MCP_USER_AGENT": "${user_config.user_agent}",
         "SLACK_MCP_ADD_MESSAGE_TOOL": "${user_config.add_message_tool}",
+        "SLACK_MCP_UPLOAD_FILE_TOOL": "${user_config.upload_file_tool}",
         "SLACK_MCP_USERS_CACHE": "${HOME}/.users_cache.json",
         "SLACK_MCP_CHANNELS_CACHE": "${HOME}/.channels_cache.json"
       }
@@ -97,6 +98,14 @@
       "type": "string",
       "title": "Value for add_message_tool",
       "description": "Enable the `conversations_add_message` tool. This tool allows the server to post messages to channels. It is disabled by default for safety reasons. If you want to enable it, set this value to `true`. You can also restrict it to specific channels by providing a comma-separated list of channel IDs.",
+      "default": "",
+      "sensitive": false,
+      "required": false
+    },
+    "upload_file_tool": {
+      "type": "string",
+      "title": "Value for upload_file_tool",
+      "description": "Enable the files_upload tool. This tool shares a file to a Slack conversation. It is disabled by default; use true to allow all conversations or a comma-separated list of channel or DM IDs to restrict destinations.",
       "default": "",
       "sensitive": false,
       "required": false

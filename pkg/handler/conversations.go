@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,6 +110,15 @@ type addReactionParams struct {
 
 type filesGetParams struct {
 	fileID string
+}
+
+type filesUploadParams struct {
+	channel         string
+	filename        string
+	content         string
+	title           string
+	initialComment  string
+	threadTimestamp string
 }
 
 type usersSearchParams struct {
@@ -493,6 +503,125 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		escapeJSON(contentStr))
 
 	return mcp.NewToolResultText(result), nil
+}
+
+// FilesUploadHandler uploads a file to Slack and shares it to one conversation.
+func (ch *ConversationsHandler) FilesUploadHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ch.logger.Debug("FilesUploadHandler called", zap.String("channel_id", request.GetString("channel_id", "")), zap.String("filename", request.GetString("filename", "")))
+
+	if ready, err := ch.apiProvider.IsReady(); !ready {
+		return nil, err
+	}
+
+	params, err := ch.parseParamsToolFilesUpload(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := ch.apiProvider.Slack().UploadFileContext(ctx, slack.UploadFileParameters{
+		Content:         params.content,
+		FileSize:        len([]byte(params.content)),
+		Filename:        params.filename,
+		Title:           params.title,
+		InitialComment:  params.initialComment,
+		Channel:         params.channel,
+		ThreadTimestamp: params.threadTimestamp,
+	})
+	if err != nil {
+		ch.logger.Error("Slack file upload failed", zap.String("channel", params.channel), zap.String("filename", params.filename), zap.Error(err))
+		return nil, err
+	}
+
+	result, err := json.Marshal(map[string]string{
+		"file_id":  file.ID,
+		"filename": params.filename,
+		"title":    file.Title,
+		"channel":  params.channel,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling uploaded file metadata: %w", err)
+	}
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (ch *ConversationsHandler) parseParamsToolFilesUpload(ctx context.Context, request mcp.CallToolRequest) (*filesUploadParams, error) {
+	toolConfig := os.Getenv("SLACK_MCP_UPLOAD_FILE_TOOL")
+	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+	if toolConfig == "" {
+		if !slices.Contains(strings.Split(enabledTools, ","), "files_upload") {
+			return nil, errors.New("file uploads are disabled by default; set SLACK_MCP_UPLOAD_FILE_TOOL to true or to a comma-separated channel allowlist")
+		}
+		toolConfig = "true"
+	}
+	channel := strings.TrimSpace(request.GetString("channel_id", ""))
+	if channel == "" {
+		return nil, errors.New("channel_id is required")
+	}
+	channel, err := ch.resolveChannelID(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+	if !isChannelAllowedForConfig(channel, toolConfig) {
+		return nil, fmt.Errorf("files_upload is not allowed for channel %q by SLACK_MCP_UPLOAD_FILE_TOOL", channel)
+	}
+
+	filename := strings.TrimSpace(request.GetString("filename", ""))
+	if filename == "" {
+		return nil, errors.New("filename is required")
+	}
+	if strings.ContainsAny(filename, `/\\`) || filename == "." || filename == ".." {
+		return nil, errors.New("filename must be a plain filename without path separators")
+	}
+
+	args := request.GetArguments()
+	textContent, hasText := args["content"]
+	base64Content, hasBase64 := args["content_base64"]
+	if hasText == hasBase64 {
+		return nil, errors.New("provide exactly one of content or content_base64")
+	}
+	var content string
+	if hasText {
+		var ok bool
+		content, ok = textContent.(string)
+		if !ok {
+			return nil, errors.New("content must be a string")
+		}
+	} else {
+		encoded, ok := base64Content.(string)
+		if !ok || encoded == "" {
+			return nil, errors.New("content_base64 must be a non-empty base64 string")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("content_base64 is invalid: %w", err)
+		}
+		content = string(decoded)
+	}
+	if content == "" {
+		return nil, errors.New("file content must not be empty")
+	}
+	if len([]byte(content)) > maxFileSizeBytes {
+		return nil, fmt.Errorf("file size exceeds the maximum allowed size of %d bytes", maxFileSizeBytes)
+	}
+
+	threadTimestamp := request.GetString("thread_ts", "")
+	if threadTimestamp != "" && !strings.Contains(threadTimestamp, ".") {
+		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
+	}
+
+	title := strings.TrimSpace(request.GetString("title", ""))
+	if title == "" {
+		title = filename
+	}
+
+	return &filesUploadParams{
+		channel:         channel,
+		filename:        filename,
+		content:         content,
+		title:           title,
+		initialComment:  request.GetString("initial_comment", ""),
+		threadTimestamp: threadTimestamp,
+	}, nil
 }
 
 func isImageMimetype(mimetype string) bool {

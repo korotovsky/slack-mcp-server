@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,6 +29,7 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolFilesUpload                 = "files_upload"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -53,6 +55,7 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolFilesUpload,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -249,6 +252,37 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("The ID of the attachment to download, in format Fxxxxxxxxxx. Attachment IDs (with filenames) can be found in the AttachmentIDs field of message metadata when FileCount > 0."),
 			),
 		), conversationsHandler.FilesGetHandler)
+	}
+
+	if shouldAddTool(ToolFilesUpload, enabledTools, "SLACK_MCP_UPLOAD_FILE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolFilesUpload,
+			mcp.WithDescription("Upload a file and share it to a Slack channel or DM. Provide either UTF-8 text in content or base64-encoded bytes in content_base64; files are limited to 5 MB. This write tool is disabled unless explicitly enabled."),
+			mcp.WithTitleAnnotation("Upload File"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("Channel or DM ID, or a resolvable channel name such as #general or @username_dm."),
+			),
+			mcp.WithString("filename",
+				mcp.Required(),
+				mcp.Description("Filename to display in Slack, including its extension."),
+			),
+			mcp.WithString("content",
+				mcp.Description("UTF-8 text file contents. Use either this or content_base64, not both."),
+			),
+			mcp.WithString("content_base64",
+				mcp.Description("Base64-encoded file bytes for binary or arbitrary text files. Use either this or content, not both."),
+			),
+			mcp.WithString("title",
+				mcp.Description("Optional display title. Defaults to filename."),
+			),
+			mcp.WithString("initial_comment",
+				mcp.Description("Optional message to post with the file."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Optional parent message timestamp to share the file in an existing thread."),
+			),
+		), conversationsHandler.FilesUploadHandler)
 	}
 
 	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,
@@ -712,7 +746,7 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			logger.Info("Request received",
 				zap.String("tool", req.Params.Name),
-				zap.Any("params", req.Params),
+				zap.Any("params", loggableToolParams(req)),
 			)
 
 			startTime := time.Now()
@@ -728,5 +762,27 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 
 			return res, err
 		}
+	}
+}
+
+func loggableToolParams(req mcp.CallToolRequest) any {
+	if req.Params.Name != ToolFilesUpload {
+		return req.Params
+	}
+
+	args := req.GetArguments()
+	contentBytes := 0
+	if content, ok := args["content"].(string); ok {
+		contentBytes += len(content)
+	}
+	if encoded, ok := args["content_base64"].(string); ok {
+		contentBytes += base64.StdEncoding.DecodedLen(len(encoded))
+	}
+	return map[string]any{
+		"channel_id":               args["channel_id"],
+		"filename":                 args["filename"],
+		"content_bytes":            contentBytes,
+		"content_redacted":         true,
+		"initial_comment_redacted": args["initial_comment"] != nil,
 	}
 }
