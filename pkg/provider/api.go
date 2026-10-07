@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -303,6 +305,9 @@ type ApiProvider struct {
 
 func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
 	httpClient := transport.ProvideHTTPClient(authProvider.Cookies(), logger)
+	for _, warning := range apiURLWarnings() {
+		logger.Warn(warning, zap.String("context", "console"))
+	}
 
 	slackOpts := []slack.Option{slack.OptionHTTPClient(httpClient)}
 	if apiURL := initialAPIURL(); apiURL != "" {
@@ -1551,6 +1556,32 @@ func workspaceAPIURL(workspaceURL string) string {
 		return withTrailingSlash(apiURL)
 	}
 	return workspaceURL + "api/"
+}
+
+// apiURLWarnings explains SLACK_MCP_API_URL settings that are allowed but easy
+// to get wrong: a plain-HTTP endpoint off the local machine, which sends the
+// token in cleartext, and an override that silently replaces GovSlack mode.
+func apiURLWarnings() []string {
+	apiURL := os.Getenv("SLACK_MCP_API_URL")
+	if apiURL == "" {
+		return nil
+	}
+	var warnings []string
+	if parsed, err := url.Parse(apiURL); err == nil && parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+		warnings = append(warnings, "SLACK_MCP_API_URL uses plain http:// for a non-local host, so the Slack token is sent unencrypted")
+	}
+	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
+		warnings = append(warnings, "SLACK_MCP_API_URL is set, so SLACK_MCP_GOVSLACK=true is ignored")
+	}
+	return warnings
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // withTrailingSlash ensures the base URL ends in a slash, since the Slack client
