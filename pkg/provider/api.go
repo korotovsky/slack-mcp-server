@@ -994,10 +994,17 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 
 	connectUsers, err := ap.GetSlackConnect(ctx)
 	if err != nil {
-		ap.logger.Error("Failed to fetch users from Slack Connect", zap.Error(err))
-		return err
+		// GetSlackConnect calls the Edge API (ClientUserBoot) which is not
+		// available for bot tokens (xoxb) or on Enterprise Grid deployments
+		// that restrict it.  Treat this as non-fatal: the primary users.list
+		// fetch already succeeded, so log a warning and continue rather than
+		// crashing the whole process.  This matches the graceful-degradation
+		// precedent set by GetConversationsContext's Edge API fallback.
+		ap.logger.Warn("Failed to fetch Slack Connect users, continuing without them",
+			zap.Error(err))
+	} else {
+		list = append(list, connectUsers...)
 	}
-	list = append(list, connectUsers...)
 
 	// Add Slack Connect users to a new snapshot (since maps are shared)
 	if len(connectUsers) > 0 {

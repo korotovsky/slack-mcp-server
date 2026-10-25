@@ -18,7 +18,7 @@ require (
 	github.com/takara2314/slack-go-util v0.4.0
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.61.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.14.0
 )
@@ -58,7 +58,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -90,10 +90,10 @@ require (
 	github.com/yuin/goldmark v1.7.16 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
