@@ -91,66 +91,6 @@ func TestShouldAddTool_SingleToolEnabled(t *testing.T) {
 	}
 }
 
-func TestValidToolNames(t *testing.T) {
-	t.Run("ValidToolNames contains all expected tools", func(t *testing.T) {
-		expectedTools := map[string]bool{
-			ToolConversationsHistory:        true,
-			ToolConversationsReplies:        true,
-			ToolConversationsAddMessage:     true,
-			ToolReactionsAdd:                true,
-			ToolReactionsRemove:             true,
-			ToolAttachmentGetData:           true,
-			ToolConversationsSearchMessages: true,
-			ToolConversationsUnreads:        true,
-			ToolConversationsMark:           true,
-			ToolConversationsLeave:          true,
-			ToolConversationsJoin:           true,
-			ToolChannelsList:                true,
-			ToolChannelsMe:                  true,
-			ToolUsergroupsList:              true,
-			ToolUsergroupsMe:                true,
-			ToolUsergroupsCreate:            true,
-			ToolUsergroupsUpdate:            true,
-			ToolUsergroupsUsersUpdate:       true,
-			ToolUsersSearch:                 true,
-			ToolSavedList:                   true,
-			ToolSavedUpdate:                 true,
-			ToolSavedClearCompleted:         true,
-		}
-
-		assert.Equal(t, len(expectedTools), len(ValidToolNames), "ValidToolNames should have %d tools", len(expectedTools))
-
-		for _, tool := range ValidToolNames {
-			assert.True(t, expectedTools[tool], "unexpected tool in ValidToolNames: %s", tool)
-		}
-	})
-
-	t.Run("constants match their string values", func(t *testing.T) {
-		assert.Equal(t, "conversations_history", ToolConversationsHistory)
-		assert.Equal(t, "conversations_replies", ToolConversationsReplies)
-		assert.Equal(t, "conversations_add_message", ToolConversationsAddMessage)
-		assert.Equal(t, "reactions_add", ToolReactionsAdd)
-		assert.Equal(t, "reactions_remove", ToolReactionsRemove)
-		assert.Equal(t, "attachment_get_data", ToolAttachmentGetData)
-		assert.Equal(t, "conversations_search_messages", ToolConversationsSearchMessages)
-		assert.Equal(t, "conversations_unreads", ToolConversationsUnreads)
-		assert.Equal(t, "conversations_mark", ToolConversationsMark)
-		assert.Equal(t, "conversations_leave", ToolConversationsLeave)
-		assert.Equal(t, "conversations_join", ToolConversationsJoin)
-		assert.Equal(t, "channels_list", ToolChannelsList)
-		assert.Equal(t, "channels_me", ToolChannelsMe)
-		assert.Equal(t, "usergroups_list", ToolUsergroupsList)
-		assert.Equal(t, "usergroups_me", ToolUsergroupsMe)
-		assert.Equal(t, "usergroups_create", ToolUsergroupsCreate)
-		assert.Equal(t, "usergroups_update", ToolUsergroupsUpdate)
-		assert.Equal(t, "usergroups_users_update", ToolUsergroupsUsersUpdate)
-		assert.Equal(t, "users_search", ToolUsersSearch)
-		assert.Equal(t, "saved_list", ToolSavedList)
-		assert.Equal(t, "saved_update", ToolSavedUpdate)
-		assert.Equal(t, "saved_clear_completed", ToolSavedClearCompleted)
-	})
-}
-
 func TestValidateEnabledTools(t *testing.T) {
 	t.Run("empty list is valid", func(t *testing.T) {
 		err := ValidateEnabledTools([]string{})

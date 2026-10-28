@@ -131,15 +131,30 @@ type markParams struct {
 	channel string
 	ts      string
 }
-type ConversationsHandler struct {
-	apiProvider *provider.ApiProvider
-	logger      *zap.Logger
+type conversationsProvider interface {
+	IsReady() (bool, error)
+	ServerTransport() string
+	Slack() provider.SlackAPI
+	ProvideUsersMap() *provider.UsersCache
+	ProvideChannelsMaps() *provider.ChannelsCache
+	ForceRefreshChannels(context.Context) error
+	SearchUsers(context.Context, string, int) ([]slack.User, error)
+	PatchUser(context.Context, string) (*slack.User, error)
+	IsOAuth() bool
+	IsBotToken() bool
 }
 
-func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ConversationsHandler {
+type ConversationsHandler struct {
+	apiProvider  conversationsProvider
+	logger       *zap.Logger
+	enabledTools []string
+}
+
+func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *ConversationsHandler {
 	return &ConversationsHandler{
-		apiProvider: apiProvider,
-		logger:      logger,
+		apiProvider:  apiProvider,
+		logger:       logger,
+		enabledTools: enabledTools,
 	}
 }
 
@@ -2158,7 +2173,7 @@ func getUserInfo(userID string, usersMap map[string]slack.User) (userName, realN
 // it already tried to fetch, so a user that doesn't exist in Slack is only
 // looked up once per batch rather than once per message.
 type userResolver struct {
-	apiProvider  *provider.ApiProvider
+	apiProvider  conversationsProvider
 	ctx          context.Context
 	usersMap     *provider.UsersCache
 	attemptedIDs map[string]bool

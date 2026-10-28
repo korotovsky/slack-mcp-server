@@ -28,6 +28,8 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsUpdateMessage  = "conversations_update_message"
+	ToolConversationsDeleteMessage  = "conversations_delete_message"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -53,6 +55,8 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsUpdateMessage,
+	ToolConversationsDeleteMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -124,7 +128,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
 
-	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+	conversationsHandler := handler.NewConversationsHandler(provider, logger, enabledTools)
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,
@@ -199,6 +203,28 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
 			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsUpdateMessage, enabledTools, "SLACK_MCP_UPDATE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsUpdateMessage,
+			mcp.WithDescription("Replace the text of an existing message using chat.update. Only messages editable by the authenticated identity can be updated; Slack ownership and workspace policy apply."),
+			mcp.WithTitleAnnotation("Edit Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel ID or cached #channel / @username_dm name.")),
+			mcp.WithString("timestamp", mcp.Required(), mcp.Description("Exact timestamp of the message to edit (not its thread parent), in format 1234567890.123456.")),
+			mcp.WithString("text", mcp.Required(), mcp.Description("Replacement message text. Existing blocks are replaced; attachments are unchanged.")),
+			mcp.WithString("content_type", mcp.DefaultString("text/markdown"), mcp.Description("text/markdown or text/plain; defaults to text/markdown.")),
+		), conversationsHandler.ConversationsUpdateMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteMessage, enabledTools, "SLACK_MCP_DELETE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteMessage,
+			mcp.WithDescription("Permanently delete an existing message using chat.delete. Slack ownership and workspace deletion policy apply."),
+			mcp.WithTitleAnnotation("Delete Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel ID or cached #channel / @username_dm name.")),
+			mcp.WithString("timestamp", mcp.Required(), mcp.Description("Exact timestamp of the message to delete (not its thread parent), in format 1234567890.123456.")),
+		), conversationsHandler.ConversationsDeleteMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {

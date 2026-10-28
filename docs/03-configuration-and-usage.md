@@ -251,7 +251,7 @@ docker-compose up -d
 | Argument                    | Required ? | Description                                                                                                                                                                                                         |
 |-----------------------------|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--transport` or `-t`       | Yes        | Select transport for the MCP Server, possible values are: `stdio`, `sse`                                                                                                                                            |
-| `--enabled-tools` or `-e`   | No         | Comma-separated list of tools to register. If not set, all tools are registered. Runtime permissions (e.g., `SLACK_MCP_ADD_MESSAGE_TOOL`) are still enforced. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `conversations_join`, `conversations_leave`, `conversations_unreads`, `conversations_mark`, `channels_list`, `channels_me`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`, `users_search`. |
+| `--enabled-tools` or `-e`   | No         | Comma-separated list of tools to register. If not set, all tools are registered. Runtime permissions (e.g., `SLACK_MCP_ADD_MESSAGE_TOOL`) are still enforced. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `conversations_join`, `conversations_leave`, `conversations_unreads`, `conversations_mark`, `channels_list`, `channels_me`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`, `users_search`. |
 
 ### Environment Variables
 
@@ -270,6 +270,8 @@ docker-compose up -d
 | `SLACK_MCP_SERVER_CA_TOOLKIT`     | No        | `nil`                     | Inject HTTPToolkit CA certificate to root trust-store for MitM debugging                                                                                                                                                                                                                  |
 | `SLACK_MCP_SERVER_CA_INSECURE`    | No        | `false`                   | Trust all insecure requests (NOT RECOMMENDED)                                                                                                                                                                                                                                             |
 | `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` by setting it to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_UPDATE_MESSAGE_TOOL` | No | `nil` | Enable `conversations_update_message`: `true`/`1`, a channel ID allowlist, or an `!` exclusion list. Exact selection in `SLACK_MCP_ENABLED_TOOLS` also enables it but does not override channel restrictions. |
+| `SLACK_MCP_DELETE_MESSAGE_TOOL` | No | `nil` | Independently enable `conversations_delete_message` using the same policy syntax. Disabled by default; deletion is permanent. |
 | `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When `conversations_add_message` is enabled (via `SLACK_MCP_ADD_MESSAGE_TOOL` or `SLACK_MCP_ENABLED_TOOLS`), setting this to `true` will automatically mark sent messages as read.                                                                                                        |
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_USERS_CACHE`           | No        | `.users_cache.json`       | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup.                                                                                                                                                                                |
@@ -277,7 +279,35 @@ docker-compose up -d
 | `SLACK_MCP_CACHE_TTL`             | No        | `24h`                     | Cache time-to-live. Supports duration format (`24h`, `30m`) or seconds (`3600`). Set to `0` to disable TTL (cache forever). When the cache expires, stale data is served immediately while a background refresh fetches fresh data.                                                       |
 | `SLACK_MCP_MIN_REFRESH_INTERVAL`  | No        | `30s`                     | Minimum interval between forced cache refreshes. Prevents API abuse from repeated force-refresh requests. Supports duration format (`30s`, `1m`) or seconds (`60`). Set to `0` to disable rate limiting.                                                                                  |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
-| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var to be set OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `conversations_join`, `conversations_leave`, `conversations_unreads`, `conversations_mark`, `channels_list`, `channels_me`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`, `users_search`. |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var to be set OR must be explicitly listed here. Selecting a write tool without its dedicated channel policy enables all accessible channels; a dedicated policy still restricts the target channel. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `conversations_join`, `conversations_leave`, `conversations_unreads`, `conversations_mark`, `channels_list`, `channels_me`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`, `users_search`. |
+
+### Editing and deleting messages
+
+`conversations_update_message` (`chat.update`) and `conversations_delete_message` (`chat.delete`) are independently disabled by default. Both require `channel_id` (ID or cached `#channel` / `@username_dm`) and `timestamp` (a string such as `1234567890.123456`, not a float or thread-parent timestamp when targeting a reply). Update also requires non-empty `text`; `content_type` is `text/markdown` by default or `text/plain`.
+
+```json
+{
+  "env": {
+    "SLACK_MCP_ENABLED_TOOLS": "conversations_history,conversations_update_message,conversations_delete_message",
+    "SLACK_MCP_UPDATE_MESSAGE_TOOL": "C123,C456",
+    "SLACK_MCP_DELETE_MESSAGE_TOOL": "!C789,!C999"
+  }
+}
+```
+
+No credentials are shown: supply authentication separately. Update is allowed only in C123/C456; deletion is allowed except in C789/C999, subject to Slack permissions. Policies use resolved channel IDs. Explicit selection without the corresponding env policy allows all accessible channels; selection **does not override** a dedicated policy. A nonempty selection excluding either tool keeps it unregistered regardless of its env variable. Use `true` or `1` for unrestricted channel selection; unset both enablement paths to disable a tool.
+
+Update replaces the text and old blocks (including the notification fallback), but not attachments or metadata. Markdown uses the posting tool's existing converter; unsupported/empty conversion falls back to plain text. Slack can reject changes between incompatible block types (`block_mismatch`); no alternate mutation is attempted automatically. Ephemeral messages cannot be updated with `chat.update`.
+
+| Authentication | Mutation route | Authorization and limits |
+| --- | --- | --- |
+| User `xoxp` (including recognized `xoxe.xoxp` rotation tokens) | Existing standard Web API client | `chat:write`; edits only the authenticated user's own messages. Deletion is limited to messages that user can delete in Slack, subject to workspace policy. |
+| Bot `xoxb` (including recognized `xoxe.xoxb` rotation tokens) | Existing standard Web API client | `chat:write`; only that bot's own messages can be edited/deleted; updates send `as_user=true` as required by Slack. Channel access and workspace restrictions still apply. |
+| Browser `xoxc` + `xoxd` | Same standard Web API client with existing session cookies; no edge mutation route | Uses the signed-in identity, not elevated ownership. Browser-session tokens are not a documented OAuth-scope contract; compatibility must be verified in an approved workspace. No live session-token mutation was exercised for this patch. |
+
+Sources: [Slack chat.update](https://docs.slack.dev/reference/methods/chat.update/), [Slack chat.delete](https://docs.slack.dev/reference/methods/chat.delete/), and this server's `pkg/provider/api.go` / `pkg/transport/transport.go`. Token choice priority is user OAuth, bot OAuth, then browser-session pair; avoid configuring multiple identities at once.
+
+Tool registration, destructive annotations and channel restrictions are **not human approval**. Require an MCP-client approval for each write, even with bypass enabled, and never reuse a session grant or previous read approval. The server adds no automatic mutation retries. On timeout, connection loss or an ambiguous Slack error, the operation may already have applied: verify state using an approved read, then obtain a new approval before retrying. Do not treat an error as proof of no effect. The existing server middleware logs tool arguments at INFO, including replacement message contents; DEBUG can expose additional details. Treat server logs as sensitive, restrict access and retention, and do not assume INFO redacts message text. This patch does not change the upstream logging policy.
 
 ### Tool Registration and Permissions
 
@@ -287,7 +317,7 @@ Tools are controlled at two levels:
 - **Registration** (`SLACK_MCP_ENABLED_TOOLS`) — determines which tools are visible to MCP clients
 - **Runtime permissions** (tool-specific env vars like `SLACK_MCP_ADD_MESSAGE_TOOL`) — channel restrictions for write tools
 
-Write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) are **not registered by default** to prevent accidental exposure. To enable them, you must either:
+Write tools (`conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) are **not registered by default** to prevent accidental exposure. To enable them, you must either:
 1. Set their specific environment variable (e.g., `SLACK_MCP_ADD_MESSAGE_TOOL`), or
 2. Explicitly list them in `SLACK_MCP_ENABLED_TOOLS`
 
