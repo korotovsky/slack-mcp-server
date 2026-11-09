@@ -15,6 +15,7 @@ This feature-rich Slack MCP Server has:
 - **Smart History**: Fetch messages with pagination by date (d1, 7d, 1m) or message count.
 - **Unread Messages**: Get all unread messages across channels efficiently with priority sorting (DMs > partner channels > internal), @mention filtering, and mark-as-read support.
 - **Search Messages**: Search messages in channels, threads, and DMs using various filters like date, user, and content.
+- **Canvas Discovery**: List canvases associated with a channel by channel name or ID, with pagination and file links.
 - **Safe Message Posting**: The `conversations_add_message` tool is disabled by default for safety. Enable it via an environment variable, with optional channel restrictions.
 - **DM and Group DM support**: Retrieve direct messages and group direct messages.
 - **Embedded user information**: Embed user information in messages, for better context.
@@ -235,6 +236,17 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 > **Note:** This tool requires browser session tokens (`xoxc`/`xoxd`). It is not available with standard OAuth (`xoxp`) or bot (`xoxb`) tokens.
 
 - **Parameters:** None.
+
+### 19. canvases_list
+List canvas files associated with a public or private channel. The tool resolves channel names such as `#general` and returns each canvas file ID, title, permalink, and pagination metadata.
+
+- **Parameters:**
+  - `channel_id` (string, required): Channel ID or channel name beginning with `#`.
+  - `limit` (number, default: `100`): Maximum number of canvases on the requested page (1-1000).
+  - `page` (number, default: `1`): 1-based page number. When `has_more` is true, request `next_page` to continue.
+- **Returns:** JSON with `channel_id`, `canvases`, `total`, `page`, `pages`, and pagination metadata. Each canvas includes `file_id`, `title`, and `permalink` when available.
+
+> **Required OAuth scope:** `files:read` (for both user and bot tokens).
 
 ## Resources
 

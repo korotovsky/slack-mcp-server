@@ -38,6 +38,7 @@ const (
 	ToolConversationsJoin           = "conversations_join"
 	ToolChannelsList                = "channels_list"
 	ToolChannelsMe                  = "channels_me"
+	ToolCanvasesList                = "canvases_list"
 	ToolUsergroupsList              = "usergroups_list"
 	ToolUsergroupsMe                = "usergroups_me"
 	ToolUsergroupsCreate            = "usergroups_create"
@@ -63,6 +64,7 @@ var ValidToolNames = []string{
 	ToolConversationsJoin,
 	ToolChannelsList,
 	ToolChannelsMe,
+	ToolCanvasesList,
 	ToolUsergroupsList,
 	ToolUsergroupsMe,
 	ToolUsergroupsCreate,
@@ -436,6 +438,26 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Cursor for pagination."),
 			),
 		), channelsHandler.ChannelsMeHandler)
+	}
+
+	if shouldAddTool(ToolCanvasesList, enabledTools, "") {
+		s.AddTool(mcp.NewTool(ToolCanvasesList,
+			mcp.WithDescription("List Slack canvases associated with a public or private channel. The channel can be identified by its ID or by its #name. Returns canvas file IDs, titles, permalinks, and pagination metadata; requires the files:read OAuth scope."),
+			mcp.WithTitleAnnotation("List Channel Canvases"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("Channel ID (Cxxxxxxxxxx) or channel name starting with # (e.g., #general). Use channels_list to resolve a name if needed."),
+			),
+			mcp.WithNumber("limit",
+				mcp.DefaultNumber(100),
+				mcp.Description("Maximum number of canvases to return on this page (1-1000). Default: 100."),
+			),
+			mcp.WithNumber("page",
+				mcp.DefaultNumber(1),
+				mcp.Description("1-based page number. If has_more is true, request next_page from the previous result."),
+			),
+		), conversationsHandler.CanvasesListHandler)
 	}
 
 	// User groups tools
