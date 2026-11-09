@@ -83,12 +83,9 @@ func (ch *ConversationsHandler) CanvasesListHandler(ctx context.Context, request
 	}
 
 	for _, file := range files {
-		// Slack's types=canvas filter should only return canvases, but retaining
-		// this check prevents unrelated files from being surfaced if the API
-		// response is broader than requested.
-		if file.Filetype != "canvas" {
-			continue
-		}
+		// Slack's types=canvas filter can return canvas files with
+		// filetype="quip", so trust the server-side type filter instead of
+		// dropping those records here.
 
 		title := file.Title
 		if title == "" {
