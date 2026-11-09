@@ -227,6 +227,10 @@ type SlackAPI interface {
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
 
+	// Used to read and edit canvases
+	EditCanvasContext(ctx context.Context, params slack.EditCanvasParams) error
+	LookupCanvasSectionsContext(ctx context.Context, params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error)
+
 	// Used to get files
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
@@ -543,6 +547,14 @@ func (c *MCPSlackClient) RemoveReactionContext(ctx context.Context, name string,
 
 func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
 	return c.slackClient.GetFileInfoContext(ctx, fileID, count, page)
+}
+
+func (c *MCPSlackClient) EditCanvasContext(ctx context.Context, params slack.EditCanvasParams) error {
+	return c.slackClient.EditCanvasContext(ctx, params)
+}
+
+func (c *MCPSlackClient) LookupCanvasSectionsContext(ctx context.Context, params slack.LookupCanvasSectionsParams) ([]slack.CanvasSection, error) {
+	return c.slackClient.LookupCanvasSectionsContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {

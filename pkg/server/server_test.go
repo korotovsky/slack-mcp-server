@@ -94,6 +94,10 @@ func TestShouldAddTool_SingleToolEnabled(t *testing.T) {
 func TestValidToolNames(t *testing.T) {
 	t.Run("ValidToolNames contains all expected tools", func(t *testing.T) {
 		expectedTools := map[string]bool{
+			ToolCanvasesRead:                true,
+			ToolConversationsCanvasInfo:     true,
+			ToolCanvasesSectionsLookup:      true,
+			ToolCanvasesEdit:                true,
 			ToolConversationsHistory:        true,
 			ToolConversationsReplies:        true,
 			ToolConversationsAddMessage:     true,
