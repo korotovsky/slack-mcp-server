@@ -236,6 +236,32 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 
 - **Parameters:** None.
 
+### 19. drafts_create
+Save an **unsent** draft in a channel, DM or thread. Nothing is posted: the user reviews and sends it from Slack's "Drafts & sent". Optional local files are uploaded privately and only shared when the user sends the draft. Disabled unless `SLACK_MCP_DRAFTS_TOOL` is set or the tool is listed in `SLACK_MCP_ENABLED_TOOLS`.
+
+> **Note:** Slack only serves drafts to browser session tokens (`xoxc`/`xoxd`). With `SLACK_MCP_XOXC_TOKEN`/`SLACK_MCP_XOXD_TOKEN` this works as is. With an OAuth token, set `SLACK_MCP_SESSION_CREDS_COMMAND` to a command that prints `{"xoxc": "...", "d": "..."}`.
+
+- **Parameters:**
+  - `channel_id` (string, required): Channel or DM ID, or `#name` / `@username_dm`.
+  - `text` (string, required): Paragraphs, `- ` bullets (two-space indent for nesting), `**bold**`, `` `code` `` and `[text](url)` links, converted to Slack rich text.
+  - `thread_ts` (string, optional): Parent message timestamp, to draft a thread reply.
+  - `broadcast` (boolean, optional): For thread replies, also send to the channel.
+  - `file_paths` (string, optional): Comma-separated absolute paths of local files to attach (5 MB max each).
+  - `file_ids` (string, optional): Comma-separated IDs of files already in Slack.
+  - `replace_draft_id` (string, optional): Slack keeps one unsent draft per channel; pass the existing draft's ID (from `drafts_list`) to replace it.
+
+### 20. drafts_list
+List the user's unsent drafts: ID, channel, thread, text preview and attached file IDs. Same session requirement as `drafts_create`.
+
+- **Parameters:**
+  - `channel_id` (string, optional): Only list drafts for this channel or DM.
+
+### 21. drafts_delete
+Delete one unsent draft. Attached files are kept. Same session requirement as `drafts_create`.
+
+- **Parameters:**
+  - `draft_id` (string, required): Draft ID from `drafts_list`.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -292,6 +318,8 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_REACTION_TOOL`        | No        | `nil`                     | Enable `reactions_add` and `reactions_remove` tools by setting to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tools are only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
 | `SLACK_MCP_ATTACHMENT_TOOL`      | No        | `nil`                     | Enable the `attachment_get_data` tool by setting to `true`, `1`, or `yes`. Does not support channel-level restrictions. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_DRAFTS_TOOL`          | No        | `nil`                     | Enable `drafts_create`, `drafts_list` and `drafts_delete` with `true`, or a comma-separated channel ID allowlist for `drafts_create`. If empty, the tools are only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_SESSION_CREDS_COMMAND` | No       | `nil`                     | For the drafts tools when the server runs with an OAuth token: a command that prints `{"xoxc": "...", "d": "..."}` for a signed-in browser session. Not needed with `SLACK_MCP_XOXC_TOKEN`/`SLACK_MCP_XOXD_TOKEN`. |
 | `SLACK_MCP_MARK_TOOL`             | No        | `nil`                     | Enable the `conversations_mark` tool by setting to `true` or `1`. Disabled by default to prevent accidental marking of messages as read.                                                                                                                                                  |
 | `SLACK_MCP_USERS_CACHE`           | No        | `~/Library/Caches/slack-mcp-server/users_cache.json` (macOS)<br>`~/.cache/slack-mcp-server/users_cache.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/users_cache.json` (Windows) | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup. |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |

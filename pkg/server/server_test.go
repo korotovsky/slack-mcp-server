@@ -94,6 +94,9 @@ func TestShouldAddTool_SingleToolEnabled(t *testing.T) {
 func TestValidToolNames(t *testing.T) {
 	t.Run("ValidToolNames contains all expected tools", func(t *testing.T) {
 		expectedTools := map[string]bool{
+			ToolDraftsCreate:                true,
+			ToolDraftsList:                  true,
+			ToolDraftsDelete:                true,
 			ToolConversationsHistory:        true,
 			ToolConversationsReplies:        true,
 			ToolConversationsAddMessage:     true,
@@ -480,4 +483,20 @@ func TestShouldAddTool_Matrix(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestUnitLoggableToolParamsRedactsDraftText(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = ToolDraftsCreate
+	req.Params.Arguments = map[string]any{"channel_id": "C123", "text": "private draft text"}
+	logged, ok := loggableToolParams(req).(map[string]any)
+	require.True(t, ok)
+	args := logged["arguments"].(map[string]any)
+	assert.Equal(t, "C123", args["channel_id"])
+	assert.Equal(t, 18, args["text_chars"])
+	assert.NotContains(t, args, "text")
+
+	other := mcp.CallToolRequest{}
+	other.Params.Name = ToolChannelsList
+	assert.Equal(t, other.Params, loggableToolParams(other))
 }

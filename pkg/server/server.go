@@ -25,6 +25,9 @@ type MCPServer struct {
 }
 
 const (
+	ToolDraftsCreate                = "drafts_create"
+	ToolDraftsList                  = "drafts_list"
+	ToolDraftsDelete                = "drafts_delete"
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
@@ -50,6 +53,9 @@ const (
 )
 
 var ValidToolNames = []string{
+	ToolDraftsCreate,
+	ToolDraftsList,
+	ToolDraftsDelete,
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
@@ -125,6 +131,39 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	)
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+
+	if shouldAddTool(ToolDraftsCreate, enabledTools, "SLACK_MCP_DRAFTS_TOOL") {
+		s.AddTool(mcp.NewTool(ToolDraftsCreate,
+			mcp.WithDescription("Save an UNSENT draft in a Slack channel, DM or thread, for the user to review and send from Slack's Drafts & sent. Nothing is posted. Optional local files are uploaded privately (shared only when the user sends the draft). Text accepts paragraphs, '- ' bullets (indent nested bullets by two spaces), **bold**, `code` and [text](url) links. Needs a browser session (SLACK_MCP_XOXC_TOKEN/SLACK_MCP_XOXD_TOKEN or SLACK_MCP_SESSION_CREDS_COMMAND)."),
+			mcp.WithTitleAnnotation("Create Draft"),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel or DM ID, or a resolvable name such as #general or @username_dm.")),
+			mcp.WithString("text", mcp.Required(), mcp.Description("Draft text in the markdown subset described above.")),
+			mcp.WithString("thread_ts", mcp.Description("Optional parent message timestamp to draft a thread reply.")),
+			mcp.WithBoolean("broadcast", mcp.Description("For thread replies: also send to the channel when the user sends it. Default false.")),
+			mcp.WithString("file_paths", mcp.Description("Optional comma-separated absolute paths of local files to attach (5 MB max each). Uploaded privately.")),
+			mcp.WithString("file_ids", mcp.Description("Optional comma-separated IDs of files already in Slack to attach.")),
+			mcp.WithString("replace_draft_id", mcp.Description("Slack keeps one unsent draft per channel. To replace the existing one, pass its ID from drafts_list; it is deleted before the new draft is saved.")),
+		), conversationsHandler.DraftsCreateHandler)
+	}
+
+	if shouldAddTool(ToolDraftsList, enabledTools, "SLACK_MCP_DRAFTS_TOOL") {
+		s.AddTool(mcp.NewTool(ToolDraftsList,
+			mcp.WithDescription("List the user's unsent Slack drafts (ID, channel, thread, text preview, attached file IDs). Needs a browser session."),
+			mcp.WithTitleAnnotation("List Drafts"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("channel_id", mcp.Description("Optional channel or DM ID (or #name) to filter on.")),
+		), conversationsHandler.DraftsListHandler)
+	}
+
+	if shouldAddTool(ToolDraftsDelete, enabledTools, "SLACK_MCP_DRAFTS_TOOL") {
+		s.AddTool(mcp.NewTool(ToolDraftsDelete,
+			mcp.WithDescription("Delete one unsent Slack draft by ID (from drafts_list). Files attached to it are kept. Cannot be undone."),
+			mcp.WithTitleAnnotation("Delete Draft"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("draft_id", mcp.Required(), mcp.Description("Draft ID such as Dr0123ABCD, from drafts_list.")),
+		), conversationsHandler.DraftsDeleteHandler)
+	}
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,
@@ -712,7 +751,7 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			logger.Info("Request received",
 				zap.String("tool", req.Params.Name),
-				zap.Any("params", req.Params),
+				zap.Any("params", loggableToolParams(req)),
 			)
 
 			startTime := time.Now()
@@ -729,4 +768,20 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 			return res, err
 		}
 	}
+}
+
+// loggableToolParams keeps draft text out of the request log.
+func loggableToolParams(req mcp.CallToolRequest) any {
+	if req.Params.Name != ToolDraftsCreate {
+		return req.Params
+	}
+	args := req.GetArguments()
+	text, _ := args["text"].(string)
+	redacted := map[string]any{"text_chars": len([]rune(text))}
+	for _, key := range []string{"channel_id", "thread_ts", "file_paths", "file_ids", "replace_draft_id"} {
+		if value, ok := args[key]; ok {
+			redacted[key] = value
+		}
+	}
+	return map[string]any{"name": req.Params.Name, "arguments": redacted}
 }
