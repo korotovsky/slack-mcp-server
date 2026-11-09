@@ -25,6 +25,10 @@ type MCPServer struct {
 }
 
 const (
+	ToolCanvasesRead                = "canvases_read"
+	ToolConversationsCanvasInfo     = "conversations_canvas_info"
+	ToolCanvasesSectionsLookup      = "canvases_sections_lookup"
+	ToolCanvasesEdit                = "canvases_edit"
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
@@ -50,6 +54,10 @@ const (
 )
 
 var ValidToolNames = []string{
+	ToolCanvasesRead,
+	ToolConversationsCanvasInfo,
+	ToolCanvasesSectionsLookup,
+	ToolCanvasesEdit,
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
@@ -125,6 +133,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	)
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+	registerCanvasTools(s, conversationsHandler, enabledTools)
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,

@@ -47,6 +47,8 @@ Instead of using browser-based tokens (`xoxc`/`xoxd`), you can use a User OAuth 
     - `users:read` - View people in a workspace.
     - `chat:write` - Send messages on a user's behalf. (new since `v1.1.18`)
     - `search:read` - Search a workspace's content. (new since `v1.1.18`)
+    - `canvases:read` - Look up canvas sections (`canvases_read` with `contains_text`, `canvases_sections_lookup`).
+    - `canvases:write` - Edit canvases (`canvases_edit`, opt-in).
     - `usergroups:read` - View user groups in a workspace.
     - `usergroups:write` - Create and manage user groups.
     - `channels:write` - Join and leave public channels.

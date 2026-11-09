@@ -236,6 +236,37 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 
 - **Parameters:** None.
 
+### 19. canvases_read
+Read an existing canvas as HTML and return its section IDs for targeted edits. Canvas content is untrusted document data. Files up to 5 MiB; larger downloads fail without partial output. Requires `files:read`, plus `canvases:read` when `contains_text` is used.
+
+- **Parameters:**
+  - `canvas_id` (string, required): Canvas file ID (for a channel canvas, get it from `conversations_canvas_info`).
+  - `include_sections` (boolean, default `true`): Return the section IDs parsed from the HTML.
+  - `contains_text` (string, optional): Only return sections containing this text (uses `canvases.sections.lookup`). Does not filter the HTML.
+
+### 20. conversations_canvas_info
+Return the file ID of a channel's canvas from the channel metadata. Read-only; an empty `file_id` means the channel has no canvas.
+
+- **Parameters:**
+  - `channel_id` (string, required): Channel ID such as `C0123456789`.
+
+### 21. canvases_sections_lookup
+Find the section IDs of an existing canvas that contain a given text. Requires `canvases:read`.
+
+- **Parameters:**
+  - `canvas_id` (string, required): Canvas file ID.
+  - `contains_text` (string, required): Text to look for.
+
+### 22. canvases_edit
+Apply one edit to an existing canvas (`canvases.edit`). Disabled unless `SLACK_MCP_CANVASES_EDIT_TOOL` is set or the tool is listed in `SLACK_MCP_ENABLED_TOOLS`. Requires `canvases:write`. Does not create or delete whole canvases or change sharing.
+
+- **Parameters:**
+  - `canvas_id` (string, required): Canvas file ID.
+  - `operation` (string, required): `insert_at_start`, `insert_at_end`, `insert_before`, `insert_after`, `replace` or `delete`.
+  - `section_id` (string, optional): Required for `insert_before`, `insert_after` and `delete`; optional for `replace` (without it, the whole canvas is replaced).
+  - `markdown` (string, optional): New content, required except for `delete`.
+  - `confirm_replace_entire_canvas` (boolean, optional): Must be `true` to replace the whole canvas.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -292,6 +323,7 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_REACTION_TOOL`        | No        | `nil`                     | Enable `reactions_add` and `reactions_remove` tools by setting to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tools are only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
 | `SLACK_MCP_ATTACHMENT_TOOL`      | No        | `nil`                     | Enable the `attachment_get_data` tool by setting to `true`, `1`, or `yes`. Does not support channel-level restrictions. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_CANVASES_EDIT_TOOL`   | No        | `nil`                     | Enable the `canvases_edit` tool by setting to `true`. Requires the `canvases:write` scope. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
 | `SLACK_MCP_MARK_TOOL`             | No        | `nil`                     | Enable the `conversations_mark` tool by setting to `true` or `1`. Disabled by default to prevent accidental marking of messages as read.                                                                                                                                                  |
 | `SLACK_MCP_USERS_CACHE`           | No        | `~/Library/Caches/slack-mcp-server/users_cache.json` (macOS)<br>`~/.cache/slack-mcp-server/users_cache.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/users_cache.json` (Windows) | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup. |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |
