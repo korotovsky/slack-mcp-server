@@ -408,6 +408,14 @@ func (ch *ConversationsHandler) DraftsCreateHandler(ctx context.Context, request
 		fileIDs = append(fileIDs, fileID)
 	}
 
+	// Check every attachment before touching the existing draft, so a failed
+	// create never leaves the channel without its draft.
+	for _, id := range fileIDs {
+		if _, err := sessionAPICall(ctx, "files.info", url.Values{"file": {id}}); err != nil {
+			return nil, fmt.Errorf("file %s is not available (%v); nothing was changed", id, err)
+		}
+	}
+
 	if replace != nil {
 		if err := deleteDraft(ctx, replaceID); err != nil {
 			return nil, fmt.Errorf("replacing draft %s: %w (uploaded file IDs, reusable via file_ids: %s)", replaceID, err, strings.Join(fileIDs, ","))
