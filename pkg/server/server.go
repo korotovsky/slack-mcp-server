@@ -28,6 +28,7 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsEditMessage    = "conversations_edit_message"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
@@ -53,6 +54,7 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsEditMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
@@ -199,6 +201,32 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
 			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsEditMessage, enabledTools, "SLACK_MCP_EDIT_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsEditMessage,
+			mcp.WithDescription("Edit a message the authenticated user posted in a public channel, private channel, or direct message (DM, or IM) conversation, by channel_id and timestamp. The new content replaces the message's text and blocks; attachments, files, reactions and replies are kept. Slack only allows editing your own messages."),
+			mcp.WithTitleAnnotation("Edit Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("timestamp",
+				mcp.Required(),
+				mcp.Description("The timestamp of the message to edit in format 1234567890.123456."),
+			),
+			mcp.WithString("text",
+				mcp.Description("New message text in the specified content_type format. With blocks, it becomes the notification and search fallback text, so pass the new wording here too."),
+			),
+			mcp.WithString("content_type",
+				mcp.DefaultString("text/markdown"),
+				mcp.Description("Content type of the new text. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'. Ignored when blocks is provided."),
+			),
+			mcp.WithString("blocks",
+				mcp.Description("Raw Slack Block Kit JSON array that replaces the message's blocks (for example the original rich_text blocks with one change). Takes precedence over text/content_type for rendering."),
+			),
+		), conversationsHandler.ConversationsEditMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
