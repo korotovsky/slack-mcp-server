@@ -97,6 +97,8 @@ func TestValidToolNames(t *testing.T) {
 			ToolConversationsHistory:        true,
 			ToolConversationsReplies:        true,
 			ToolConversationsAddMessage:     true,
+			ToolConversationsUpdateMessage:  true,
+			ToolConversationsDeleteMessage:  true,
 			ToolReactionsAdd:                true,
 			ToolReactionsRemove:             true,
 			ToolAttachmentGetData:           true,
@@ -151,7 +153,6 @@ func TestValidToolNames(t *testing.T) {
 		assert.Equal(t, "saved_clear_completed", ToolSavedClearCompleted)
 	})
 }
-
 func TestValidateEnabledTools(t *testing.T) {
 	t.Run("empty list is valid", func(t *testing.T) {
 		err := ValidateEnabledTools([]string{})
