@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/korotovsky/slack-mcp-server/pkg/handler"
 	"github.com/korotovsky/slack-mcp-server/pkg/provider"
 	"github.com/korotovsky/slack-mcp-server/pkg/server"
 	"github.com/mattn/go-isatty"
@@ -63,6 +64,13 @@ func main() {
 	err = server.ValidateEnabledTools(enabledTools)
 	if err != nil {
 		logger.Fatal("error in SLACK_MCP_ENABLED_TOOLS",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
+
+	if _, err = handler.AttachmentMaxBytes(); err != nil {
+		logger.Fatal("error in SLACK_MCP_ATTACHMENT_MAX_BYTES",
 			zap.String("context", "console"),
 			zap.Error(err),
 		)
