@@ -94,11 +94,12 @@ type searchParams struct {
 }
 
 type addMessageParams struct {
-	channel     string
-	threadTs    string
-	text        string
-	contentType string
-	blocks      []slack.Block
+	channel        string
+	threadTs       string
+	text           string
+	contentType    string
+	blocks         []slack.Block
+	replyBroadcast bool
 }
 
 type addReactionParams struct {
@@ -237,6 +238,11 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	var options []slack.MsgOption
 	if params.threadTs != "" {
 		options = append(options, slack.MsgOptionTS(params.threadTs))
+		// reply_broadcast only applies to threaded replies; Slack ignores it for
+		// top-level messages, so gate it on thread_ts being set.
+		if params.replyBroadcast {
+			options = append(options, slack.MsgOptionBroadcast())
+		}
 	}
 
 	if params.blocks != nil {
@@ -277,6 +283,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		zap.String("channel", params.channel),
 		zap.String("thread_ts", params.threadTs),
 		zap.String("content_type", params.contentType),
+		zap.Bool("reply_broadcast", params.replyBroadcast),
 	)
 	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
 	if err != nil {
@@ -1825,6 +1832,8 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
+	replyBroadcast := request.GetBool("reply_broadcast", false)
+
 	msgText := request.GetString("text", "")
 	if msgText == "" {
 		// Backward compatibility with "payload" parameter
@@ -1875,11 +1884,12 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 	}
 
 	return &addMessageParams{
-		channel:     channel,
-		threadTs:    threadTs,
-		text:        msgText,
-		contentType: contentType,
-		blocks:      blocks,
+		channel:        channel,
+		threadTs:       threadTs,
+		text:           msgText,
+		contentType:    contentType,
+		blocks:         blocks,
+		replyBroadcast: replyBroadcast,
 	}, nil
 }
 
