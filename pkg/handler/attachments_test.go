@@ -46,7 +46,7 @@ func dirEntries(t *testing.T, dir string) []string {
 func TestUnitDownloadAttachmentToDir_WritesFileAndReturnsPath(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(strings.Repeat("%PDF binary \x00\x01", 3000))
-	file := &slack.File{ID: "F0TEST", Name: "report.pdf"}
+	file := &slack.File{ID: "F0TEST", Name: "report.pdf", Size: len(body)}
 
 	path, size, err := downloadAttachmentToDir(context.Background(), fakeDownloader{body: body}, dir, file, "https://files.example/x", int64(len(body)))
 
@@ -59,14 +59,18 @@ func TestUnitDownloadAttachmentToDir_WritesFileAndReturnsPath(t *testing.T) {
 	assert.Equal(t, []string{"F0TEST-report.pdf"}, dirEntries(t, dir), "no partial file left behind")
 }
 
-func TestUnitDownloadAttachmentToDir_ReplacesEarlierCopy(t *testing.T) {
+func TestUnitDownloadAttachmentToDir_PreservesEarlierCopy(t *testing.T) {
 	dir := t.TempDir()
 	file := &slack.File{ID: "F0TEST", Name: "a.txt"}
 	for _, body := range []string{"first version", "second"} {
+		file.Size = len(body)
 		_, _, err := downloadAttachmentToDir(context.Background(), fakeDownloader{body: []byte(body)}, dir, file, "u", 1<<20)
 		require.NoError(t, err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "F0TEST-a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "first version", string(got))
+	got, err = os.ReadFile(filepath.Join(dir, "F0TEST-a (1).txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "second", string(got))
 }
@@ -83,7 +87,7 @@ func TestUnitDownloadAttachmentToDir_FailuresLeaveNothing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			_, _, err := downloadAttachmentToDir(context.Background(), tt.dl, dir, &slack.File{ID: "F0TEST", Name: "x.bin"}, "u", tt.maxBytes)
+			_, _, err := downloadAttachmentToDir(context.Background(), tt.dl, dir, &slack.File{ID: "F0TEST", Name: "x.bin", Size: len(tt.dl.body)}, "u", tt.maxBytes)
 			require.Error(t, err)
 			assert.Empty(t, dirEntries(t, dir))
 		})

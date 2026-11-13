@@ -37,6 +37,26 @@ func (s workflowSlack) UploadFileContext(ctx context.Context, params slack.Uploa
 	return s.client.UploadFileContext(ctx, params)
 }
 
+func (s workflowSlack) GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+	return s.client.GetUploadURLExternalContext(ctx, params)
+}
+
+func (s workflowSlack) UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error {
+	return s.client.UploadToURL(ctx, params)
+}
+
+func (s workflowSlack) CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+	return s.client.CompleteUploadExternalContext(ctx, params)
+}
+
+func (s workflowSlack) GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error) {
+	return s.client.GetConversationHistoryContext(ctx, params)
+}
+
+func (s workflowSlack) GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) ([]slack.Message, bool, string, error) {
+	return s.client.GetConversationRepliesContext(ctx, params)
+}
+
 func (s workflowSlack) GetFileInfoContext(ctx context.Context, id string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error) {
 	return s.client.GetFileInfoContext(ctx, id, count, page)
 }
@@ -89,6 +109,8 @@ func TestUnitWorkflowUploadBrowserSessionLargeThreadFile(t *testing.T) {
 			require.NoError(t, r.ParseForm())
 			complete = r.PostForm
 			fmt.Fprint(w, `{"ok":true,"files":[{"id":"FTEST","title":"Test attachment"}]}`)
+		case "/conversations.replies":
+			fmt.Fprint(w, `{"ok":true,"messages":[{"ts":"1234567891.123456","thread_ts":"1234567890.123456","files":[{"id":"FTEST"}]}]}`)
 		default:
 			t.Errorf("unexpected endpoint: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -96,13 +118,20 @@ func TestUnitWorkflowUploadBrowserSessionLargeThreadFile(t *testing.T) {
 	}))
 	defer srv.Close()
 	h := workflowHandler(srv.URL)
-	res, err := h.FileUploadHandler(context.Background(), newUploadRequest(map[string]any{
+	args := map[string]any{
 		"channel_id": "C123", "file_path": path, "title": "Test attachment",
 		"initial_comment": "First line\nSecond line", "thread_ts": "1234567890.123456",
-	}))
+	}
+	preview, err := h.FileUploadHandler(context.Background(), newUploadRequest(args))
+	require.NoError(t, err)
+	var plan uploadResult
+	require.NoError(t, json.Unmarshal([]byte(preview.Content[0].(mcp.TextContent).Text), &plan))
+	require.Empty(t, steps, "preview must not call an upload API")
+	args["dry_run"], args["expected_plan_hash"] = false, plan.PlanHash
+	res, err := h.FileUploadHandler(context.Background(), newUploadRequest(args))
 	require.NoError(t, err)
 	require.Contains(t, res.Content[0].(mcp.TextContent).Text, "FTEST")
-	require.Equal(t, []string{"/files.getUploadURLExternal", "/upload", "/files.completeUploadExternal"}, steps)
+	require.Equal(t, []string{"/files.getUploadURLExternal", "/upload", "/files.completeUploadExternal", "/conversations.replies"}, steps)
 	require.Equal(t, sha256.Sum256(body), sha256.Sum256(received))
 	require.Equal(t, "C123", complete.Get("channel_id"))
 	require.Equal(t, "1234567890.123456", complete.Get("thread_ts"))

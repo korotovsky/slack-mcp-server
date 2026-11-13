@@ -229,6 +229,7 @@ type SlackAPI interface {
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
+	SearchMessagesWithFilesContext(ctx context.Context, query string, params slack.SearchParameters) (*SearchMessagesWithFiles, error)
 
 	// Used to get files
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
@@ -236,6 +237,9 @@ type SlackAPI interface {
 
 	// Used to upload files
 	UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error)
+	GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error)
+	UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error
+	CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error)
 
 	// Used to get channel info (for unread counts with xoxp tokens)
 	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
@@ -266,11 +270,11 @@ type SlackAPI interface {
 }
 
 type MCPSlackClient struct {
+	httpClient  *http.Client
 	slackClient *slack.Client
 	edgeClient  *edge.Client
-	// downloadClient is slackClient without the HTTP client's overall request
-	// timeout, which would cut off any file download longer than 30s. Callers
-	// bound downloads through their context instead.
+	// downloadClient is the streaming transfer client without the shared
+	// HTTP client's 30s overall timeout. File transfers are context-bounded.
 	downloadClient *slack.Client
 
 	authResponse *slack.AuthTestResponse
@@ -362,6 +366,7 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	isBotToken := strings.HasPrefix(token, "xoxb-") || strings.HasPrefix(token, "xoxe.xoxb-")
 
 	return &MCPSlackClient{
+		httpClient:     httpClient,
 		slackClient:    slackClient,
 		edgeClient:     edgeClient,
 		downloadClient: downloadClient,
@@ -574,6 +579,20 @@ func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string,
 
 func (c *MCPSlackClient) UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error) {
 	return c.slackClient.UploadFileContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+	return c.slackClient.GetUploadURLExternalContext(ctx, params)
+}
+
+func (c *MCPSlackClient) UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	return c.downloadClient.UploadToURL(ctx, params)
+}
+
+func (c *MCPSlackClient) CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+	return c.slackClient.CompleteUploadExternalContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {

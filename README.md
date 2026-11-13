@@ -252,11 +252,11 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 - **Parameters:** None.
 
 ### 19. file_upload
-Upload a file to a public channel, private channel, or direct message (DM, or IM) conversation, optionally into a thread. Covers screenshots and images, logs, CSV/JSON data and code snippets.
+Preview and share up to ten files together as one message in a channel or DM, optionally inside a thread. Uploads default to a preview and require a non-empty caption.
 
 > **Note:** Uploading is disabled by default for safety. To enable, set the `SLACK_MCP_FILE_UPLOAD_TOOL` environment variable. Uploading from `file_path` additionally requires `SLACK_MCP_FILE_UPLOAD_PATHS` to list the directories the server may read. See the Environment Variables section below for details.
 
-Provide the content in exactly one of three ways: `file_path`, `content` or `content_base64`.
+For one file, provide exactly one of `file_path`, `content` or `content_base64`. For multiple files, pass a `files` array whose objects use those same source fields and optional filename/title metadata; do not combine it with top-level single-file fields.
 
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
@@ -266,13 +266,24 @@ Provide the content in exactly one of three ways: `file_path`, `content` or `con
   - `content_base64` (string, optional): Base64-encoded binary content, the way to upload a screenshot or an image without writing it to disk first. Requires `filename`.
   - `filename` (string, optional): File name shown in Slack. Required for `content` and `content_base64`, defaults to the base name of `file_path`. Slack derives the mime type from the extension, so an image must keep its `.png` or `.jpg` suffix, otherwise it renders as a plain attachment with no preview.
   - `title` (string, optional): Title of the file in Slack. Defaults to `filename`.
-  - `initial_comment` (string, optional): Message posted together with the file, this is the caption users see. Supports Slack mrkdwn.
+  - `initial_comment` (string, required): Non-empty caption posted with all files as one message. Supports Slack mrkdwn and preserves newlines.
+  - `files` (array, optional): Between one and ten file objects. Each has exactly one of `file_path`, `content` or `content_base64`, plus optional `filename`, `title`, `alt_txt` and `snippet_type`.
+  - `dry_run` (boolean, default `true`): Return the destination, caption, file names, sizes, checksums and `plan_hash` without uploading or sharing anything.
+  - `expected_plan_hash` (string): Required with `dry_run: false`. Must match the approved preview; changes to destination, thread, caption, metadata or file bytes require a new preview.
   - `alt_txt` (string, optional): Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots.
   - `snippet_type` (string, optional): Syntax highlighting for text snippets, e.g. `python`, `go`, `yaml`.
 
-Maximum upload size is 100MB. Works in stealth mode (`xoxc`/`xoxd`) as well as with OAuth and bot tokens.
+The default limit is 100 MiB per file. Set `SLACK_MCP_FILE_UPLOAD_MAX_BYTES` to a positive byte count up to 1 GiB for larger uploads; Slack's own limits still apply. Disk files are snapshotted into private staging files for the send phase, so the uploaded bytes match the confirmed checksums. Normal completion, failure and cancellation remove staging files. Browser session (`xoxc`/`xoxd`), OAuth and bot authentication use the existing client transport.
 
-To also send an uploaded thread reply to its channel, find the reply's timestamp with `conversations_replies`, then call `conversations_update_message` with that `timestamp`, `channel_id`, and `reply_broadcast: true`. Omit `text` and other content fields so the caption and attachments are preserved. See [editing and deleting messages](docs/03-configuration-and-usage.md#editing-and-deleting-messages).
+Send the same arguments with `dry_run: false` and `expected_plan_hash` set to the returned `plan_hash` only after approval of the preview. The server uploads all files, shares them with one completion call, and reads the conversation back. Success returns `verified: true`, all `file_ids`, and `message_ts`. If sharing is ambiguous (`sharing_unknown`) or the post cannot yet be verified (`posted_unverified`), the tool returns an error result with `do_not_retry: true`; inspect the conversation instead of repeating the upload.
+
+To also send an uploaded thread reply to its channel, call `conversations_update_message` with the verified `message_ts` as `timestamp`, its `channel_id`, and `reply_broadcast: true`. Omit `text` and other content fields to preserve the caption and attachments. See [editing and deleting messages](docs/03-configuration-and-usage.md#editing-and-deleting-messages).
+
+### Attachment integrity and search metadata
+
+`attachment_get_data` checks the exact byte count reported by Slack and returns `sha256` for inline content and disk downloads. Disk mode publishes complete files without replacing existing paths; collisions receive a numeric suffix. Filesystems without hard-link support use a private, uniquely reserved child directory instead. Partial or oversized downloads are rejected and removed. Configure `SLACK_MCP_ATTACHMENT_DIR` and `SLACK_MCP_ATTACHMENT_MAX_BYTES` for large disk downloads.
+
+Search preserves file IDs and filenames from Slack's response. If that metadata is omitted, `resolve_missing_file_metadata` (default `true`) reads the exact message, including a thread reply, with a 15-second budget per search page. CSV output includes `FileCount`, `AttachmentIDs` and `FileMetadataStatus`: `complete`, `unavailable`, or `not_requested`. `unavailable` means the attachment count is unknown, not confirmed zero. Set the option to `false` to avoid fallback API reads; metadata already present in search is still returned.
 
 ## Resources
 

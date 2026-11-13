@@ -285,7 +285,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolFileUpload, enabledTools, "SLACK_MCP_FILE_UPLOAD_TOOL") {
 		s.AddTool(mcp.NewTool(ToolFileUpload,
-			mcp.WithDescription("Upload a file to a public channel, private channel, or direct message (DM, or IM) conversation, optionally into a thread. Use it to share screenshots and images, logs, CSV/JSON data or code snippets. Provide the content in exactly one of three ways: file_path for a file on disk, content for UTF-8 text, or content_base64 for binary data such as a screenshot."),
+			mcp.WithDescription("Preview or share 1–10 files together as one message, optionally in a thread. A caption is required. Defaults to dry_run=true: show the returned destination, caption and file plan for approval. To send, repeat the call with dry_run=false and expected_plan_hash from the approved preview. Returns a verified message timestamp or an explicit do_not_retry result if sharing is ambiguous."),
 			mcp.WithTitleAnnotation("Upload File"),
 			mcp.WithDestructiveHintAnnotation(true),
 			mcp.WithString("channel_id",
@@ -311,8 +311,18 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Title of the file in Slack. Defaults to filename."),
 			),
 			mcp.WithString("initial_comment",
+				mcp.Required(),
 				mcp.Description("Message posted together with the file, this is the caption users see. Supports Slack mrkdwn."),
 			),
+			mcp.WithBoolean("dry_run", mcp.DefaultBool(true), mcp.Description("Preview only by default. Set false only after approval of the exact returned plan.")),
+			mcp.WithString("expected_plan_hash", mcp.Description("Required when dry_run=false; the plan_hash from the approved preview. Changes to bytes, destination, caption or metadata invalidate it.")),
+			mcp.WithArray("files", mcp.MinItems(1), mcp.MaxItems(10), mcp.Description("Files to share together in one message. Each object has exactly one of file_path, content or content_base64, plus optional filename, title, alt_txt and snippet_type. Cannot be combined with the top-level single-file fields."), mcp.Items(map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"file_path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "content_base64": map[string]any{"type": "string"},
+					"filename": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "alt_txt": map[string]any{"type": "string"}, "snippet_type": map[string]any{"type": "string"},
+				},
+			})),
 			mcp.WithString("alt_txt",
 				mcp.Description("Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots."),
 			),
@@ -326,6 +336,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithBoolean("resolve_missing_file_metadata", mcp.DefaultBool(true), mcp.Description("When search omits file metadata, read the exact message (including thread replies) to recover attachment IDs. Bounded to 15 seconds per page. FileMetadataStatus is complete, unavailable or not_requested; unavailable does not mean zero attachments.")),
 		mcp.WithString("search_query",
 			mcp.Description("Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored."),
 		),

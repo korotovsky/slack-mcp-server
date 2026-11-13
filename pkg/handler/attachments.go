@@ -2,7 +2,8 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,36 +47,85 @@ type fileDownloader interface {
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
 }
 
-// downloadAttachmentToDir streams a file into dir and returns its path and
-// size. The bytes go to a hidden ".partial" file first and are renamed into
-// place only once complete, so a reader never sees a truncated file and a
-// failed download leaves nothing behind. Downloading the same file again
-// replaces the earlier copy.
+// downloadAttachmentToDir is retained for callers that only need a path.
 func downloadAttachmentToDir(ctx context.Context, api fileDownloader, dir string, file *slack.File, downloadURL string, maxBytes int64) (string, int64, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, fmt.Errorf("attachment directory: %w", err)
+	path, size, _, err := downloadAttachmentWithDigest(ctx, api, dir, file, downloadURL, maxBytes)
+	return path, size, err
+}
+
+// downloadAttachmentWithDigest publishes only complete, verified bytes and
+// never replaces an existing file, including under concurrent downloads.
+func downloadAttachmentWithDigest(ctx context.Context, api fileDownloader, dir string, file *slack.File, downloadURL string, maxBytes int64) (string, int64, string, error) {
+	if file.Size < 0 || int64(file.Size) > maxBytes {
+		return "", 0, "", fmt.Errorf("invalid or oversized attachment: %d bytes", file.Size)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", 0, "", fmt.Errorf("attachment directory: %w", err)
 	}
 	name := attachmentFileName(file)
-	final := filepath.Join(dir, name)
-	partial := filepath.Join(dir, "."+name+"."+rand.Text()+".partial")
-
-	f, err := os.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.CreateTemp(dir, ".attachment-*.partial")
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
-	w := &limitedWriter{w: f, limit: maxBytes}
+	partial := f.Name()
+	defer os.Remove(partial)
+	hash := sha256.New()
+	w := &limitedWriter{w: io.MultiWriter(f, hash), limit: int64(file.Size)}
 	err = api.GetFileContext(ctx, downloadURL, w)
+	if err == nil && w.written != int64(file.Size) {
+		err = fmt.Errorf("attachment size mismatch: received %d bytes, Slack reported %d", w.written, file.Size)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
-		err = os.Rename(partial, final)
-	}
 	if err != nil {
-		_ = os.Remove(partial)
-		return "", 0, err
+		return "", 0, "", err
 	}
-	return final, w.written, nil
+	final, err := publishAttachment(ctx, partial, dir, name, os.Link)
+	if err != nil {
+		return "", 0, "", err
+	}
+	return final, w.written, fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func publishAttachment(ctx context.Context, partial, dir, name string, link func(string, string) error) (string, error) {
+	// Hard-link publication is atomic and fails when the destination exists.
+	// Checking existence before Rename would leave an overwrite race.
+	for index := 0; ; index++ {
+		candidate := name
+		if index > 0 {
+			ext := filepath.Ext(name)
+			candidate = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), index, ext)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		final := filepath.Join(dir, candidate)
+		if err := link(partial, final); err == nil {
+			return final, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			// Some FUSE/network filesystems do not support hard links. Reserve
+			// a private, unique child directory and atomically rename into it.
+			// No existing user path is replaced in this fallback either.
+			reserved, reserveErr := os.MkdirTemp(dir, "download-*")
+			if reserveErr != nil {
+				return "", fmt.Errorf("reserve attachment directory: %w", reserveErr)
+			}
+			final = filepath.Join(reserved, name)
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				_ = os.Remove(reserved)
+				return "", cancelErr
+			}
+			if renameErr := os.Rename(partial, final); renameErr != nil {
+				_ = os.Remove(reserved)
+				return "", fmt.Errorf("publish attachment in reserved directory: %w", renameErr)
+			}
+			return final, nil
+		}
+	}
 }
 
 // attachmentFileName is "<file ID>-<file name>", made safe to use as a single
@@ -119,7 +169,7 @@ type limitedWriter struct {
 }
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
-	if l.written+int64(len(p)) > l.limit {
+	if int64(len(p)) > l.limit-l.written {
 		return 0, fmt.Errorf("file exceeds maximum allowed size of %d bytes", l.limit)
 	}
 	n, err := l.w.Write(p)
@@ -149,5 +199,6 @@ func AttachmentToolDescription() string {
 	if maxBytes, err := AttachmentMaxBytes(); err == nil {
 		desc += " Maximum file size is " + formatBytes(maxBytes) + "."
 	}
+	desc += " Verifies Slack's exact byte count and returns SHA-256. Disk downloads never overwrite existing files."
 	return desc
 }

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -9,16 +8,29 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
-// maxUploadFileSizeBytes caps a single upload. Slack itself allows 1GB, but an
-// agent-driven tool has no business shipping arbitrarily large payloads.
+// maxUploadFileSizeBytes is the conservative default for a single upload.
 const maxUploadFileSizeBytes = 100 * 1024 * 1024 // 100MB
+
+// UploadMaxBytes lets the operator raise the limit for large files while
+// retaining an explicit ceiling. Slack's own upload limits also apply.
+func UploadMaxBytes() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv("SLACK_MCP_FILE_UPLOAD_MAX_BYTES"))
+	if raw == "" {
+		return maxUploadFileSizeBytes, nil
+	}
+	limit, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || limit <= 0 || limit > 1<<30 {
+		return 0, errors.New("SLACK_MCP_FILE_UPLOAD_MAX_BYTES must be a positive byte count no greater than 1073741824 (1 GiB)")
+	}
+	return limit, nil
+}
 
 type fileUploadParams struct {
 	channel        string
@@ -43,6 +55,10 @@ type fileUploadParams struct {
 // the name can point at something else by the time we read it. Everything after
 // this call works off the descriptor, which cannot be swapped.
 func openUploadFile(resolved string) (*os.File, int64, error) {
+	limit, err := UploadMaxBytes()
+	if err != nil {
+		return nil, 0, err
+	}
 	f, err := os.OpenFile(resolved, os.O_RDONLY|openUploadExtraFlags, 0)
 	if err != nil {
 		return nil, 0, fmt.Errorf("cannot open %q: %w", resolved, err)
@@ -57,9 +73,9 @@ func openUploadFile(resolved string) (*os.File, int64, error) {
 		f.Close()
 		return nil, 0, fmt.Errorf("%q is not a regular file", resolved)
 	}
-	if info.Size() > maxUploadFileSizeBytes {
+	if info.Size() > limit {
 		f.Close()
-		return nil, 0, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", info.Size(), maxUploadFileSizeBytes)
+		return nil, 0, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", info.Size(), limit)
 	}
 	if info.Size() == 0 {
 		f.Close()
@@ -200,6 +216,10 @@ func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, r
 		altTxt:         request.GetString("alt_txt", ""),
 		snippetType:    request.GetString("snippet_type", ""),
 	}
+	limit, err := UploadMaxBytes()
+	if err != nil {
+		return nil, err
+	}
 
 	// Slack shows whatever we send as the file name, so never let a path leak into it.
 	filename := strings.TrimSpace(request.GetString("filename", ""))
@@ -214,7 +234,7 @@ func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, r
 			ch.logger.Warn("Rejected file_path", zap.String("file_path", filePath), zap.Error(err))
 			return nil, err
 		}
-		f, size, err := openUploadFile(resolved)
+		f, size, err := openUploadFileInRoots(resolved, parseUploadPathsEnv(os.Getenv("SLACK_MCP_FILE_UPLOAD_PATHS")))
 		if err != nil {
 			ch.logger.Warn("Rejected file_path on open", zap.String("file_path", filePath), zap.Error(err))
 			return nil, err
@@ -230,12 +250,15 @@ func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, r
 		if filename == "" {
 			return nil, errors.New("filename is required when uploading content_base64")
 		}
-		if len(contentB64) > maxUploadFileSizeBytes {
-			return nil, fmt.Errorf("content_base64 length %d exceeds maximum allowed size of %d bytes", len(contentB64), maxUploadFileSizeBytes)
+		if len(contentB64) > base64.StdEncoding.EncodedLen(int(limit)) {
+			return nil, fmt.Errorf("content_base64 length %d exceeds maximum allowed size of %d bytes", len(contentB64), limit)
 		}
 		data, err := base64.StdEncoding.DecodeString(contentB64)
 		if err != nil {
 			return nil, fmt.Errorf("content_base64 is not valid base64: %w", err)
+		}
+		if int64(len(data)) > limit {
+			return nil, fmt.Errorf("decoded content exceeds maximum allowed size of %d bytes", limit)
 		}
 		params.data = data
 		params.size = int64(len(data))
@@ -244,8 +267,8 @@ func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, r
 		if filename == "" {
 			return nil, errors.New("filename is required when uploading content")
 		}
-		if len(content) > maxUploadFileSizeBytes {
-			return nil, fmt.Errorf("content length %d exceeds maximum allowed size of %d bytes", len(content), maxUploadFileSizeBytes)
+		if int64(len(content)) > limit {
+			return nil, fmt.Errorf("content length %d exceeds maximum allowed size of %d bytes", len(content), limit)
 		}
 		params.data = []byte(content)
 		params.size = int64(len(content))
@@ -257,67 +280,4 @@ func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, r
 	}
 
 	return params, nil
-}
-
-// FileUploadHandler uploads a file to Slack and shares it into a channel or thread.
-func (ch *ConversationsHandler) FileUploadHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Deliberately not logging request.Params: for this tool they carry the
-	// file payload itself (content / content_base64).
-	ch.logger.Debug("FileUploadHandler called")
-
-	if ready, err := ch.apiProvider.IsReady(); !ready {
-		ch.logger.Error("API provider not ready", zap.Error(err))
-		return nil, err
-	}
-
-	params, err := ch.parseParamsToolFileUpload(ctx, request)
-	if err != nil {
-		ch.logger.Error("Failed to parse file_upload params", zap.Error(err))
-		return nil, err
-	}
-
-	uploadParams := slack.UploadFileParameters{
-		Filename:        params.filename,
-		FileSize:        int(params.size),
-		Title:           params.title,
-		InitialComment:  params.initialComment,
-		Channel:         params.channel,
-		ThreadTimestamp: params.threadTs,
-		AltTxt:          params.altTxt,
-		SnippetType:     params.snippetType,
-	}
-
-	if params.file != nil {
-		// Descriptor was opened and vetted during validation, so nothing can be
-		// swapped underneath us. Streaming it keeps the file out of memory.
-		defer params.file.Close()
-		uploadParams.Reader = params.file
-	} else {
-		uploadParams.Reader = bytes.NewReader(params.data)
-	}
-
-	ch.logger.Debug("Uploading file to Slack",
-		zap.String("channel", params.channel),
-		zap.String("thread_ts", params.threadTs),
-		zap.String("filename", params.filename),
-		zap.Int("size", uploadParams.FileSize),
-	)
-
-	summary, err := ch.apiProvider.Slack().UploadFileContext(ctx, uploadParams)
-	if err != nil {
-		ch.logger.Error("Slack UploadFileContext failed", zap.Error(err))
-		return nil, err
-	}
-
-	ch.logger.Debug("File uploaded", zap.String("file_id", summary.ID))
-
-	return mcp.NewToolResultText(fmt.Sprintf(
-		`{"file_id":"%s","filename":"%s","title":"%s","size":%d,"channel":"%s","thread_ts":"%s"}`,
-		escapeJSON(summary.ID),
-		escapeJSON(params.filename),
-		escapeJSON(summary.Title),
-		uploadParams.FileSize,
-		escapeJSON(params.channel),
-		escapeJSON(params.threadTs),
-	)), nil
 }

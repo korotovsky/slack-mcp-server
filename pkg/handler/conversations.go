@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -45,21 +46,22 @@ var validFilterKeys = map[string]struct{}{
 }
 
 type Message struct {
-	MsgID         string `json:"msgID"`
-	UserID        string `json:"userID"`
-	UserName      string `json:"userUser"`
-	RealName      string `json:"realName"`
-	Channel       string `json:"channelID"`
-	ThreadTs      string `json:"ThreadTs"`
-	Text          string `json:"text"`
-	Time          string `json:"time"`
-	Permalink     string `json:"permalink,omitempty"`
-	Reactions     string `json:"reactions,omitempty"`
-	BotName       string `json:"botName,omitempty"`
-	FileCount     int    `json:"fileCount,omitempty"`
-	AttachmentIDs string `json:"attachmentIDs,omitempty"`
-	HasMedia      bool   `json:"hasMedia,omitempty"`
-	Cursor        string `json:"cursor"`
+	MsgID              string `json:"msgID"`
+	UserID             string `json:"userID"`
+	UserName           string `json:"userUser"`
+	RealName           string `json:"realName"`
+	Channel            string `json:"channelID"`
+	ThreadTs           string `json:"ThreadTs"`
+	Text               string `json:"text"`
+	Time               string `json:"time"`
+	Permalink          string `json:"permalink,omitempty"`
+	Reactions          string `json:"reactions,omitempty"`
+	BotName            string `json:"botName,omitempty"`
+	FileCount          int    `json:"fileCount,omitempty"`
+	AttachmentIDs      string `json:"attachmentIDs,omitempty"`
+	FileMetadataStatus string `json:"fileMetadataStatus,omitempty"`
+	HasMedia           bool   `json:"hasMedia,omitempty"`
+	Cursor             string `json:"cursor"`
 }
 
 type User struct {
@@ -468,7 +470,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
-	if int64(fileInfo.Size) > maxBytes {
+	if fileInfo.Size < 0 || int64(fileInfo.Size) > maxBytes {
 		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxBytes)
 	}
 
@@ -484,7 +486,7 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 	defer cancel()
 
 	if dir := os.Getenv("SLACK_MCP_ATTACHMENT_DIR"); dir != "" {
-		path, size, err := downloadAttachmentToDir(ctx, ch.apiProvider.Slack(), dir, fileInfo, downloadURL, maxBytes)
+		path, size, digest, err := downloadAttachmentWithDigest(ctx, ch.apiProvider.Slack(), dir, fileInfo, downloadURL, maxBytes)
 		if err != nil {
 			ch.logger.Error("Attachment download to directory failed", zap.Error(err))
 			return nil, err
@@ -495,7 +497,8 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 			Mimetype string `json:"mimetype"`
 			Size     int64  `json:"size"`
 			Path     string `json:"path"`
-		}{fileInfo.ID, fileInfo.Name, fileInfo.Mimetype, size, path})
+			SHA256   string `json:"sha256"`
+		}{fileInfo.ID, fileInfo.Name, fileInfo.Mimetype, size, path, digest})
 		if err != nil {
 			return nil, err
 		}
@@ -503,23 +506,27 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 	}
 
 	var buf bytes.Buffer
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &limitedWriter{w: &buf, limit: maxBytes})
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &limitedWriter{w: &buf, limit: int64(fileInfo.Size)})
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
 	}
 
 	content := buf.Bytes()
+	if len(content) != fileInfo.Size {
+		return nil, fmt.Errorf("attachment size mismatch: received %d bytes, Slack reported %d", len(content), fileInfo.Size)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
 
 	// For image files, return as native MCP image content so the client
 	// can render them directly without base64-in-JSON overflow.
 	if isImageMimetype(fileInfo.Mimetype) {
 		imageData := base64.StdEncoding.EncodeToString(content)
-		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d}`,
+		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"sha256":"%s"}`,
 			fileInfo.ID,
 			escapeJSON(fileInfo.Name),
 			escapeJSON(fileInfo.Mimetype),
-			len(content))
+			len(content), digest)
 		return mcp.NewToolResultImage(metadata, imageData, fileInfo.Mimetype), nil
 	}
 
@@ -533,11 +540,12 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		encoding = "base64"
 	}
 
-	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"encoding":"%s","content":"%s"}`,
+	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"sha256":"%s","encoding":"%s","content":"%s"}`,
 		fileInfo.ID,
 		escapeJSON(fileInfo.Name),
 		escapeJSON(fileInfo.Mimetype),
 		len(content),
+		digest,
 		encoding,
 		escapeJSON(contentStr))
 
@@ -669,17 +677,19 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 
 	rl := limiter.Tier2.Limiter()
-	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.SearchMessages, error) {
-		msgs, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
-		return msgs, err
+	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*provider.SearchMessagesWithFiles, error) {
+		return ch.apiProvider.Slack().SearchMessagesWithFilesContext(ctx, params.query, searchParams)
 	})
 	if err != nil {
 		ch.logger.Error("Slack SearchContext failed", zap.Error(err))
 		return nil, err
 	}
+	if messagesRes == nil {
+		return nil, errors.New("empty search response")
+	}
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
-
-	messages := ch.convertMessagesFromSearch(ctx, messagesRes.Matches)
+	ch.resolveSearchFiles(ctx, messagesRes.Matches, request.GetBool("resolve_missing_file_metadata", true))
+	messages := ch.convertSearchMessagesWithFiles(ctx, messagesRes.Matches)
 	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))

@@ -283,6 +283,22 @@ docker-compose up -d
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 | `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var to be set OR must be explicitly listed here. Selecting a write tool without its dedicated channel policy enables all accessible channels; a dedicated policy still restricts the target channel. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `file_upload`, `conversations_search_messages`, `conversations_join`, `conversations_leave`, `conversations_unreads`, `conversations_mark`, `channels_list`, `channels_me`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`, `users_search`. |
 
+### File upload previews and verified delivery
+
+`file_upload` previews by default and requires `initial_comment`. A `files` array accepts up to ten file objects, or the top-level `file_path` / `content` / `content_base64` fields describe one file. Files share one destination, optional thread, and caption.
+
+```json
+{"channel_id":"C123","initial_comment":"Report and supporting data","files":[{"file_path":"/allowed/report.pdf"},{"content":"a,b\n1,2","filename":"data.csv"}]}
+```
+
+Show the returned plan for approval, then repeat the call with `dry_run: false` and `expected_plan_hash` set to its `plan_hash`. All files are validated before any upload; changes to the confirmed bytes, metadata, destination or caption invalidate the hash. Disk files are snapshotted into private staging files for sending. Set `SLACK_MCP_FILE_UPLOAD_STAGING_DIR` to choose their location; the default is `slack-mcp-server/upload-staging` under the user's cache directory. Temporary files are removed when the call exits, including errors and cancellation; abrupt process termination can leave private staging files for operator cleanup.
+
+Only one `files.completeUploadExternal` call shares the batch. Delivery verification reads paginated history or replies and returns the exact `message_ts` containing all file IDs. `sharing_unknown` and `posted_unverified` results set `do_not_retry: true`; check the existing share instead of sending another message. A preview/hash match binds content, but does not replace client-side human approval.
+
+File byte transfers use a ten-minute context bound instead of the ordinary API client's thirty-second overall timeout. Caller cancellation still takes precedence. `SLACK_MCP_FILE_UPLOAD_MAX_BYTES` controls the per-file limit (100 MiB by default, up to 1 GiB).
+
+Disk downloads check Slack's exact size, return SHA-256, and never overwrite existing paths. Search returns attachment IDs directly or recovers omitted metadata from the exact message; unresolved metadata is explicitly labelled. See the README's [attachment integrity and search metadata](../README.md#attachment-integrity-and-search-metadata).
+
 ### Editing and deleting messages
 
 `conversations_update_message` (`chat.update`) and `conversations_delete_message` (`chat.delete`) are independently disabled by default. Both require `channel_id` (ID or cached `#channel` / `@username_dm`) and `timestamp` (a string such as `1234567890.123456`, not a float or thread-parent timestamp when targeting a reply). Editing requires non-empty `text`; `content_type` is `text/markdown` by default or `text/plain`.

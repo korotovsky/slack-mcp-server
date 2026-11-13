@@ -76,6 +76,9 @@ func main() {
 		)
 	}
 
+	if _, err := handler.UploadMaxBytes(); err != nil {
+		logger.Fatal("error in SLACK_MCP_FILE_UPLOAD_MAX_BYTES", zap.Error(err))
+	}
 	p := provider.New(transport, logger)
 	s := server.NewMCPServer(p, logger, enabledTools)
 
