@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -45,21 +46,22 @@ var validFilterKeys = map[string]struct{}{
 }
 
 type Message struct {
-	MsgID         string `json:"msgID"`
-	UserID        string `json:"userID"`
-	UserName      string `json:"userUser"`
-	RealName      string `json:"realName"`
-	Channel       string `json:"channelID"`
-	ThreadTs      string `json:"ThreadTs"`
-	Text          string `json:"text"`
-	Time          string `json:"time"`
-	Permalink     string `json:"permalink,omitempty"`
-	Reactions     string `json:"reactions,omitempty"`
-	BotName       string `json:"botName,omitempty"`
-	FileCount     int    `json:"fileCount,omitempty"`
-	AttachmentIDs string `json:"attachmentIDs,omitempty"`
-	HasMedia      bool   `json:"hasMedia,omitempty"`
-	Cursor        string `json:"cursor"`
+	MsgID              string `json:"msgID"`
+	UserID             string `json:"userID"`
+	UserName           string `json:"userUser"`
+	RealName           string `json:"realName"`
+	Channel            string `json:"channelID"`
+	ThreadTs           string `json:"ThreadTs"`
+	Text               string `json:"text"`
+	Time               string `json:"time"`
+	Permalink          string `json:"permalink,omitempty"`
+	Reactions          string `json:"reactions,omitempty"`
+	BotName            string `json:"botName,omitempty"`
+	FileCount          int    `json:"fileCount,omitempty"`
+	AttachmentIDs      string `json:"attachmentIDs,omitempty"`
+	FileMetadataStatus string `json:"fileMetadataStatus,omitempty"`
+	HasMedia           bool   `json:"hasMedia,omitempty"`
+	Cursor             string `json:"cursor"`
 }
 
 type User struct {
@@ -94,11 +96,12 @@ type searchParams struct {
 }
 
 type addMessageParams struct {
-	channel     string
-	threadTs    string
-	text        string
-	contentType string
-	blocks      []slack.Block
+	channel        string
+	threadTs       string
+	text           string
+	contentType    string
+	blocks         []slack.Block
+	replyBroadcast bool
 }
 
 type addReactionParams struct {
@@ -131,15 +134,30 @@ type markParams struct {
 	channel string
 	ts      string
 }
-type ConversationsHandler struct {
-	apiProvider *provider.ApiProvider
-	logger      *zap.Logger
+type conversationsProvider interface {
+	IsReady() (bool, error)
+	ServerTransport() string
+	Slack() provider.SlackAPI
+	ProvideUsersMap() *provider.UsersCache
+	ProvideChannelsMaps() *provider.ChannelsCache
+	ForceRefreshChannels(context.Context) error
+	SearchUsers(context.Context, string, int) ([]slack.User, error)
+	PatchUser(context.Context, string) (*slack.User, error)
+	IsOAuth() bool
+	IsBotToken() bool
 }
 
-func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *ConversationsHandler {
+type ConversationsHandler struct {
+	apiProvider  conversationsProvider
+	logger       *zap.Logger
+	enabledTools []string
+}
+
+func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger, enabledTools []string) *ConversationsHandler {
 	return &ConversationsHandler{
-		apiProvider: apiProvider,
-		logger:      logger,
+		apiProvider:  apiProvider,
+		logger:       logger,
+		enabledTools: enabledTools,
 	}
 }
 
@@ -222,6 +240,11 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 	var options []slack.MsgOption
 	if params.threadTs != "" {
 		options = append(options, slack.MsgOptionTS(params.threadTs))
+		// reply_broadcast only applies to threaded replies; Slack ignores it for
+		// top-level messages, so gate it on thread_ts being set.
+		if params.replyBroadcast {
+			options = append(options, slack.MsgOptionBroadcast())
+		}
 	}
 
 	if params.blocks != nil {
@@ -262,6 +285,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		zap.String("channel", params.channel),
 		zap.String("thread_ts", params.threadTs),
 		zap.String("content_type", params.contentType),
+		zap.Bool("reply_broadcast", params.replyBroadcast),
 	)
 	respChannel, respTimestamp, err := ch.apiProvider.Slack().PostMessageContext(ctx, params.channel, options...)
 	if err != nil {
@@ -435,17 +459,21 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, err
 	}
 
+	maxBytes, err := AttachmentMaxBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	fileInfo, _, _, err := ch.apiProvider.Slack().GetFileInfoContext(ctx, params.fileID, 0, 0)
 	if err != nil {
 		ch.logger.Error("Slack GetFileInfoContext failed", zap.Error(err))
 		return nil, err
 	}
 
-	if fileInfo.Size > maxFileSizeBytes {
-		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxFileSizeBytes)
+	if fileInfo.Size < 0 || int64(fileInfo.Size) > maxBytes {
+		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxBytes)
 	}
 
-	var buf bytes.Buffer
 	downloadURL := fileInfo.URLPrivateDownload
 	if downloadURL == "" {
 		downloadURL = fileInfo.URLPrivate
@@ -454,23 +482,51 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, errors.New("file has no downloadable URL")
 	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	ctx, cancel := context.WithTimeout(ctx, attachmentDownloadTimeout)
+	defer cancel()
+
+	if dir := os.Getenv("SLACK_MCP_ATTACHMENT_DIR"); dir != "" {
+		path, size, digest, err := downloadAttachmentWithDigest(ctx, ch.apiProvider.Slack(), dir, fileInfo, downloadURL, maxBytes)
+		if err != nil {
+			ch.logger.Error("Attachment download to directory failed", zap.Error(err))
+			return nil, err
+		}
+		result, err := json.Marshal(struct {
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+			Mimetype string `json:"mimetype"`
+			Size     int64  `json:"size"`
+			Path     string `json:"path"`
+			SHA256   string `json:"sha256"`
+		}{fileInfo.ID, fileInfo.Name, fileInfo.Mimetype, size, path, digest})
+		if err != nil {
+			return nil, err
+		}
+		return mcp.NewToolResultText(string(result)), nil
+	}
+
+	var buf bytes.Buffer
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &limitedWriter{w: &buf, limit: int64(fileInfo.Size)})
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
 	}
 
 	content := buf.Bytes()
+	if len(content) != fileInfo.Size {
+		return nil, fmt.Errorf("attachment size mismatch: received %d bytes, Slack reported %d", len(content), fileInfo.Size)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
 
 	// For image files, return as native MCP image content so the client
 	// can render them directly without base64-in-JSON overflow.
 	if isImageMimetype(fileInfo.Mimetype) {
 		imageData := base64.StdEncoding.EncodeToString(content)
-		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d}`,
+		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"sha256":"%s"}`,
 			fileInfo.ID,
 			escapeJSON(fileInfo.Name),
 			escapeJSON(fileInfo.Mimetype),
-			len(content))
+			len(content), digest)
 		return mcp.NewToolResultImage(metadata, imageData, fileInfo.Mimetype), nil
 	}
 
@@ -484,11 +540,12 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		encoding = "base64"
 	}
 
-	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"encoding":"%s","content":"%s"}`,
+	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"sha256":"%s","encoding":"%s","content":"%s"}`,
 		fileInfo.ID,
 		escapeJSON(fileInfo.Name),
 		escapeJSON(fileInfo.Mimetype),
 		len(content),
+		digest,
 		encoding,
 		escapeJSON(contentStr))
 
@@ -620,17 +677,19 @@ func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, 
 	}
 
 	rl := limiter.Tier2.Limiter()
-	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*slack.SearchMessages, error) {
-		msgs, _, err := ch.apiProvider.Slack().SearchContext(ctx, params.query, searchParams)
-		return msgs, err
+	messagesRes, err := limiter.CallWithRetry(ctx, rl, 2, slackRetryAfter, func() (*provider.SearchMessagesWithFiles, error) {
+		return ch.apiProvider.Slack().SearchMessagesWithFilesContext(ctx, params.query, searchParams)
 	})
 	if err != nil {
 		ch.logger.Error("Slack SearchContext failed", zap.Error(err))
 		return nil, err
 	}
+	if messagesRes == nil {
+		return nil, errors.New("empty search response")
+	}
 	ch.logger.Debug("Search completed", zap.Int("matches", len(messagesRes.Matches)))
-
-	messages := ch.convertMessagesFromSearch(ctx, messagesRes.Matches)
+	ch.resolveSearchFiles(ctx, messagesRes.Matches, request.GetBool("resolve_missing_file_metadata", true))
+	messages := ch.convertSearchMessagesWithFiles(ctx, messagesRes.Matches)
 	if len(messages) > 0 && messagesRes.Pagination.Page < messagesRes.Pagination.PageCount {
 		nextCursor := fmt.Sprintf("page:%d", messagesRes.Pagination.Page+1)
 		messages[len(messages)-1].Cursor = base64.StdEncoding.EncodeToString([]byte(nextCursor))
@@ -1783,6 +1842,8 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		return nil, errors.New("thread_ts must be a valid timestamp in format 1234567890.123456")
 	}
 
+	replyBroadcast := request.GetBool("reply_broadcast", false)
+
 	msgText := request.GetString("text", "")
 	if msgText == "" {
 		// Backward compatibility with "payload" parameter
@@ -1833,11 +1894,12 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 	}
 
 	return &addMessageParams{
-		channel:     channel,
-		threadTs:    threadTs,
-		text:        msgText,
-		contentType: contentType,
-		blocks:      blocks,
+		channel:        channel,
+		threadTs:       threadTs,
+		text:           msgText,
+		contentType:    contentType,
+		blocks:         blocks,
+		replyBroadcast: replyBroadcast,
 	}, nil
 }
 
@@ -2158,7 +2220,7 @@ func getUserInfo(userID string, usersMap map[string]slack.User) (userName, realN
 // it already tried to fetch, so a user that doesn't exist in Slack is only
 // looked up once per batch rather than once per message.
 type userResolver struct {
-	apiProvider  *provider.ApiProvider
+	apiProvider  conversationsProvider
 	ctx          context.Context
 	usersMap     *provider.UsersCache
 	attemptedIDs map[string]bool

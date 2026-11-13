@@ -56,8 +56,9 @@ Add a message to a public channel, private channel, or direct message (DM, or IM
 - **Parameters:**
   - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
   - `thread_ts` (string, optional): Unique identifier of either a thread’s parent message or a message in the thread_ts must be the timestamp in format `1234567890.123456` of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread.
-  - `payload` (string, required): Message payload in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
+  - `text` (string, required unless `blocks` is given): Message text in the format given by `content_type`. With `text/markdown` (default) write standard Markdown, not Slack mrkdwn: `**bold**`, `*italic*`, `[label](url)`, inline and fenced code, `#` headings, `>` quotes, `-`/`1.` lists; `<@Uxxx>` mentions work in plain paragraphs. A single newline is kept as a line break inside a paragraph and a blank line starts a new block; two-trailing-space and backslash hard breaks are kept as line breaks too. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown.
   - `content_type` (string, default: "text/markdown"): Content type of the message. Default is 'text/markdown'. Allowed values: 'text/markdown', 'text/plain'.
+  - `reply_broadcast` (boolean, default: false): When posting a threaded reply (`thread_ts` is set), also make the reply visible in the channel ("also send to channel"). Has no effect on top-level messages.
 
 ### 4. conversations_search_messages
 Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required.
@@ -84,6 +85,20 @@ Get list of channels
   - `sort` (string, optional): Type of sorting. Allowed values: `popularity` - sort by number of members/participants in each channel.
   - `limit` (number, default: 100): The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999).
   - `cursor` (string, optional): Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request.
+
+### conversations_update_message / conversations_delete_message
+
+Edit (`chat.update`) or permanently delete (`chat.delete`) an existing message. Both tools are **disabled by default**. Enable each independently using `SLACK_MCP_UPDATE_MESSAGE_TOOL` / `SLACK_MCP_DELETE_MESSAGE_TOOL`, or explicitly select its name in `SLACK_MCP_ENABLED_TOOLS`.
+
+- `channel_id` (string, required): channel ID, `#channel`, or `@username_dm`.
+- `timestamp` (string, required): the exact target message timestamp, e.g. `1234567890.123456`; for a reply use the reply's timestamp, not its parent.
+- Update only: `text` (non-empty string, required), `content_type` (`text/markdown` by default, or `text/plain`). Replaces text and old blocks, preserves attachments. Markdown uses the existing block converter with a plain-text fallback. Slack may reject incompatible block-type changes.
+
+Channel ID allowlists (`C123,C456`) and exclusion lists (`!C123,!C456`) apply **after** name resolution and remain enforced when a tool is explicitly selected. Selection without a dedicated policy allows all channels available to the token. A nonempty `SLACK_MCP_ENABLED_TOOLS` list excludes tools not named there, even when their dedicated variable is set.
+
+OAuth user and bot tokens require `chat:write`. Users can edit their own messages; bots can edit/delete only their own messages. User deletion follows what that identity can delete in Slack and workspace policy. Browser `xoxc`/`xoxd` uses the same Web API client with session cookies, not an edge mutation endpoint; session compatibility is not guaranteed. These tools do not bypass Slack ownership or workspace restrictions. See [token limitations and safe use](docs/03-configuration-and-usage.md#editing-and-deleting-messages).
+
+These tools do not implement a human approval UI. Configure the MCP client to require approval for **every** write, including in bypass modes; tool enablement and channel policies are not user consent. No automatic mutation retries are added. A timeout or lost response may have occurred after Slack applied the change: inspect state before a separately approved retry.
 
 ### 6. reactions_add:
 Add an emoji reaction to a message in a public channel, private channel, or direct message (DM, or IM) conversation.
@@ -236,6 +251,40 @@ Clear all completed saved items from the "Save for Later" panel. This is a bulk 
 
 - **Parameters:** None.
 
+### 19. file_upload
+Preview and share up to ten files together as one message in a channel or DM, optionally inside a thread. Uploads default to a preview and require a non-empty caption.
+
+> **Note:** Uploading is disabled by default for safety. To enable, set the `SLACK_MCP_FILE_UPLOAD_TOOL` environment variable. Uploading from `file_path` additionally requires `SLACK_MCP_FILE_UPLOAD_PATHS` to list the directories the server may read. See the Environment Variables section below for details.
+
+For one file, provide exactly one of `file_path`, `content` or `content_base64`. For multiple files, pass a `files` array whose objects use those same source fields and optional filename/title metadata; do not combine it with top-level single-file fields.
+
+- **Parameters:**
+  - `channel_id` (string, required): ID of the channel in format `Cxxxxxxxxxx` or its name starting with `#...` or `@...` aka `#general` or `@username_dm`.
+  - `thread_ts` (string, optional): Unique identifier of a thread's parent message in format `1234567890.123456`. Optional, if not provided the file is posted to the channel itself. Never use a reply's ts, always the parent's.
+  - `file_path` (string, optional): Absolute path to a local file to upload, e.g. `/home/user/Pictures/screenshot.png`. Only paths inside `SLACK_MCP_FILE_UPLOAD_PATHS` are allowed; when that variable is unset this argument is rejected. The file is streamed from disk, not buffered in memory.
+  - `content` (string, optional): UTF-8 text to upload as a file, e.g. a log excerpt or a code snippet. Requires `filename`.
+  - `content_base64` (string, optional): Base64-encoded binary content, the way to upload a screenshot or an image without writing it to disk first. Requires `filename`.
+  - `filename` (string, optional): File name shown in Slack. Required for `content` and `content_base64`, defaults to the base name of `file_path`. Slack derives the mime type from the extension, so an image must keep its `.png` or `.jpg` suffix, otherwise it renders as a plain attachment with no preview.
+  - `title` (string, optional): Title of the file in Slack. Defaults to `filename`.
+  - `initial_comment` (string, required): Non-empty caption posted with all files as one message. Supports Slack mrkdwn and preserves newlines.
+  - `files` (array, optional): Between one and ten file objects. Each has exactly one of `file_path`, `content` or `content_base64`, plus optional `filename`, `title`, `alt_txt` and `snippet_type`.
+  - `dry_run` (boolean, default `true`): Return the destination, caption, file names, sizes, checksums and `plan_hash` without uploading or sharing anything.
+  - `expected_plan_hash` (string): Required with `dry_run: false`. Must match the approved preview; changes to destination, thread, caption, metadata or file bytes require a new preview.
+  - `alt_txt` (string, optional): Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots.
+  - `snippet_type` (string, optional): Syntax highlighting for text snippets, e.g. `python`, `go`, `yaml`.
+
+The default limit is 100 MiB per file. Set `SLACK_MCP_FILE_UPLOAD_MAX_BYTES` to a positive byte count up to 1 GiB for larger uploads; Slack's own limits still apply. Disk files are snapshotted into private staging files for the send phase, so the uploaded bytes match the confirmed checksums. Normal completion, failure and cancellation remove staging files. Browser session (`xoxc`/`xoxd`), OAuth and bot authentication use the existing client transport.
+
+Send the same arguments with `dry_run: false` and `expected_plan_hash` set to the returned `plan_hash` only after approval of the preview. The server uploads all files, shares them with one completion call, and reads the conversation back. Success returns `verified: true`, all `file_ids`, and `message_ts`. If sharing is ambiguous (`sharing_unknown`) or the post cannot yet be verified (`posted_unverified`), the tool returns an error result with `do_not_retry: true`; inspect the conversation instead of repeating the upload.
+
+To also send an uploaded thread reply to its channel, call `conversations_update_message` with the verified `message_ts` as `timestamp`, its `channel_id`, and `reply_broadcast: true`. Omit `text` and other content fields to preserve the caption and attachments. See [editing and deleting messages](docs/03-configuration-and-usage.md#editing-and-deleting-messages).
+
+### Attachment integrity and search metadata
+
+`attachment_get_data` checks the exact byte count reported by Slack and returns `sha256` for inline content and disk downloads. Disk mode publishes complete files without replacing existing paths; collisions receive a numeric suffix. Filesystems without hard-link support use a private, uniquely reserved child directory instead. Partial or oversized downloads are rejected and removed. Configure `SLACK_MCP_ATTACHMENT_DIR` and `SLACK_MCP_ATTACHMENT_MAX_BYTES` for large disk downloads.
+
+Search preserves file IDs and filenames from Slack's response. If that metadata is omitted, `resolve_missing_file_metadata` (default `true`) reads the exact message, including a thread reply, with a 15-second budget per search page. CSV output includes `FileCount`, `AttachmentIDs` and `FileMetadataStatus`: `complete`, `unavailable`, or `not_requested`. `unavailable` means the attachment count is unknown, not confirmed zero. Set the option to `false` to avoid fallback API reads; metadata already present in search is still returned.
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
@@ -288,16 +337,22 @@ Fetches a CSV directory of all users in the workspace.
 | `SLACK_MCP_SERVER_CA_TOOLKIT`     | No        | `nil`                     | Inject HTTPToolkit CA certificate to root trust-store for MitM debugging                                                                                                                                                                                                                  |
 | `SLACK_MCP_SERVER_CA_INSECURE`    | No        | `false`                   | Trust all insecure requests (NOT RECOMMENDED)                                                                                                                                                                                                                                             |
 | `SLACK_MCP_ADD_MESSAGE_TOOL`      | No        | `nil`                     | Enable message posting via `conversations_add_message` by setting it to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_UPDATE_MESSAGE_TOOL` | No | `nil` | Enable `conversations_update_message`: `true`/`1` for all channels, channel ID allowlist, or `!` exclusion list. Disabled unless this is set or the exact tool is selected in `SLACK_MCP_ENABLED_TOOLS`; a dedicated channel restriction still applies when selected. |
+| `SLACK_MCP_DELETE_MESSAGE_TOOL` | No | `nil` | Enable `conversations_delete_message` independently, with the same channel policy syntax as update. Deletion is permanent. |
 | `SLACK_MCP_ADD_MESSAGE_MARK`      | No        | `nil`                     | When `conversations_add_message` is enabled (via `SLACK_MCP_ADD_MESSAGE_TOOL` or `SLACK_MCP_ENABLED_TOOLS`), setting this to `true` will automatically mark sent messages as read.                                                                                                        |
 | `SLACK_MCP_ADD_MESSAGE_UNFURLING` | No        | `nil`                     | Enable to let Slack unfurl posted links or set comma-separated list of domains e.g. `github.com,slack.com` to whitelist unfurling only for them. If text contains whitelisted and unknown domain unfurling will be disabled for security reasons.                                         |
 | `SLACK_MCP_REACTION_TOOL`        | No        | `nil`                     | Enable `reactions_add` and `reactions_remove` tools by setting to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tools are only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
 | `SLACK_MCP_ATTACHMENT_TOOL`      | No        | `nil`                     | Enable the `attachment_get_data` tool by setting to `true`, `1`, or `yes`. Does not support channel-level restrictions. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_FILE_UPLOAD_TOOL`     | No        | `nil`                     | Enable the `file_upload` tool by setting it to `true` for all channels, a comma-separated list of channel IDs to whitelist specific channels, or use `!` before a channel ID to allow all except specified ones. If empty, the tool is only registered when explicitly listed in `SLACK_MCP_ENABLED_TOOLS`. |
+| `SLACK_MCP_FILE_UPLOAD_PATHS`    | No        | `nil`                     | Comma-separated list of directories the server may read when `file_upload` is called with `file_path`, e.g. `/home/user/Pictures,/tmp`. Paths are resolved through symlinks and must stay inside one of these roots. When unset, `file_path` is rejected entirely and only `content` / `content_base64` uploads work. Use `/` to allow any absolute path. |
+| `SLACK_MCP_ATTACHMENT_DIR`       | No        | `nil`                     | Directory `attachment_get_data` streams files into. When set, the tool saves the file there and returns its local path instead of its content, so large files never pass through the MCP response. Only useful when the client can read the server's filesystem (e.g. stdio on the same host). Files are named `<file ID>-<file name>`; the server never deletes them. |
+| `SLACK_MCP_ATTACHMENT_MAX_BYTES` | No        | `5242880`                 | Largest file `attachment_get_data` will download, in bytes. Without `SLACK_MCP_ATTACHMENT_DIR` the whole file is held in memory and returned in the response, so raise this together with a download directory. |
 | `SLACK_MCP_MARK_TOOL`             | No        | `nil`                     | Enable the `conversations_mark` tool by setting to `true` or `1`. Disabled by default to prevent accidental marking of messages as read.                                                                                                                                                  |
 | `SLACK_MCP_USERS_CACHE`           | No        | `~/Library/Caches/slack-mcp-server/users_cache.json` (macOS)<br>`~/.cache/slack-mcp-server/users_cache.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/users_cache.json` (Windows) | Path to the users cache file. Used to cache Slack user information to avoid repeated API calls on startup. |
 | `SLACK_MCP_CHANNELS_CACHE`        | No        | `~/Library/Caches/slack-mcp-server/channels_cache_v2.json` (macOS)<br>`~/.cache/slack-mcp-server/channels_cache_v2.json` (Linux)<br>`%LocalAppData%/slack-mcp-server/channels_cache_v2.json` (Windows) | Path to the channels cache file. Used to cache Slack channel information to avoid repeated API calls on startup. |
 | `SLACK_MCP_LOG_LEVEL`             | No        | `info`                    | Log-level for stdout or stderr. Valid values are: `debug`, `info`, `warn`, `error`, `panic` and `fatal`                                                                                                                                                                                   |
 | `SLACK_MCP_GOVSLACK`              | No        | `nil`                     | Set to `true` to enable [GovSlack](https://slack.com/solutions/govslack) mode. Routes API calls to `slack-gov.com` endpoints instead of `slack.com` for FedRAMP-compliant government workspaces.                                                                                          |
-| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. When a write tool is listed here, it's enabled without channel restrictions. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
+| `SLACK_MCP_ENABLED_TOOLS`         | No        | `nil`                     | Comma-separated list of tools to register. If empty, all read-only tools and usergroups tools are registered; write tools (`conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`) require their specific env var OR must be explicitly listed here. Selecting a write tool without its dedicated channel policy enables all accessible channels; a dedicated policy still restricts the target channel. Available tools: `conversations_history`, `conversations_replies`, `conversations_add_message`, `conversations_update_message`, `conversations_delete_message`, `reactions_add`, `reactions_remove`, `attachment_get_data`, `file_upload`, `conversations_search_messages`, `channels_list`, `usergroups_list`, `usergroups_me`, `usergroups_create`, `usergroups_update`, `usergroups_users_update`. |
 
 *You need one of: `xoxp` (user), `xoxb` (bot), or both `xoxc`/`xoxd` tokens for authentication.
 

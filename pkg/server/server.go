@@ -28,9 +28,12 @@ const (
 	ToolConversationsHistory        = "conversations_history"
 	ToolConversationsReplies        = "conversations_replies"
 	ToolConversationsAddMessage     = "conversations_add_message"
+	ToolConversationsUpdateMessage  = "conversations_update_message"
+	ToolConversationsDeleteMessage  = "conversations_delete_message"
 	ToolReactionsAdd                = "reactions_add"
 	ToolReactionsRemove             = "reactions_remove"
 	ToolAttachmentGetData           = "attachment_get_data"
+	ToolFileUpload                  = "file_upload"
 	ToolConversationsSearchMessages = "conversations_search_messages"
 	ToolConversationsUnreads        = "conversations_unreads"
 	ToolConversationsMark           = "conversations_mark"
@@ -53,9 +56,12 @@ var ValidToolNames = []string{
 	ToolConversationsHistory,
 	ToolConversationsReplies,
 	ToolConversationsAddMessage,
+	ToolConversationsUpdateMessage,
+	ToolConversationsDeleteMessage,
 	ToolReactionsAdd,
 	ToolReactionsRemove,
 	ToolAttachmentGetData,
+	ToolFileUpload,
 	ToolConversationsSearchMessages,
 	ToolConversationsUnreads,
 	ToolConversationsMark,
@@ -124,7 +130,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
 
-	conversationsHandler := handler.NewConversationsHandler(provider, logger)
+	conversationsHandler := handler.NewConversationsHandler(provider, logger, enabledTools)
 
 	if shouldAddTool(ToolConversationsHistory, enabledTools, "") {
 		s.AddTool(mcp.NewTool(ToolConversationsHistory,
@@ -189,7 +195,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 				mcp.Description("Unique identifier of either a thread's parent message or a message in the thread_ts must be the timestamp in format 1234567890.123456 of an existing message with 0 or more replies. Optional, if not provided the message will be added to the channel itself, otherwise it will be added to the thread."),
 			),
 			mcp.WithString("text",
-				mcp.Description("Message text in specified content_type format. Example: 'Hello, world!' for text/plain or '# Hello, world!' for text/markdown."),
+				mcp.Description("Message text in the format given by content_type. With text/markdown (default) write standard Markdown, not Slack mrkdwn: **bold**, *italic*, [label](url), `code`, fenced code blocks, # headings, > quotes, and - or 1. list items (nesting supported); <@Uxxx> mentions work in plain paragraphs. Line breaks: a single newline is kept as a line break inside a paragraph (plain '• ' lines are fine), a blank line starts a new block; two-trailing-space and backslash hard breaks are kept as line breaks too. Example: '# Hello, world!' for text/markdown or 'Hello, world!' for text/plain. For an exact layout pass blocks instead."),
 			),
 			mcp.WithString("content_type",
 				mcp.DefaultString("text/markdown"),
@@ -198,7 +204,33 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			mcp.WithString("blocks",
 				mcp.Description("Raw Slack Block Kit JSON array for rich message formatting (rich_text lists, code blocks, etc.). When provided, this takes precedence over text/content_type for rendering. The text parameter becomes the notification fallback text."),
 			),
+			mcp.WithBoolean("reply_broadcast",
+				mcp.Description("When posting a threaded reply (thread_ts is set), also make the reply visible in the channel ('also send to channel'). Has no effect on top-level messages. Default is boolean false."),
+			),
 		), conversationsHandler.ConversationsAddMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsUpdateMessage, enabledTools, "SLACK_MCP_UPDATE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsUpdateMessage,
+			mcp.WithDescription("Edit an existing message or broadcast an existing thread reply using chat.update. Set reply_broadcast=true without text to also send a reply (including a file upload) to the channel, preserving its content. Only messages editable by the authenticated identity can be updated; Slack ownership and workspace policy apply."),
+			mcp.WithTitleAnnotation("Edit or Broadcast Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel ID or cached #channel / @username_dm name.")),
+			mcp.WithString("timestamp", mcp.Required(), mcp.Description("Exact timestamp of the message to edit (not its thread parent), in format 1234567890.123456.")),
+			mcp.WithString("text", mcp.Description("Replacement message text. Required unless reply_broadcast is true; omit it entirely when broadcasting. Existing blocks are replaced; attachments are unchanged.")),
+			mcp.WithString("content_type", mcp.DefaultString("text/markdown"), mcp.Description("text/markdown or text/plain; defaults to text/markdown.")),
+			mcp.WithBoolean("reply_broadcast", mcp.Description("Broadcast an existing thread reply to its channel ('Also send to channel'), preserving text, blocks and attachments. Omit text and other content fields. Default false.")),
+		), conversationsHandler.ConversationsUpdateMessageHandler)
+	}
+
+	if shouldAddTool(ToolConversationsDeleteMessage, enabledTools, "SLACK_MCP_DELETE_MESSAGE_TOOL") {
+		s.AddTool(mcp.NewTool(ToolConversationsDeleteMessage,
+			mcp.WithDescription("Permanently delete an existing message using chat.delete. Slack ownership and workspace deletion policy apply."),
+			mcp.WithTitleAnnotation("Delete Message"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel ID or cached #channel / @username_dm name.")),
+			mcp.WithString("timestamp", mcp.Required(), mcp.Description("Exact timestamp of the message to delete (not its thread parent), in format 1234567890.123456.")),
+		), conversationsHandler.ConversationsDeleteMessageHandler)
 	}
 
 	if shouldAddTool(ToolReactionsAdd, enabledTools, "SLACK_MCP_REACTION_TOOL") {
@@ -241,7 +273,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolAttachmentGetData, enabledTools, "SLACK_MCP_ATTACHMENT_TOOL") {
 		s.AddTool(mcp.NewTool(ToolAttachmentGetData,
-			mcp.WithDescription("Download an attachment's content by file ID. Returns file metadata and content (text files as-is, binary files as base64). Maximum file size is 5MB."),
+			mcp.WithDescription(handler.AttachmentToolDescription()),
 			mcp.WithTitleAnnotation("Get Attachment Data"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithString("file_id",
@@ -251,10 +283,60 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		), conversationsHandler.FilesGetHandler)
 	}
 
+	if shouldAddTool(ToolFileUpload, enabledTools, "SLACK_MCP_FILE_UPLOAD_TOOL") {
+		s.AddTool(mcp.NewTool(ToolFileUpload,
+			mcp.WithDescription("Preview or share 1–10 files together as one message, optionally in a thread. A caption is required. Defaults to dry_run=true: show the returned destination, caption and file plan for approval. To send, repeat the call with dry_run=false and expected_plan_hash from the approved preview. Returns a verified message timestamp or an explicit do_not_retry result if sharing is ambiguous."),
+			mcp.WithTitleAnnotation("Upload File"),
+			mcp.WithDestructiveHintAnnotation(true),
+			mcp.WithString("channel_id",
+				mcp.Required(),
+				mcp.Description("ID of the channel in format Cxxxxxxxxxx or its name starting with #... or @... aka #general or @username_dm."),
+			),
+			mcp.WithString("thread_ts",
+				mcp.Description("Unique identifier of a thread's parent message in format 1234567890.123456. Optional, if not provided the file is posted to the channel itself. Never use a reply's ts, always the parent's."),
+			),
+			mcp.WithString("file_path",
+				mcp.Description("Absolute path to a local file to upload, e.g. /home/user/Pictures/screenshot.png. Only paths inside SLACK_MCP_FILE_UPLOAD_PATHS are allowed; when that variable is unset this argument is rejected."),
+			),
+			mcp.WithString("content",
+				mcp.Description("UTF-8 text to upload as a file, e.g. a log excerpt or a code snippet. Requires filename."),
+			),
+			mcp.WithString("content_base64",
+				mcp.Description("Base64-encoded binary content, the way to upload a screenshot or an image without writing it to disk first. Requires filename."),
+			),
+			mcp.WithString("filename",
+				mcp.Description("File name shown in Slack, e.g. 'screenshot.png' or 'build.log'. Required for content and content_base64, defaults to the base name of file_path. Slack derives the mime type from the extension, so an image must keep its .png or .jpg suffix, otherwise it renders as a plain attachment with no preview."),
+			),
+			mcp.WithString("title",
+				mcp.Description("Title of the file in Slack. Defaults to filename."),
+			),
+			mcp.WithString("initial_comment",
+				mcp.Required(),
+				mcp.Description("Message posted together with the file, this is the caption users see. Supports Slack mrkdwn."),
+			),
+			mcp.WithBoolean("dry_run", mcp.DefaultBool(true), mcp.Description("Preview only by default. Set false only after approval of the exact returned plan.")),
+			mcp.WithString("expected_plan_hash", mcp.Description("Required when dry_run=false; the plan_hash from the approved preview. Changes to bytes, destination, caption or metadata invalidate it.")),
+			mcp.WithArray("files", mcp.MinItems(1), mcp.MaxItems(10), mcp.Description("Files to share together in one message. Each object has exactly one of file_path, content or content_base64, plus optional filename, title, alt_txt and snippet_type. Cannot be combined with the top-level single-file fields."), mcp.Items(map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"file_path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}, "content_base64": map[string]any{"type": "string"},
+					"filename": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "alt_txt": map[string]any{"type": "string"}, "snippet_type": map[string]any{"type": "string"},
+				},
+			})),
+			mcp.WithString("alt_txt",
+				mcp.Description("Accessibility description of an image for screen readers, up to 1000 characters. Recommended for screenshots."),
+			),
+			mcp.WithString("snippet_type",
+				mcp.Description("Syntax highlighting for text snippets, e.g. 'python', 'go', 'yaml'."),
+			),
+		), conversationsHandler.FileUploadHandler)
+	}
+
 	conversationsSearchTool := mcp.NewTool(ToolConversationsSearchMessages,
 		mcp.WithDescription("Search messages in a public channel, private channel, or direct message (DM, or IM) conversation using filters. All filters are optional, if not provided then search_query is required."),
 		mcp.WithTitleAnnotation("Search Messages"),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithBoolean("resolve_missing_file_metadata", mcp.DefaultBool(true), mcp.Description("When search omits file metadata, read the exact message (including thread replies) to recover attachment IDs. Bounded to 15 seconds per page. FileMetadataStatus is complete, unavailable or not_requested; unavailable does not mean zero attachments.")),
 		mcp.WithString("search_query",
 			mcp.Description("Search query to filter messages. Example: 'marketing report' or full URL of Slack message e.g. 'https://slack.com/archives/C1234567890/p1234567890123456', then the tool will return a single message matching given URL, herewith all other parameters will be ignored."),
 		),
@@ -712,7 +794,6 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			logger.Info("Request received",
 				zap.String("tool", req.Params.Name),
-				zap.Any("params", req.Params),
 			)
 
 			startTime := time.Now()

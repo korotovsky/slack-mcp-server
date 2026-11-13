@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -216,6 +217,8 @@ type SlackAPI interface {
 	GetUsersContext(ctx context.Context, options ...slack.GetUsersOption) ([]slack.User, error)
 	GetUsersInfo(users ...string) (*[]slack.User, error)
 	PostMessageContext(ctx context.Context, channel string, options ...slack.MsgOption) (string, string, error)
+	UpdateMessageContext(ctx context.Context, channel, timestamp string, options ...slack.MsgOption) (string, string, string, error)
+	DeleteMessageContext(ctx context.Context, channel, timestamp string) (string, string, error)
 	MarkConversationContext(ctx context.Context, channel, ts string) error
 	AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error
 	RemoveReactionContext(ctx context.Context, name string, item slack.ItemRef) error
@@ -226,10 +229,17 @@ type SlackAPI interface {
 	GetConversationHistoryContext(ctx context.Context, params *slack.GetConversationHistoryParameters) (*slack.GetConversationHistoryResponse, error)
 	GetConversationRepliesContext(ctx context.Context, params *slack.GetConversationRepliesParameters) (msgs []slack.Message, hasMore bool, nextCursor string, err error)
 	SearchContext(ctx context.Context, query string, params slack.SearchParameters) (*slack.SearchMessages, *slack.SearchFiles, error)
+	SearchMessagesWithFilesContext(ctx context.Context, query string, params slack.SearchParameters) (*SearchMessagesWithFiles, error)
 
 	// Used to get files
 	GetFileInfoContext(ctx context.Context, fileID string, count, page int) (*slack.File, []slack.Comment, *slack.Paging, error)
 	GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error
+
+	// Used to upload files
+	UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error)
+	GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error)
+	UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error
+	CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error)
 
 	// Used to get channel info (for unread counts with xoxp tokens)
 	GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error)
@@ -260,8 +270,12 @@ type SlackAPI interface {
 }
 
 type MCPSlackClient struct {
+	httpClient  *http.Client
 	slackClient *slack.Client
 	edgeClient  *edge.Client
+	// downloadClient is the streaming transfer client without the shared
+	// HTTP client's 30s overall timeout. File transfers are context-bounded.
+	downloadClient *slack.Client
 
 	authResponse *slack.AuthTestResponse
 	authProvider auth.Provider
@@ -329,6 +343,10 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slack.OptionHTTPClient(httpClient),
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
+	downloadClient := slack.New(authProvider.SlackToken(),
+		slack.OptionHTTPClient(&http.Client{Transport: httpClient.Transport}),
+		slack.OptionAPIURL(authResp.URL+"api/"),
+	)
 
 	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
 		edge.OptionHTTPClient(httpClient),
@@ -348,14 +366,16 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	isBotToken := strings.HasPrefix(token, "xoxb-") || strings.HasPrefix(token, "xoxe.xoxb-")
 
 	return &MCPSlackClient{
-		slackClient:  slackClient,
-		edgeClient:   edgeClient,
-		authResponse: authResponse,
-		authProvider: authProvider,
-		isEnterprise: isEnterprise,
-		isOAuth:      isOAuth,
-		isBotToken:   isBotToken,
-		teamEndpoint: authResp.URL,
+		httpClient:     httpClient,
+		slackClient:    slackClient,
+		edgeClient:     edgeClient,
+		downloadClient: downloadClient,
+		authResponse:   authResponse,
+		authProvider:   authProvider,
+		isEnterprise:   isEnterprise,
+		isOAuth:        isOAuth,
+		isBotToken:     isBotToken,
+		teamEndpoint:   authResp.URL,
 	}, nil
 }
 
@@ -533,6 +553,14 @@ func (c *MCPSlackClient) PostMessageContext(ctx context.Context, channelID strin
 	return c.slackClient.PostMessageContext(ctx, channelID, options...)
 }
 
+func (c *MCPSlackClient) UpdateMessageContext(ctx context.Context, channelID, timestamp string, options ...slack.MsgOption) (string, string, string, error) {
+	return c.slackClient.UpdateMessageContext(ctx, channelID, timestamp, options...)
+}
+
+func (c *MCPSlackClient) DeleteMessageContext(ctx context.Context, channelID, timestamp string) (string, string, error) {
+	return c.slackClient.DeleteMessageContext(ctx, channelID, timestamp)
+}
+
 func (c *MCPSlackClient) AddReactionContext(ctx context.Context, name string, item slack.ItemRef) error {
 	return c.slackClient.AddReactionContext(ctx, name, item)
 }
@@ -546,7 +574,25 @@ func (c *MCPSlackClient) GetFileInfoContext(ctx context.Context, fileID string, 
 }
 
 func (c *MCPSlackClient) GetFileContext(ctx context.Context, downloadURL string, writer io.Writer) error {
-	return c.slackClient.GetFileContext(ctx, downloadURL, writer)
+	return c.downloadClient.GetFileContext(ctx, downloadURL, writer)
+}
+
+func (c *MCPSlackClient) UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error) {
+	return c.slackClient.UploadFileContext(ctx, params)
+}
+
+func (c *MCPSlackClient) GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+	return c.slackClient.GetUploadURLExternalContext(ctx, params)
+}
+
+func (c *MCPSlackClient) UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	return c.downloadClient.UploadToURL(ctx, params)
+}
+
+func (c *MCPSlackClient) CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+	return c.slackClient.CompleteUploadExternalContext(ctx, params)
 }
 
 func (c *MCPSlackClient) GetConversationInfoContext(ctx context.Context, input *slack.GetConversationInfoInput) (*slack.Channel, error) {
