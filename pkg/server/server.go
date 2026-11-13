@@ -212,13 +212,14 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 
 	if shouldAddTool(ToolConversationsUpdateMessage, enabledTools, "SLACK_MCP_UPDATE_MESSAGE_TOOL") {
 		s.AddTool(mcp.NewTool(ToolConversationsUpdateMessage,
-			mcp.WithDescription("Replace the text of an existing message using chat.update. Only messages editable by the authenticated identity can be updated; Slack ownership and workspace policy apply."),
-			mcp.WithTitleAnnotation("Edit Message"),
+			mcp.WithDescription("Edit an existing message or broadcast an existing thread reply using chat.update. Set reply_broadcast=true without text to also send a reply (including a file upload) to the channel, preserving its content. Only messages editable by the authenticated identity can be updated; Slack ownership and workspace policy apply."),
+			mcp.WithTitleAnnotation("Edit or Broadcast Message"),
 			mcp.WithDestructiveHintAnnotation(true),
 			mcp.WithString("channel_id", mcp.Required(), mcp.Description("Channel ID or cached #channel / @username_dm name.")),
 			mcp.WithString("timestamp", mcp.Required(), mcp.Description("Exact timestamp of the message to edit (not its thread parent), in format 1234567890.123456.")),
-			mcp.WithString("text", mcp.Required(), mcp.Description("Replacement message text. Existing blocks are replaced; attachments are unchanged.")),
+			mcp.WithString("text", mcp.Description("Replacement message text. Required unless reply_broadcast is true; omit it entirely when broadcasting. Existing blocks are replaced; attachments are unchanged.")),
 			mcp.WithString("content_type", mcp.DefaultString("text/markdown"), mcp.Description("text/markdown or text/plain; defaults to text/markdown.")),
+			mcp.WithBoolean("reply_broadcast", mcp.Description("Broadcast an existing thread reply to its channel ('Also send to channel'), preserving text, blocks and attachments. Omit text and other content fields. Default false.")),
 		), conversationsHandler.ConversationsUpdateMessageHandler)
 	}
 
@@ -782,7 +783,6 @@ func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			logger.Info("Request received",
 				zap.String("tool", req.Params.Name),
-				zap.Any("params", req.Params),
 			)
 
 			startTime := time.Now()

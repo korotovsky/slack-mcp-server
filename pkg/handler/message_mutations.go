@@ -47,7 +47,7 @@ func (ch *ConversationsHandler) parseMessageMutationTarget(ctx context.Context, 
 	return channel, timestamp, nil
 }
 
-// ConversationsUpdateMessageHandler replaces message text, not its attachments.
+// ConversationsUpdateMessageHandler edits text or broadcasts an existing reply.
 func (ch *ConversationsHandler) ConversationsUpdateMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		return nil, err
@@ -56,30 +56,45 @@ func (ch *ConversationsHandler) ConversationsUpdateMessageHandler(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	text := request.GetString("text", "")
-	if text == "" {
-		return nil, fmt.Errorf("text must be a non-empty string")
+	if value, present := request.GetArguments()["reply_broadcast"]; present {
+		if _, ok := value.(bool); !ok {
+			return nil, fmt.Errorf("reply_broadcast must be a boolean")
+		}
 	}
-	contentType := request.GetString("content_type", "text/markdown")
-	if contentType != "text/plain" && contentType != "text/markdown" {
-		return nil, fmt.Errorf("content_type must be either 'text/plain' or 'text/markdown'")
-	}
-
-	// Supplying text without blocks removes old blocks per chat.update. Always
-	// replace the notification fallback too, including when markdown uses blocks.
-	options := []slack.MsgOption{slack.MsgOptionText(text, false)}
-	if ch.apiProvider.IsBotToken() {
-		options = append(options, slack.MsgOptionAsUser(true))
-	}
-	if contentType == "text/markdown" {
-		blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(text)
-		if err == nil && len(blocks) > 0 {
-			options = append(options, slack.MsgOptionBlocks(blocks...))
+	var options []slack.MsgOption
+	if request.GetBool("reply_broadcast", false) {
+		// Slack rejects broadcasting an old reply and editing its content in
+		// the same request. Omitting text/blocks also preserves file captions.
+		for _, key := range []string{"text", "blocks", "attachments", "file_ids", "markdown_text"} {
+			if _, present := request.GetArguments()[key]; present {
+				return nil, fmt.Errorf("reply_broadcast cannot be combined with %s; broadcast without changing the reply's content", key)
+			}
+		}
+		options = append(options, slack.MsgOptionBroadcast())
+	} else {
+		text := request.GetString("text", "")
+		if text == "" {
+			return nil, fmt.Errorf("text must be a non-empty string, or set reply_broadcast to true")
+		}
+		contentType := request.GetString("content_type", "text/markdown")
+		if contentType != "text/plain" && contentType != "text/markdown" {
+			return nil, fmt.Errorf("content_type must be either 'text/plain' or 'text/markdown'")
+		}
+		// Replace the notification fallback along with the rendered content.
+		options = append(options, slack.MsgOptionText(text, false))
+		if contentType == "text/markdown" {
+			blocks, err := slackGoUtil.ConvertMarkdownTextToBlocks(text)
+			if err == nil && len(blocks) > 0 {
+				options = append(options, slack.MsgOptionBlocks(blocks...))
+			} else {
+				options = append(options, slack.MsgOptionDisableMarkdown())
+			}
 		} else {
 			options = append(options, slack.MsgOptionDisableMarkdown())
 		}
-	} else {
-		options = append(options, slack.MsgOptionDisableMarkdown())
+	}
+	if ch.apiProvider.IsBotToken() {
+		options = append(options, slack.MsgOptionAsUser(true))
 	}
 
 	respChannel, respTimestamp, _, err := ch.apiProvider.Slack().UpdateMessageContext(ctx, channel, timestamp, options...)

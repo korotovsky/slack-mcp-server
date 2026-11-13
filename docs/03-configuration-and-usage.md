@@ -285,7 +285,7 @@ docker-compose up -d
 
 ### Editing and deleting messages
 
-`conversations_update_message` (`chat.update`) and `conversations_delete_message` (`chat.delete`) are independently disabled by default. Both require `channel_id` (ID or cached `#channel` / `@username_dm`) and `timestamp` (a string such as `1234567890.123456`, not a float or thread-parent timestamp when targeting a reply). Update also requires non-empty `text`; `content_type` is `text/markdown` by default or `text/plain`.
+`conversations_update_message` (`chat.update`) and `conversations_delete_message` (`chat.delete`) are independently disabled by default. Both require `channel_id` (ID or cached `#channel` / `@username_dm`) and `timestamp` (a string such as `1234567890.123456`, not a float or thread-parent timestamp when targeting a reply). Editing requires non-empty `text`; `content_type` is `text/markdown` by default or `text/plain`.
 
 ```json
 {
@@ -301,6 +301,14 @@ No credentials are shown: supply authentication separately. Update is allowed on
 
 Update replaces the text and old blocks (including the notification fallback), but not attachments or metadata. Markdown uses the posting tool's existing converter; unsupported/empty conversion falls back to plain text. Slack can reject changes between incompatible block types (`block_mismatch`); no alternate mutation is attempted automatically. Ephemeral messages cannot be updated with `chat.update`.
 
+To select **Also send to channel** for an existing thread reply, call `conversations_update_message` with `reply_broadcast: true` and omit `text` and all other content fields. This also applies to a reply containing uploaded files. Target the reply's timestamp, obtained from `conversations_replies`, rather than its thread parent's timestamp:
+
+```json
+{"channel_id":"C123","timestamp":"1234567891.123456","reply_broadcast":true}
+```
+
+The call preserves the existing text, blocks and attachments. Slack does not allow broadcasting an old reply and changing its content in the same request; the tool rejects that combination before calling Slack. For a new text reply, `conversations_add_message` accepts `thread_ts` together with `reply_broadcast: true` in one call.
+
 | Authentication | Mutation route | Authorization and limits |
 | --- | --- | --- |
 | User `xoxp` (including recognized `xoxe.xoxp` rotation tokens) | Existing standard Web API client | `chat:write`; edits only the authenticated user's own messages. Deletion is limited to messages that user can delete in Slack, subject to workspace policy. |
@@ -309,7 +317,7 @@ Update replaces the text and old blocks (including the notification fallback), b
 
 Sources: [Slack chat.update](https://docs.slack.dev/reference/methods/chat.update/), [Slack chat.delete](https://docs.slack.dev/reference/methods/chat.delete/), and this server's `pkg/provider/api.go` / `pkg/transport/transport.go`. Token choice priority is user OAuth, bot OAuth, then browser-session pair; avoid configuring multiple identities at once.
 
-Tool registration, destructive annotations and channel restrictions are **not human approval**. Require an MCP-client approval for each write, even with bypass enabled, and never reuse a session grant or previous read approval. The server adds no automatic mutation retries. On timeout, connection loss or an ambiguous Slack error, the operation may already have applied: verify state using an approved read, then obtain a new approval before retrying. Do not treat an error as proof of no effect. The existing server middleware logs tool arguments at INFO, including replacement message contents; DEBUG can expose additional details. Treat server logs as sensitive, restrict access and retention, and do not assume INFO redacts message text. This patch does not change the upstream logging policy.
+Tool registration, destructive annotations and channel restrictions are **not human approval**. Require an MCP-client approval for each write. The server adds no automatic mutation retries. On timeout, connection loss or an ambiguous Slack error, the operation may already have applied: verify state before retrying. Do not treat an error as proof of no effect. The shared request middleware logs tool names and elapsed time, without tool arguments, so upload payloads and replacement message text are omitted. Existing handlers can still log arguments at DEBUG; treat server logs as sensitive and restrict access and retention.
 
 ### Tool Registration and Permissions
 

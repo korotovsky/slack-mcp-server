@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -130,10 +131,21 @@ func resolveUploadFilePath(path string, allowedRoots []string) (string, error) {
 
 func (ch *ConversationsHandler) parseParamsToolFileUpload(ctx context.Context, request mcp.CallToolRequest) (*fileUploadParams, error) {
 	toolConfig := os.Getenv("SLACK_MCP_FILE_UPLOAD_TOOL")
-	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
+	enabledTools := ch.enabledTools
+	if len(enabledTools) == 0 {
+		for _, name := range strings.Split(os.Getenv("SLACK_MCP_ENABLED_TOOLS"), ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				enabledTools = append(enabledTools, name)
+			}
+		}
+	}
+	selected := slices.Contains(enabledTools, "file_upload")
+	if len(enabledTools) > 0 && !selected {
+		return nil, errors.New("file_upload is disabled by the enabled-tools selection")
+	}
 
 	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "file_upload") {
+		if !selected {
 			ch.logger.Error("File-upload tool disabled by default")
 			return nil, errors.New(
 				"by default, the file_upload tool is disabled to guard Slack workspaces against accidental uploads. " +

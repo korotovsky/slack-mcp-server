@@ -272,6 +272,8 @@ Provide the content in exactly one of three ways: `file_path`, `content` or `con
 
 Maximum upload size is 100MB. Works in stealth mode (`xoxc`/`xoxd`) as well as with OAuth and bot tokens.
 
+To also send an uploaded thread reply to its channel, find the reply's timestamp with `conversations_replies`, then call `conversations_update_message` with that `timestamp`, `channel_id`, and `reply_broadcast: true`. Omit `text` and other content fields so the caption and attachments are preserved. See [editing and deleting messages](docs/03-configuration-and-usage.md#editing-and-deleting-messages).
+
 ## Resources
 
 The Slack MCP Server exposes two special directory resources for easy access to workspace metadata:
